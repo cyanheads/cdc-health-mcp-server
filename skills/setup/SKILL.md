@@ -103,11 +103,13 @@ After installing dependencies (`npm install`, or `bun install` if using Bun), co
 
 ## Checklist
 
-- [ ] Agent protocol file selected — keep `CLAUDE.md` or `AGENTS.md`, discard the other
-- [ ] `{{PACKAGE_NAME}}` placeholders replaced in agent protocol file (if not auto-substituted by init)
-- [ ] Core framework CLAUDE.md read (`node_modules/@cyanheads/mcp-ts-core/CLAUDE.md`)
-- [ ] Unused echo definitions cleaned up (and unregistered from `src/index.ts`)
-- [ ] Skills copied to agent directory (`cp -R skills/* .claude/skills/` or equivalent)
-- [ ] Project structure understood (definitions directories, entry point)
-- [ ] `npm run devcheck` passes
-- [ ] If new server: proceed to `design-mcp-server` skill to plan the tool surface
+- [x] Agent protocol file selected — keep `CLAUDE.md` or `AGENTS.md`, discard the other
+- [x] `{{PACKAGE_NAME}}` placeholders replaced in agent protocol file (if not auto-substituted by init)
+- [x] Core framework CLAUDE.md read (`node_modules/@cyanheads/mcp-ts-core/CLAUDE.md`)
+- [x] Unused echo definitions cleaned up (and unregistered from `src/index.ts`)
+- [x] Skills copied to agent directory (`cp -R skills/* .claude/skills/` or equivalent)
+- [x] Project structure understood (definitions directories, entry point)
+- [x] `bun run devcheck` passes
+- [x] If new server: proceed to `design-mcp-server` skill to plan the tool surface
+
+Completed: 2026-04-03
