@@ -1,103 +1,239 @@
-# CDC Health Statistics MCP Server
+<div align="center">
+  <h1>@cyanheads/cdc-health-mcp-server</h1>
+  <p><b>MCP server for the CDC Open Data portal. Search ~1,487 public health datasets, inspect schemas, and execute SoQL queries across disease surveillance, mortality, vaccinations, behavioral risk, and more. STDIO or Streamable HTTP.</b>
+  <div>3 Tools • 2 Resources • 1 Prompt</div>
+  </p>
+</div>
 
-[![npm version](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server.svg)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+<div align="center">
 
-MCP server for discovering and querying CDC public health datasets via the [Socrata SODA API](https://dev.socrata.com/). Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) covering disease surveillance, mortality, behavioral risk factors, vaccinations, environmental health, and more.
+[![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/)
 
-No authentication required. Optional app token for higher rate limits.
+[![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
-Built on [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core).
+</div>
+
+---
+
+## Tools
+
+Three tools for discovering and querying CDC public health data:
+
+| Tool | Description |
+|:---|:---|
+| `cdc_discover_datasets` | Search the catalog by keyword, category, or tag. Entry point for all queries. |
+| `cdc_get_dataset_schema` | Fetch column schema, row count, and metadata for a dataset. Essential before writing SoQL queries. |
+| `cdc_query_dataset` | Execute SoQL queries — filter, aggregate, sort, full-text search, and field selection. |
+
+### `cdc_discover_datasets`
+
+Search the CDC dataset catalog to find relevant datasets.
+
+- Full-text search across dataset names and descriptions
+- Filter by domain category (e.g., "NNDSS", "Vaccinations", "Behavioral Risk Factors")
+- Filter by domain tags (e.g., `["covid19", "surveillance"]`)
+- Returns dataset IDs, names, descriptions, column lists, and update timestamps
+- Pagination via offset for browsing large result sets
+
+---
+
+### `cdc_get_dataset_schema`
+
+Fetch the full column schema for a specific dataset.
+
+- Column names, data types, and descriptions
+- Row count and last-updated timestamp
+- Essential for understanding column types before writing `$where` clauses
+- Accepts four-by-four dataset identifiers (e.g., `bi63-dtpu`)
+
+---
+
+### `cdc_query_dataset`
+
+Execute SoQL queries against any CDC dataset.
+
+- Full SoQL support: `$select`, `$where`, `$group`, `$having`, `$order`
+- Full-text search across all text columns via `$q`
+- Up to 5,000 rows per request with pagination
+- Returns the assembled SoQL query string for debugging
+- All response values are strings (per SODA v2.1) — parse based on column type metadata
+
+## Resources and prompt
+
+| Type | Name | Description |
+|:---|:---|:---|
+| Resource | `cdc://datasets` | Top 50 datasets by popularity for orientation |
+| Resource | `cdc://datasets/{datasetId}` | Dataset metadata and column schema (equivalent to schema tool) |
+| Prompt | `analyze_health_trend` | Guided 5-step workflow: discover, inspect, baseline query, compare, synthesize |
 
 ## Features
 
-| Definition | Type | Description |
-|:-----------|:-----|:------------|
-| `cdc_discover_datasets` | Tool | Search the catalog by keyword, category, or tag |
-| `cdc_get_dataset_schema` | Tool | Fetch column schema, row count, and metadata for a dataset |
-| `cdc_query_dataset` | Tool | Execute SoQL queries — filter, aggregate, sort, full-text search |
-| `cdc://datasets` | Resource | Top 50 datasets by popularity for orientation |
-| `cdc://datasets/{datasetId}` | Resource | Individual dataset metadata and schema |
-| `analyze_health_trend` | Prompt | Guided workflow: discover, inspect, query, compare, synthesize |
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
 
-## Quickstart
+- Declarative tool definitions — single file per tool, framework handles registration and validation
+- Unified error handling across all tools
+- Pluggable auth (`none`, `jwt`, `oauth`)
+- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
+- Structured logging with optional OpenTelemetry tracing
+- Runs locally (stdio/HTTP) or on Cloudflare Workers from the same codebase
 
-### Prerequisites
+CDC-specific:
 
-- [Node.js](https://nodejs.org/) >= 22.0.0
-- [Bun](https://bun.sh/) (for development)
+- Wraps the [Socrata SODA API v2.1](https://dev.socrata.com/) — no auth required, optional app token for higher rate limits
+- Discovery-first approach for a heterogeneous catalog (~1,487 datasets across many health domains)
+- Conservative request spacing for rate limit compliance (no rate-limit headers returned by Socrata)
+- Handles SODA string-typed responses — all values returned as strings, parsed via column type metadata
 
-### Install
+## Getting started
 
-```bash
-bun install
-bun run build
-```
-
-### Configure
-
-Add to your MCP client configuration:
+Add the following to your MCP client configuration file.
 
 ```json
 {
   "mcpServers": {
     "cdc-health": {
-      "command": "node",
-      "args": ["/path/to/cdc-health-mcp-server/dist/index.js"],
+      "type": "stdio",
+      "command": "bunx",
+      "args": ["@cyanheads/cdc-health-mcp-server@latest"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
       }
     }
   }
 }
 ```
 
-Or via npx:
+Or with npx (no Bun required):
 
 ```json
 {
   "mcpServers": {
     "cdc-health": {
+      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/cdc-health-mcp-server", "run", "start:stdio"]
+      "args": ["-y", "@cyanheads/cdc-health-mcp-server@latest"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
     }
   }
 }
 ```
 
-### Environment Variables
+Or with Docker:
 
-| Variable | Required | Default | Description |
-|:---------|:---------|:--------|:------------|
-| `CDC_APP_TOKEN` | No | — | Socrata app token for higher rate limits |
-| `CDC_BASE_URL` | No | `https://data.cdc.gov` | Base URL for SODA API requests |
-| `CDC_CATALOG_URL` | No | `https://api.us.socrata.com/api/catalog/v1` | Discovery API URL |
-| `MCP_TRANSPORT_TYPE` | No | `stdio` | Transport: `stdio` or `http` |
-| `MCP_LOG_LEVEL` | No | `info` | Log level: `debug`, `info`, `warn`, `error` |
+```json
+{
+  "mcpServers": {
+    "cdc-health": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/cdc-health-mcp-server:latest"]
+    }
+  }
+}
+```
 
-## Usage
+For Streamable HTTP, set the transport and start the server:
 
-The core workflow is **discover, inspect, query**:
+```sh
+MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
+# Server listens at http://localhost:3010/mcp
+```
 
-1. **Discover** — Search the catalog to find relevant datasets
-2. **Inspect** — Check the schema to understand columns and types
-3. **Query** — Execute SoQL queries against the data
+### Prerequisites
 
-Example conversation:
+- [Bun v1.3.2](https://bun.sh/) or higher.
+- Optional: [Socrata app token](https://dev.socrata.com/docs/app-tokens.html) for higher rate limits.
 
-> **User:** What are the leading causes of death in the US?
->
-> **Agent:** Uses `cdc_discover_datasets` with query "leading causes of death", finds dataset `bi63-dtpu`, inspects its schema, then queries for the latest year's data.
+### Installation
 
-## Development
+1. **Clone the repository:**
 
-```bash
-bun run dev:stdio     # Dev mode (stdio, hot reload)
-bun run dev:http      # Dev mode (HTTP)
-bun run test          # Run tests
-bun run devcheck      # Lint + format + typecheck + audit
+```sh
+git clone https://github.com/cyanheads/cdc-health-mcp-server.git
+```
+
+2. **Navigate into the directory:**
+
+```sh
+cd cdc-health-mcp-server
+```
+
+3. **Install dependencies:**
+
+```sh
+bun install
+```
+
+## Configuration
+
+All configuration is validated at startup via Zod schemas in `src/config/server-config.ts`. Key environment variables:
+
+| Variable | Description | Default |
+|:---|:---|:---|
+| `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
+| `MCP_HTTP_PORT` | HTTP server port | `3010` |
+| `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
+| `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
+| `LOGS_DIR` | Directory for log files (Node.js only) | `<project-root>/logs` |
+| `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1` | `in-memory` |
+| `CDC_APP_TOKEN` | Socrata app token for higher rate limits | none |
+| `CDC_BASE_URL` | Base URL for SODA API requests | `https://data.cdc.gov` |
+| `CDC_CATALOG_URL` | Base URL for Socrata Discovery API | `https://api.us.socrata.com/api/catalog/v1` |
+| `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
+
+## Running the server
+
+### Local development
+
+- **Build and run the production version**:
+
+  ```sh
+  # One-time build
+  bun run rebuild
+
+  # Run the built server
+  bun run start:http
+  # or
+  bun run start:stdio
+  ```
+
+- **Run checks and tests**:
+  ```sh
+  bun run devcheck  # Lints, formats, type-checks, and more
+  bun run test      # Runs the test suite
+  ```
+
+## Project structure
+
+| Directory | Purpose |
+|:---|:---|
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Three CDC data tools. |
+| `src/mcp-server/resources` | Resource definitions. Catalog overview and dataset detail. |
+| `src/mcp-server/prompts` | Prompt definitions. Health trend analysis workflow. |
+| `src/services/socrata` | Socrata SODA API service layer — HTTP client, catalog search, metadata, queries. |
+| `src/config` | Server-specific environment variable parsing and validation with Zod. |
+
+## Development guide
+
+See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rules. The short version:
+
+- Handlers throw, framework catches — no `try/catch` in tool logic
+- Use `ctx.log` for logging, `ctx.state` for storage
+- Register new tools and resources in the `createApp()` arrays
+
+## Contributing
+
+Issues and pull requests are welcome. Run checks and tests before submitting:
+
+```sh
+bun run devcheck
+bun run test
 ```
 
 ## License
 
-[Apache-2.0](LICENSE)
+This project is licensed under the Apache 2.0 License. See the [LICENSE](./LICENSE) file for details.

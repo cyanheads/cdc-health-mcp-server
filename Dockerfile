@@ -37,7 +37,7 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
-LABEL org.opencontainers.image.title="cdc-health-statistics-mcp-server"
+LABEL org.opencontainers.image.title="cdc-health-mcp-server"
 LABEL org.opencontainers.image.description="MCP server for discovering and querying CDC public health datasets via the Socrata SODA API."
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/cdc-health-mcp-server"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
@@ -73,7 +73,7 @@ COPY --from=build /usr/src/app/dist ./dist
 # We will use this existing user for enhanced security.
 
 # Create and set permissions for the log directory, assigning ownership to the 'bun' user.
-RUN mkdir -p /var/log/cdc-health-statistics-mcp-server && chown -R bun:bun /var/log/cdc-health-statistics-mcp-server
+RUN mkdir -p /var/log/cdc-health-mcp-server && chown -R bun:bun /var/log/cdc-health-mcp-server
 
 # Switch to the non-root user
 USER bun
@@ -89,7 +89,7 @@ ENV MCP_HTTP_HOST="0.0.0.0"
 ENV MCP_TRANSPORT_TYPE="http"
 ENV MCP_SESSION_MODE="stateless"
 ENV MCP_LOG_LEVEL="info"
-ENV LOGS_DIR="/var/log/cdc-health-statistics-mcp-server"
+ENV LOGS_DIR="/var/log/cdc-health-mcp-server"
 ENV MCP_FORCE_CONSOLE_LOGGING="true"
 
 # Expose the port the server listens on
