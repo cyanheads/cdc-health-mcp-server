@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1] - 2026-04-03
+
+Support non-string Socrata column values (GeoJSON, numbers) in query results.
+
+### Fixed
+
+- `cdc_query_dataset` output schema changed from `z.string()` to `z.unknown()` for row field values — geo columns return GeoJSON objects, not strings
+- Format function now handles non-string row values: objects are JSON-stringified, nulls render as empty, newlines are collapsed to spaces
+- `QueryResult.rows` type broadened from `Record<string, string>[]` to `Record<string, unknown>[]` in types and service
+- Offset parameter now always included in catalog and data query requests (was omitted when `0`, causing unexpected API behavior)
+
 ## [0.4.0] - 2026-04-03
 
 README rewrite, Dockerfile cleanup, binary rename, and project metadata improvements.
