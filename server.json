@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads/cdc-health-mcp-server",
+  "name": "io.github.cyanheads/cdc-health-mcp-server",
   "description": "MCP server for discovering and querying CDC public health datasets via the Socrata SODA API.",
   "repository": {
     "url": "https://github.com/cyanheads/cdc-health-mcp-server",
     "source": "github"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "cdc-health-statistics-mcp-server",
+      "identifier": "@cyanheads/cdc-health-mcp-server",
       "runtimeHint": "node",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "packageArguments": [
         {
           "type": "positional",
@@ -25,6 +25,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "CDC_APP_TOKEN",
+          "description": "Socrata app token for higher rate limits.",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -40,9 +46,9 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "cdc-health-statistics-mcp-server",
+      "identifier": "@cyanheads/cdc-health-mcp-server",
       "runtimeHint": "node",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "packageArguments": [
         {
           "type": "positional",
@@ -54,6 +60,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "CDC_APP_TOKEN",
+          "description": "Socrata app token for higher rate limits.",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",
