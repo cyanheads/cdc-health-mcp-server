@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.1] - 2026-04-03
+
+Field-test-driven fixes for data accuracy, discovery relevance, and developer guidance.
+
+### Fixed
+
+- `rowCount` now reads from column `cachedContents.count` instead of missing `rowCount` field
+- `updatedAt` now derives from `rowsUpdatedAt` epoch timestamp instead of missing `dataUpdatedAt`
+- Query result `query` string is now URL-decoded for readability
+
+### Changed
+
+- Discovery API requests include `search_context=data.cdc.gov` for more relevant results
+- Removed overly strict validation requiring at least one of `search`/`where`/`select` in `cdc_query_dataset` — bare dataset queries are now allowed
+- Empty-results messages for discover and query tools now include actionable troubleshooting suggestions
+
+### Added
+
+- `list()` on `cdc://datasets` and `cdc://datasets/{datasetId}` resources for MCP resource discovery
+
 ## [0.1.0] - 2026-04-03
 
 Initial release. MCP server for discovering and querying CDC public health datasets via the Socrata SODA API.
