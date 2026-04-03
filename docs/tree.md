@@ -1,0 +1,145 @@
+# cdc-health-mcp-server - Directory Structure
+
+Generated on: 2026-04-03 20:19:49
+
+```text
+cdc-health-mcp-server/
+├── .claude/
+├── .github/
+│   └── ISSUE_TEMPLATE/
+│       ├── bug_report.yml
+│       ├── config.yml
+│       └── feature_request.yml
+├── .vscode/
+│   ├── extensions.json
+│   └── settings.json
+├── claude-plans/
+├── docs/
+│   └── design.md
+├── scripts/
+│   ├── build.ts
+│   ├── clean.ts
+│   ├── devcheck.ts
+│   ├── lint-mcp.ts
+│   └── tree.ts
+├── skills/
+│   ├── add-prompt/
+│   │   └── SKILL.md
+│   ├── add-resource/
+│   │   └── SKILL.md
+│   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-test/
+│   │   └── SKILL.md
+│   ├── add-tool/
+│   │   └── SKILL.md
+│   ├── api-auth/
+│   │   └── SKILL.md
+│   ├── api-config/
+│   │   └── SKILL.md
+│   ├── api-context/
+│   │   └── SKILL.md
+│   ├── api-errors/
+│   │   └── SKILL.md
+│   ├── api-services/
+│   │   ├── references/
+│   │   │   ├── graph.md
+│   │   │   ├── llm.md
+│   │   │   └── speech.md
+│   │   └── SKILL.md
+│   ├── api-testing/
+│   │   └── SKILL.md
+│   ├── api-utils/
+│   │   ├── references/
+│   │   │   ├── formatting.md
+│   │   │   ├── parsing.md
+│   │   │   └── security.md
+│   │   └── SKILL.md
+│   ├── api-workers/
+│   │   └── SKILL.md
+│   ├── design-mcp-server/
+│   │   └── SKILL.md
+│   ├── devcheck/
+│   │   └── SKILL.md
+│   ├── field-test/
+│   │   └── SKILL.md
+│   ├── maintenance/
+│   │   └── SKILL.md
+│   ├── migrate-mcp-ts-template/
+│   │   └── SKILL.md
+│   ├── polish-docs-meta/
+│   │   ├── references/
+│   │   │   ├── agent-protocol.md
+│   │   │   ├── package-meta.md
+│   │   │   ├── readme.md
+│   │   │   └── server-json.md
+│   │   └── SKILL.md
+│   ├── report-issue-framework/
+│   │   └── SKILL.md
+│   ├── report-issue-local/
+│   │   └── SKILL.md
+│   └── setup/
+│       └── SKILL.md
+├── src/
+│   ├── config/
+│   │   └── server-config.ts
+│   ├── mcp-server/
+│   │   ├── prompts/
+│   │   │   └── definitions/
+│   │   │       └── analyze-health-trend.prompt.ts
+│   │   ├── resources/
+│   │   │   └── definitions/
+│   │   │       ├── dataset-detail.resource.ts
+│   │   │       └── datasets.resource.ts
+│   │   └── tools/
+│   │       └── definitions/
+│   │           ├── discover-datasets.tool.ts
+│   │           ├── get-dataset-schema.tool.ts
+│   │           └── query-dataset.tool.ts
+│   ├── services/
+│   │   └── socrata/
+│   │       ├── socrata-service.ts
+│   │       └── types.ts
+│   └── index.ts
+├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
+│   ├── mcp-server/
+│   │   ├── prompts/
+│   │   │   └── definitions/
+│   │   │       └── analyze-health-trend.prompt.test.ts
+│   │   ├── resources/
+│   │   │   └── definitions/
+│   │   │       ├── dataset-detail.resource.test.ts
+│   │   │       └── datasets.resource.test.ts
+│   │   └── tools/
+│   │       └── definitions/
+│   │           ├── discover-datasets.tool.test.ts
+│   │           ├── get-dataset-schema.tool.test.ts
+│   │           └── query-dataset.tool.test.ts
+│   ├── prompts/
+│   ├── resources/
+│   ├── services/
+│   │   └── socrata/
+│   │       └── socrata-service.test.ts
+│   └── tools/
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── biome.json
+├── bun.lock
+├── bunfig.toml
+├── CHANGELOG.md
+├── CLAUDE.md
+├── devcheck.config.json
+├── Dockerfile
+├── LICENSE
+├── package.json
+├── README.md
+├── server.json
+├── tsconfig.build.json
+├── tsconfig.json
+└── vitest.config.ts
+```
+
+_Note: This tree excludes files and directories matched by .gitignore and default patterns._
