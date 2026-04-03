@@ -8,6 +8,50 @@
 
 ---
 
+## Domain
+
+Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) via the [Socrata SODA API v2.1](https://dev.socrata.com/). No auth required — optional app token for higher rate limits.
+
+**Core workflow:** discover → inspect schema → query. The catalog is heterogeneous (disease surveillance, mortality, behavioral risk, vaccinations, environmental, injury, etc.), so the server provides a discovery-first approach rather than hard-coding dataset knowledge.
+
+### API Surface
+
+**Design doc:** `docs/design.md` — full parameter tables, error modes, API endpoints, and implementation notes.
+
+| Definition | Type | Purpose |
+|:-----------|:-----|:--------|
+| `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point for all queries. |
+| `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. |
+| `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. |
+| `cdc://datasets` | resource | Paginated dataset category listing for orientation. |
+| `cdc://datasets/{datasetId}` | resource | Dataset metadata + schema (equivalent to schema tool). |
+| `analyze_health_trend` | prompt | Guided workflow: discover → inspect → query → compare → synthesize. |
+
+### Socrata API Endpoints
+
+| Endpoint | Purpose |
+|:---------|:--------|
+| `GET https://api.us.socrata.com/api/catalog/v1?domains=data.cdc.gov` | Discovery/catalog search |
+| `GET https://data.cdc.gov/api/views/{datasetId}.json` | Dataset metadata + schema |
+| `GET https://data.cdc.gov/resource/{datasetId}.json?$select=...&$where=...` | SoQL data queries |
+
+### Quirks
+
+- All SODA v2.1 response values are strings (including numbers/dates) — parse based on column type metadata.
+- Dataset IDs are four-by-four format: `[a-z0-9]{4}-[a-z0-9]{4}` (e.g., `bi63-dtpu`).
+- Year columns vary per dataset — some are numbers, some text. `where` clause must match the actual type.
+- Some datasets suppress small counts for privacy (missing values or footnote markers, not zeros).
+- No rate-limit headers returned — implement conservative request spacing (200-500ms).
+
+### Server Config
+
+| Env Var | Required | Default | Description |
+|:--------|:---------|:--------|:------------|
+| `CDC_APP_TOKEN` | No | — | Socrata app token for higher rate limits |
+| `CDC_BASE_URL` | No | `https://data.cdc.gov` | Base URL for SODA API requests |
+
+---
+
 ## What's Next?
 
 When the user asks what to do next, what's left, or needs direction, suggest relevant options based on the current project state:
