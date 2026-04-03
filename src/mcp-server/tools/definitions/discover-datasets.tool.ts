@@ -39,8 +39,9 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .number()
       .int()
       .min(0)
+      .max(9999)
       .default(0)
-      .describe('Pagination offset for browsing beyond first page.'),
+      .describe('Pagination offset for browsing beyond first page (max 9999).'),
   }),
 
   output: z.object({
@@ -64,6 +65,13 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       )
       .describe('Matching datasets.'),
     totalCount: z.number().describe('Total matching datasets (for pagination).'),
+    appliedFilters: z
+      .object({
+        query: z.string().optional().describe('Search query used.'),
+        category: z.string().optional().describe('Category filter used.'),
+        tags: z.array(z.string()).optional().describe('Tag filters used.'),
+      })
+      .describe('Filters applied to this search (echoed for diagnostics).'),
   }),
 
   async handler(input, ctx) {
@@ -86,15 +94,29 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       totalCount: result.totalCount,
     });
 
-    return result;
+    return {
+      ...result,
+      appliedFilters: {
+        ...(input.query ? { query: input.query } : {}),
+        ...(input.category ? { category: input.category } : {}),
+        ...(input.tags?.length ? { tags: input.tags } : {}),
+      },
+    };
   },
 
   format: (result) => {
     if (result.datasets.length === 0) {
+      const filters = result.appliedFilters;
+      const parts: string[] = [];
+      if (filters.query) parts.push(`query "${filters.query}"`);
+      if (filters.category) parts.push(`category "${filters.category}"`);
+      if (filters.tags?.length) parts.push(`tags [${filters.tags.join(', ')}]`);
+      const criteria = parts.length > 0 ? ` for ${parts.join(', ')}` : '';
+
       return [
         {
           type: 'text',
-          text: 'No datasets found. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.',
+          text: `No datasets found${criteria}. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.`,
         },
       ];
     }

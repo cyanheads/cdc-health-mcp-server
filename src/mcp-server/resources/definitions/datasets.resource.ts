@@ -9,7 +9,7 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 export const datasetsResource = resource('cdc://datasets', {
   name: 'CDC Dataset Catalog',
   description:
-    'Paginated list of CDC datasets with names, categories, and update timestamps. Provides an overview of the CDC data landscape for orientation.',
+    'Top 50 CDC datasets by popularity with names, categories, and update timestamps. Provides an overview of the CDC data landscape for orientation. Use cdc_discover_datasets for full catalog search with filtering and pagination.',
   mimeType: 'application/json',
 
   list: async () => ({

@@ -112,10 +112,14 @@ describe('SocrataService', () => {
     const metadataResponse = {
       name: 'Test Dataset',
       description: 'A test dataset',
-      rowCount: 50000,
-      dataUpdatedAt: '2024-06-01T00:00:00.000Z',
+      rowsUpdatedAt: 1717200000,
       columns: [
-        { fieldName: 'state', dataTypeName: 'text', description: 'US state name' },
+        {
+          fieldName: 'state',
+          dataTypeName: 'text',
+          description: 'US state name',
+          cachedContents: { count: '50000' },
+        },
         { fieldName: 'year', dataTypeName: 'number', description: 'Data year' },
       ],
     };
@@ -128,7 +132,7 @@ describe('SocrataService', () => {
         name: 'Test Dataset',
         description: 'A test dataset',
         rowCount: 50000,
-        updatedAt: '2024-06-01T00:00:00.000Z',
+        updatedAt: new Date(1717200000 * 1000).toISOString(),
       });
       expect(result.columns).toHaveLength(2);
       expect(result.columns[0]).toMatchObject({
@@ -180,9 +184,9 @@ describe('SocrataService', () => {
 
       expect(result.rows).toHaveLength(2);
       expect(result.rowCount).toBe(2);
-      expect(result.query).toContain('%24where=state');
-      expect(result.query).toContain('%24select=state');
-      expect(result.query).toContain('%24order=deaths');
+      expect(result.query).toContain('$where=state');
+      expect(result.query).toContain('$select=state');
+      expect(result.query).toContain('$order=deaths');
 
       const url = spy.mock.calls[0][0] as string;
       expect(url).toContain('/resource/bi63-dtpu.json');

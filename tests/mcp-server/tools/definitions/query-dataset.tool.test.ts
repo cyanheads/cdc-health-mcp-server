@@ -74,12 +74,12 @@ describe('cdc_query_dataset', () => {
     );
   });
 
-  it('throws when no search, where, or select provided', async () => {
+  it('allows query with no filters (returns all rows)', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=1000' });
     const ctx = createMockContext();
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu' });
-    await expect(queryDataset.handler(input, ctx)).rejects.toThrow(
-      /At least one of search, where, or select/,
-    );
+    const result = await queryDataset.handler(input, ctx);
+    expect(result.rowCount).toBe(0);
   });
 
   it('rejects invalid dataset ID in schema', () => {
@@ -112,7 +112,7 @@ describe('cdc_query_dataset', () => {
     it('renders empty-state message', () => {
       const blocks = queryDataset.format!({ rows: [], rowCount: 0, query: '$where=x' });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No rows returned');
+      expect(text).toContain('No rows matched the query');
       expect(text).toContain('$where=x');
     });
 

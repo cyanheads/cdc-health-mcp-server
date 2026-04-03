@@ -14,7 +14,7 @@ vi.mock('@/services/socrata/socrata-service.js', () => ({
   getSocrataService: () => ({ discover: mockDiscover }),
 }));
 
-const sampleResult: DiscoverResult = {
+const sampleServiceResult: DiscoverResult = {
   datasets: [
     {
       id: 'bi63-dtpu',
@@ -31,13 +31,18 @@ const sampleResult: DiscoverResult = {
   totalCount: 1,
 };
 
+const sampleResult = {
+  ...sampleServiceResult,
+  appliedFilters: { query: 'diabetes' },
+};
+
 describe('cdc_discover_datasets', () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
 
   it('returns datasets for a valid query', async () => {
-    mockDiscover.mockResolvedValue(sampleResult);
+    mockDiscover.mockResolvedValue(sampleServiceResult);
     const ctx = createMockContext();
     const input = discoverDatasets.input.parse({ query: 'diabetes' });
     const result = await discoverDatasets.handler(input, ctx);
@@ -45,6 +50,7 @@ describe('cdc_discover_datasets', () => {
     expect(result.datasets).toHaveLength(1);
     expect(result.totalCount).toBe(1);
     expect(result.datasets[0].id).toBe('bi63-dtpu');
+    expect(result.appliedFilters).toEqual({ query: 'diabetes' });
   });
 
   it('passes all options to the service', async () => {
@@ -94,8 +100,23 @@ describe('cdc_discover_datasets', () => {
       expect(text).toContain('state, year, deaths');
     });
 
-    it('renders empty-state message', () => {
-      const blocks = discoverDatasets.format!({ datasets: [], totalCount: 0 });
+    it('renders empty-state message with criteria echo', () => {
+      const blocks = discoverDatasets.format!({
+        datasets: [],
+        totalCount: 0,
+        appliedFilters: { query: 'nonexistent' },
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('No datasets found');
+      expect(text).toContain('nonexistent');
+    });
+
+    it('renders empty-state message without filters', () => {
+      const blocks = discoverDatasets.format!({
+        datasets: [],
+        totalCount: 0,
+        appliedFilters: {},
+      });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No datasets found');
     });

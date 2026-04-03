@@ -140,6 +140,28 @@ export class SocrataService {
     };
   }
 
+  private formatBadRequestError(body: string): string {
+    try {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      const code = parsed.errorCode as string | undefined;
+      const data = parsed.data as Record<string, unknown> | undefined;
+
+      if (code === 'query.soql.no-such-column') {
+        const col = data?.column ?? 'unknown';
+        return `No such column "${col}". Use cdc_get_dataset_schema to see available columns for this dataset.`;
+      }
+      if (code === 'query.soql.type-mismatch') {
+        return `SoQL type mismatch: ${(parsed.message as string)?.split(';')[1]?.trim() ?? 'check column types'}. Use cdc_get_dataset_schema to verify column data types.`;
+      }
+
+      const msg = parsed.message ?? parsed.error;
+      if (typeof msg === 'string') return `Socrata query error: ${msg.slice(0, 300)}`;
+    } catch {
+      // Body wasn't JSON — fall through
+    }
+    return `Socrata API error 400: ${body.slice(0, 300)}`;
+  }
+
   private validateDatasetId(datasetId: string): void {
     if (!DATASET_ID_PATTERN.test(datasetId)) {
       throw new Error(
@@ -171,6 +193,9 @@ export class SocrataService {
         throw new Error(
           'Rate limited by Socrata API (429). Retry after a brief delay. Consider setting CDC_APP_TOKEN for higher limits.',
         );
+      }
+      if (response.status === 400) {
+        throw new Error(this.formatBadRequestError(body));
       }
       throw new Error(`Socrata API error ${response.status}: ${body.slice(0, 500)}`);
     }
