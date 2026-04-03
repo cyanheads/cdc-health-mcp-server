@@ -1,0 +1,31 @@
+/**
+ * @fileoverview Resource listing all CDC dataset categories with counts.
+ * @module mcp-server/resources/definitions/datasets
+ */
+
+import { resource } from '@cyanheads/mcp-ts-core';
+import { getSocrataService } from '@/services/socrata/socrata-service.js';
+
+export const datasetsResource = resource('cdc://datasets', {
+  name: 'CDC Dataset Catalog',
+  description:
+    'Paginated list of CDC datasets with names, categories, and update timestamps. Provides an overview of the CDC data landscape for orientation.',
+  mimeType: 'application/json',
+
+  async handler(_params, ctx) {
+    const service = getSocrataService();
+    const result = await service.discover({ limit: 50 }, ctx.signal);
+
+    ctx.log.info('Datasets resource accessed', { totalCount: result.totalCount });
+
+    return {
+      datasets: result.datasets.map((d) => ({
+        id: d.id,
+        name: d.name,
+        category: d.category,
+        updatedAt: d.updatedAt,
+      })),
+      totalCount: result.totalCount,
+    };
+  },
+});
