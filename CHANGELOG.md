@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0] - 2026-04-03
+
+Packaging overhaul, npm scope rename, and project metadata hardening.
+
+### Changed
+
+- **npm package renamed** from `cdc-health-statistics-mcp-server` to `@cyanheads/cdc-health-mcp-server`
+- Server identity updated to `io.github.cyanheads/cdc-health-mcp-server` in server.json
+- Added `mcpName` field to package.json for MCP registry identification
+- Dockerfile now includes OCI image description and source URL labels
+- `.env.example` updated with CDC-specific environment variables
+- CLAUDE.md agent protocol updated with CDC-specific code patterns, naming examples, and config reference
+
+### Added
+
+- `LICENSE` file (Apache 2.0)
+- `bunfig.toml` for Bun runtime configuration
+- `docs/tree.md` directory structure documentation
+- `CDC_APP_TOKEN` environment variable in server.json package definitions
+- `CDC_CATALOG_URL` documented in CLAUDE.md server config table
+- `author`, `homepage`, `bugs`, `packageManager` fields in package.json
+
 ## [0.2.0] - 2026-04-03
 
 Diagnostics echo, structured Socrata error messages, and discovery refinements.

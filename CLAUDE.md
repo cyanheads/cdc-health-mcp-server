@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-statistics-mcp-server
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -23,7 +23,7 @@ Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) via th
 | `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point for all queries. |
 | `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. |
 | `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. |
-| `cdc://datasets` | resource | Paginated dataset category listing for orientation. |
+| `cdc://datasets` | resource | Top 50 datasets by popularity for orientation. |
 | `cdc://datasets/{datasetId}` | resource | Dataset metadata + schema (equivalent to schema tool). |
 | `analyze_health_trend` | prompt | Guided workflow: discover → inspect → query → compare → synthesize. |
 
@@ -49,6 +49,7 @@ Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) via th
 |:--------|:---------|:--------|:------------|
 | `CDC_APP_TOKEN` | No | — | Socrata app token for higher rate limits |
 | `CDC_BASE_URL` | No | `https://data.cdc.gov` | Base URL for SODA API requests |
+| `CDC_CATALOG_URL` | No | `https://api.us.socrata.com/api/catalog/v1` | Base URL for Socrata Discovery API |
 
 ---
 
@@ -86,33 +87,33 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
+export const getDatasetSchema = tool('cdc_get_dataset_schema', {
+  description: 'Fetch the full column schema for a CDC dataset.',
   annotations: { readOnlyHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    datasetId: z.string().regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/).describe('Four-by-four dataset identifier.'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    name: z.string().describe('Dataset name.'),
+    columns: z.array(z.object({
+      fieldName: z.string().describe('Column field name.'),
+      dataType: z.string().describe('Column data type.'),
+    })).describe('Dataset columns.'),
   }),
-  auth: ['inventory:read'],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const metadata = await getSocrataService().getMetadata(input.datasetId, ctx.signal);
+    ctx.log.info('Schema retrieved', { datasetId: input.datasetId });
+    return metadata;
   },
 
   // format() populates content[] — the only field most LLM clients forward to
   // the model. Render all data the LLM needs, not just a count or title.
   format: (result) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: [`## ${result.name}`, ...result.columns.map(c => `- \`${c.fieldName}\` (${c.dataType})`)].join('\n'),
   }],
 });
 ```
@@ -121,15 +122,18 @@ export const searchItems = tool('search_items', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
+import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
+export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
+  description: 'Dataset metadata and column schema for a specific CDC dataset.',
+  mimeType: 'application/json',
+  params: z.object({
+    datasetId: z.string().regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/).describe('Four-by-four dataset identifier.'),
+  }),
   async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw new Error(`Item ${params.itemId} not found`);
-    return item;
+    const metadata = await getSocrataService().getMetadata(params.datasetId, ctx.signal);
+    ctx.log.info('Dataset detail accessed', { datasetId: params.datasetId });
+    return metadata;
   },
 });
 ```
@@ -139,14 +143,14 @@ export const itemData = resource('inventory://{itemId}', {
 ```ts
 import { prompt, z } from '@cyanheads/mcp-ts-core';
 
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
+export const analyzeHealthTrend = prompt('analyze_health_trend', {
+  description: 'Guided workflow for investigating a public health question across CDC data.',
   args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
+    topic: z.string().describe('Health topic to investigate.'),
+    timeRange: z.string().optional().describe('Period of interest (e.g., "2015-2023").'),
   }),
   generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
+    { role: 'user', content: { type: 'text', text: `Investigate: ${args.topic}${args.timeRange ? ` (${args.timeRange})` : ''}` } },
   ],
 });
 ```
@@ -155,15 +159,19 @@ export const reviewCode = prompt('review_code', {
 
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
+import { z } from '@cyanheads/mcp-ts-core';
+
 const ServerConfigSchema = z.object({
-  myApiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
+  appToken: z.string().optional().describe('Socrata app token for higher rate limits'),
+  baseUrl: z.string().url().default('https://data.cdc.gov').describe('Base URL for SODA API requests'),
+  catalogUrl: z.string().url().default('https://api.us.socrata.com/api/catalog/v1').describe('Discovery API URL'),
 });
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
   _config ??= ServerConfigSchema.parse({
-    myApiKey: process.env.MY_API_KEY,
-    maxResults: process.env.MY_MAX_RESULTS,
+    appToken: process.env.CDC_APP_TOKEN,
+    baseUrl: process.env.CDC_BASE_URL,
+    catalogUrl: process.env.CDC_CATALOG_URL,
   });
   return _config;
 }
@@ -237,10 +245,10 @@ src/
 
 | What | Convention | Example |
 |:-----|:-----------|:--------|
-| Files | kebab-case with suffix | `search-docs.tool.ts` |
-| Tool/resource/prompt names | snake_case | `search_docs` |
-| Directories | kebab-case | `src/services/doc-search/` |
-| Descriptions | Single string or template literal, no `+` concatenation | `'Search items by query and filter.'` |
+| Files | kebab-case with suffix | `discover-datasets.tool.ts` |
+| Tool/resource/prompt names | snake_case | `cdc_discover_datasets` |
+| Directories | kebab-case | `src/services/socrata/` |
+| Descriptions | Single string or template literal, no `+` concatenation | `'Search the CDC dataset catalog by keyword.'` |
 
 ---
 
@@ -306,7 +314,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 // Server's own code — via path alias
-import { getMyService } from '@/services/my-domain/my-service.js';
+import { getSocrataService } from '@/services/socrata/socrata-service.js';
 ```
 
 ---
