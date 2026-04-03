@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0] - 2026-04-03
+
+README rewrite, Dockerfile cleanup, binary rename, and project metadata improvements.
+
+### Changed
+
+- README rewritten with expanded tool documentation, Docker and Streamable HTTP configuration examples, project structure overview, and development guide
+- Dockerfile image title and log directory renamed from `cdc-health-statistics-mcp-server` to `cdc-health-mcp-server`
+- Binary entry point renamed from `cdc-health-statistics-mcp-server` to `cdc-health-mcp-server` in package.json
+
+### Added
+
+- Author details, funding links (GitHub Sponsors, Buy Me a Coffee), and Bun engine requirement (`>=1.3.2`) in package.json
+- `@vitest/coverage-istanbul` dev dependency for test coverage reporting
+- `@vitest/coverage-istanbul` added to devcheck dependency ignore list
+
 ## [0.3.0] - 2026-04-03
 
 Packaging overhaul, npm scope rename, and project metadata hardening.
