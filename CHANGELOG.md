@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0] - 2026-04-03
+
+Diagnostics echo, structured Socrata error messages, and discovery refinements.
+
+### Added
+
+- `appliedFilters` field in `cdc_discover_datasets` output — echoes query, category, and tag filters for diagnostics
+- Structured 400 error handling in Socrata service — surfaces column-not-found and type-mismatch errors with guidance to check schema
+- Offset cap (max 9999) on `cdc_discover_datasets` to prevent runaway pagination
+
+### Changed
+
+- `cdc://datasets` resource description clarified as top 50 by popularity with pointer to `cdc_discover_datasets` for full catalog search
+- Empty-results message in `cdc_discover_datasets` now includes the applied filter criteria
+
 ## [0.1.1] - 2026-04-03
 
 Field-test-driven fixes for data accuracy, discovery relevance, and developer guidance.

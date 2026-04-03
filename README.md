@@ -16,7 +16,7 @@ Built on [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-t
 | `cdc_discover_datasets` | Tool | Search the catalog by keyword, category, or tag |
 | `cdc_get_dataset_schema` | Tool | Fetch column schema, row count, and metadata for a dataset |
 | `cdc_query_dataset` | Tool | Execute SoQL queries — filter, aggregate, sort, full-text search |
-| `cdc://datasets` | Resource | Paginated dataset catalog listing |
+| `cdc://datasets` | Resource | Top 50 datasets by popularity for orientation |
 | `cdc://datasets/{datasetId}` | Resource | Individual dataset metadata and schema |
 | `analyze_health_trend` | Prompt | Guided workflow: discover, inspect, query, compare, synthesize |
 

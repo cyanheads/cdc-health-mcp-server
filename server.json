@@ -6,14 +6,14 @@
     "url": "https://github.com/cyanheads/cdc-health-mcp-server",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "cdc-health-statistics-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "packageArguments": [
         {
           "type": "positional",
@@ -42,7 +42,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "cdc-health-statistics-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "packageArguments": [
         {
           "type": "positional",
