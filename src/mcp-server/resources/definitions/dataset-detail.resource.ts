@@ -11,6 +11,22 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   description:
     'Dataset metadata and column schema for a specific CDC dataset. Equivalent to cdc_get_dataset_schema — useful for injecting dataset context directly.',
   mimeType: 'application/json',
+
+  list: async () => ({
+    resources: [
+      {
+        uri: 'cdc://datasets/bi63-dtpu',
+        name: 'NCHS - Leading Causes of Death: United States',
+        mimeType: 'application/json',
+      },
+      {
+        uri: 'cdc://datasets/9bhg-hcku',
+        name: 'Provisional COVID-19 Deaths by Sex and Age',
+        mimeType: 'application/json',
+      },
+    ],
+  }),
+
   params: z.object({
     datasetId: z
       .string()

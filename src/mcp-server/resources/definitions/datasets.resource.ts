@@ -12,6 +12,16 @@ export const datasetsResource = resource('cdc://datasets', {
     'Paginated list of CDC datasets with names, categories, and update timestamps. Provides an overview of the CDC data landscape for orientation.',
   mimeType: 'application/json',
 
+  list: async () => ({
+    resources: [
+      {
+        uri: 'cdc://datasets',
+        name: 'CDC Dataset Catalog',
+        mimeType: 'application/json',
+      },
+    ],
+  }),
+
   async handler(_params, ctx) {
     const service = getSocrataService();
     const result = await service.discover({ limit: 50 }, ctx.signal);

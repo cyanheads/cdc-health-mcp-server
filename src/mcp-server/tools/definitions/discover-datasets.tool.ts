@@ -94,7 +94,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       return [
         {
           type: 'text',
-          text: 'No datasets found. Try broadening your search terms or removing filters.',
+          text: 'No datasets found. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.',
         },
       ];
     }

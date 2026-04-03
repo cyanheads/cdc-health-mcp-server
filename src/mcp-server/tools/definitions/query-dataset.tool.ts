@@ -65,10 +65,6 @@ export const queryDataset = tool('cdc_query_dataset', {
   }),
 
   async handler(input, ctx) {
-    if (!input.search && !input.where && !input.select) {
-      throw new Error('At least one of search, where, or select must be provided.');
-    }
-
     const service = getSocrataService();
     const result = await service.query(
       {
@@ -96,7 +92,21 @@ export const queryDataset = tool('cdc_query_dataset', {
 
   format: (result) => {
     if (result.rows.length === 0 || !result.rows[0]) {
-      return [{ type: 'text', text: `No rows returned.\n\n**Query:** \`${result.query}\`` }];
+      return [
+        {
+          type: 'text',
+          text: [
+            'No rows matched the query.',
+            '',
+            `**Query:** \`${result.query}\``,
+            '',
+            'Suggestions:',
+            '- Verify string values are spelled exactly as stored (check with a GROUP BY enumeration)',
+            '- Check that numeric/date filters match the column type from the schema',
+            '- Broaden the WHERE clause or remove filters to confirm data exists',
+          ].join('\n'),
+        },
+      ];
     }
 
     const columns = Object.keys(result.rows[0]);

@@ -46,7 +46,10 @@ export class SocrataService {
    */
   async discover(options: DiscoverOptions, signal?: AbortSignal): Promise<DiscoverResult> {
     const config = getServerConfig();
-    const params = new URLSearchParams({ domains: 'data.cdc.gov' });
+    const params = new URLSearchParams({
+      domains: 'data.cdc.gov',
+      search_context: 'data.cdc.gov',
+    });
 
     if (options.query) params.set('q', options.query);
     if (options.category) params.set('categories', options.category);
@@ -96,11 +99,15 @@ export class SocrataService {
       }),
     );
 
+    const rawColumns = (data.columns as Record<string, unknown>[]) ?? [];
+    const firstColCache = rawColumns[0]?.cachedContents as Record<string, unknown> | undefined;
+    const rowsUpdatedAt = data.rowsUpdatedAt as number | undefined;
+
     return {
       name: (data.name as string) ?? '',
       description: (data.description as string) ?? '',
-      rowCount: (data.rowCount as number) ?? 0,
-      updatedAt: (data.dataUpdatedAt as string) ?? '',
+      rowCount: Number(firstColCache?.count) || 0,
+      updatedAt: rowsUpdatedAt ? new Date(rowsUpdatedAt * 1000).toISOString() : '',
       columns,
     };
   }
@@ -129,7 +136,7 @@ export class SocrataService {
     return {
       rows,
       rowCount: rows.length,
-      query: queryString,
+      query: decodeURIComponent(queryString),
     };
   }
 
