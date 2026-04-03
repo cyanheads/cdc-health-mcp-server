@@ -57,7 +57,7 @@ export class SocrataService {
       for (const tag of options.tags) params.append('tags', tag);
     }
     params.set('limit', String(options.limit ?? 10));
-    if (options.offset) params.set('offset', String(options.offset));
+    params.set('offset', String(options.offset ?? 0));
 
     const url = `${config.catalogUrl}?${params}`;
     const data = await this.fetchJson(url, signal);
@@ -127,11 +127,11 @@ export class SocrataService {
     if (options.having) params.set('$having', options.having);
     if (options.order) params.set('$order', options.order);
     params.set('$limit', String(options.limit ?? 1000));
-    if (options.offset) params.set('$offset', String(options.offset));
+    params.set('$offset', String(options.offset ?? 0));
 
     const queryString = params.toString();
     const url = `${config.baseUrl}/resource/${options.datasetId}.json?${queryString}`;
-    const rows = (await this.fetchJson(url, signal)) as unknown as Record<string, string>[];
+    const rows = (await this.fetchJson(url, signal)) as unknown as Record<string, unknown>[];
 
     return {
       rows,

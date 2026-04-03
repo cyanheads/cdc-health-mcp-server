@@ -42,5 +42,5 @@ export interface DiscoverResult {
 export interface QueryResult {
   query: string;
   rowCount: number;
-  rows: Record<string, string>[];
+  rows: Record<string, unknown>[];
 }

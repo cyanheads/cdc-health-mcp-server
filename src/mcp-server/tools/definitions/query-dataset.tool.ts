@@ -56,9 +56,9 @@ export const queryDataset = tool('cdc_query_dataset', {
 
   output: z.object({
     rows: z
-      .array(z.record(z.string(), z.string().describe('Field value')))
+      .array(z.record(z.string(), z.unknown()))
       .describe(
-        'Result rows with requested fields. All values are strings — parse based on column type from schema.',
+        'Result rows with requested fields. Most values are strings (including numbers/dates); geo columns return GeoJSON objects.',
       ),
     rowCount: z.number().describe('Number of rows returned in this response.'),
     query: z.string().describe('Assembled SoQL query string (for debugging).'),
@@ -119,7 +119,11 @@ export const queryDataset = tool('cdc_query_dataset', {
 
     const displayRows = result.rows.slice(0, 50);
     for (const row of displayRows) {
-      const cells = columns.map((c) => (row[c] ?? '').replaceAll('|', '\\|'));
+      const cells = columns.map((c) => {
+        const v = row[c];
+        const s = typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v);
+        return s.replaceAll('|', '\\|').replaceAll('\n', ' ');
+      });
       lines.push(`| ${cells.join(' | ')} |`);
     }
 
