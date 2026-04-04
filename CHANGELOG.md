@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.3] - 2026-04-04
+
+Richer discovery output, simplified tool handlers, and service cleanup.
+
+### Changed
+
+- `cdc_discover_datasets` format output now shows page view counts, column types alongside column names, and filter criteria echo in the results header
+- Tool handlers for `cdc_discover_datasets` and `cdc_query_dataset` pass input directly to service methods instead of destructuring
+- Removed duplicate column array parsing in `SocrataService.getMetadata`
+
+### Fixed
+
+- `datasets.resource.ts` JSDoc corrected to match actual behavior (top 50 by popularity, not categories with counts)
+
 ## [0.4.2] - 2026-04-04
 
 Added public hosted instance, updated dev dependencies.
