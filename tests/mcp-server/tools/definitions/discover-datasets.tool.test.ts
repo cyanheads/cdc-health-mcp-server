@@ -97,7 +97,7 @@ describe('cdc_discover_datasets', () => {
       expect(text).toContain('bi63-dtpu');
       expect(text).toContain('Diabetes Mortality');
       expect(text).toContain('NCHS');
-      expect(text).toContain('state, year, deaths');
+      expect(text).toContain('`state` (text), `year` (number), `deaths` (number)');
     });
 
     it('renders empty-state message with criteria echo', () => {
@@ -129,13 +129,14 @@ describe('cdc_discover_datasets', () => {
       expect(text).toContain('...');
     });
 
-    it('shows column overflow count', () => {
+    it('renders all columns without truncation', () => {
       const manyColumns = { ...sampleResult };
       const cols = Array.from({ length: 15 }, (_, i) => `col_${i}`);
       manyColumns.datasets = [{ ...sampleResult.datasets[0], columnNames: cols }];
       const blocks = discoverDatasets.format!(manyColumns);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('+5 more');
+      expect(text).toContain('`col_0` (text)');
+      expect(text).toContain('`col_14` (unknown)');
     });
   });
 });

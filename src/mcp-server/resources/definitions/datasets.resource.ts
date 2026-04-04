@@ -1,5 +1,5 @@
 /**
- * @fileoverview Resource listing all CDC dataset categories with counts.
+ * @fileoverview Resource listing the top 50 CDC datasets by popularity for orientation.
  * @module mcp-server/resources/definitions/datasets
  */
 

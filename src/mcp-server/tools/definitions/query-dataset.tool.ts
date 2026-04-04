@@ -66,20 +66,7 @@ export const queryDataset = tool('cdc_query_dataset', {
 
   async handler(input, ctx) {
     const service = getSocrataService();
-    const result = await service.query(
-      {
-        datasetId: input.datasetId,
-        search: input.search,
-        select: input.select,
-        where: input.where,
-        group: input.group,
-        having: input.having,
-        order: input.order,
-        limit: input.limit,
-        offset: input.offset,
-      },
-      ctx.signal,
-    );
+    const result = await service.query(input, ctx.signal);
 
     ctx.log.info('Query executed', {
       datasetId: input.datasetId,

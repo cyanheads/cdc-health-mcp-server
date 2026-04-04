@@ -76,16 +76,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
 
   async handler(input, ctx) {
     const service = getSocrataService();
-    const result = await service.discover(
-      {
-        query: input.query,
-        category: input.category,
-        tags: input.tags,
-        limit: input.limit,
-        offset: input.offset,
-      },
-      ctx.signal,
-    );
+    const result = await service.discover(input, ctx.signal);
 
     ctx.log.info('Dataset discovery completed', {
       query: input.query,
@@ -105,13 +96,14 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
   },
 
   format: (result) => {
+    const filters = result.appliedFilters;
+    const filterParts: string[] = [];
+    if (filters.query) filterParts.push(`query "${filters.query}"`);
+    if (filters.category) filterParts.push(`category "${filters.category}"`);
+    if (filters.tags?.length) filterParts.push(`tags [${filters.tags.join(', ')}]`);
+
     if (result.datasets.length === 0) {
-      const filters = result.appliedFilters;
-      const parts: string[] = [];
-      if (filters.query) parts.push(`query "${filters.query}"`);
-      if (filters.category) parts.push(`category "${filters.category}"`);
-      if (filters.tags?.length) parts.push(`tags [${filters.tags.join(', ')}]`);
-      const criteria = parts.length > 0 ? ` for ${parts.join(', ')}` : '';
+      const criteria = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
 
       return [
         {
@@ -121,18 +113,23 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       ];
     }
 
-    const lines = [`**${result.totalCount} datasets found** (showing ${result.datasets.length})\n`];
+    const filterSuffix = filterParts.length > 0 ? ` — filtered by ${filterParts.join(', ')}` : '';
+
+    const lines = [
+      `**${result.totalCount} datasets found** (showing ${result.datasets.length})${filterSuffix}\n`,
+    ];
     for (const d of result.datasets) {
       lines.push(`### ${d.name}`);
       lines.push(
-        `**ID:** \`${d.id}\` | **Category:** ${d.category || '—'} | **Updated:** ${d.updatedAt}`,
+        `**ID:** \`${d.id}\` | **Category:** ${d.category || '—'} | **Updated:** ${d.updatedAt} | **Views:** ${d.pageViews.toLocaleString()}`,
       );
       if (d.description)
         lines.push(d.description.slice(0, 300) + (d.description.length > 300 ? '...' : ''));
       if (d.tags.length > 0) lines.push(`**Tags:** ${d.tags.join(', ')}`);
-      lines.push(
-        `**Columns:** ${d.columnNames.slice(0, 10).join(', ')}${d.columnNames.length > 10 ? ` (+${d.columnNames.length - 10} more)` : ''}`,
-      );
+      const columns = d.columnNames
+        .map((name, i) => `\`${name}\` (${d.columnTypes[i] ?? 'unknown'})`)
+        .join(', ');
+      lines.push(`**Columns:** ${columns}`);
       lines.push('');
     }
     return [{ type: 'text', text: lines.join('\n') }];

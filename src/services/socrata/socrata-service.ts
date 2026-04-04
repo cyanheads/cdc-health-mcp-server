@@ -91,15 +91,13 @@ export class SocrataService {
     const url = `${config.baseUrl}/api/views/${datasetId}.json`;
     const data = await this.fetchJson(url, signal);
 
-    const columns: DatasetColumn[] = ((data.columns as Record<string, unknown>[]) ?? []).map(
-      (col) => ({
-        fieldName: (col.fieldName as string) ?? '',
-        dataType: (col.dataTypeName as string) ?? '',
-        description: (col.description as string) ?? '',
-      }),
-    );
-
     const rawColumns = (data.columns as Record<string, unknown>[]) ?? [];
+    const columns: DatasetColumn[] = rawColumns.map((col) => ({
+      fieldName: (col.fieldName as string) ?? '',
+      dataType: (col.dataTypeName as string) ?? '',
+      description: (col.description as string) ?? '',
+    }));
+
     const firstColCache = rawColumns[0]?.cachedContents as Record<string, unknown> | undefined;
     const rowsUpdatedAt = data.rowsUpdatedAt as number | undefined;
 
