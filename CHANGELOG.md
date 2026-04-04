@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.2] - 2026-04-04
+
+Added public hosted instance, updated dev dependencies.
+
+### Added
+
+- Public hosted server at `https://cdc.caseyjhand.com/mcp` — documented in README banner and getting started section
+- `remotes` field in server.json pointing to the public Streamable HTTP endpoint
+
+### Changed
+
+- Dev dependencies bumped: `@biomejs/biome` ^2.4.7→^2.4.10, `@types/node` ^25.5.0→^25.5.2, `typescript` ^5.9.3→^6.0.2, `vitest` ^4.1.0→^4.1.2
+
 ## [0.4.1] - 2026-04-03
 
 Support non-string Socrata column values (GeoJSON, numbers) in query results.
