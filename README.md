@@ -13,6 +13,12 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://cdc.caseyjhand.com/mcp](https://cdc.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Tools
@@ -85,6 +91,23 @@ CDC-specific:
 - Handles SODA string-typed responses — all values returned as strings, parsed via column type metadata
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://cdc.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "cdc-health": {
+      "type": "streamable-http",
+      "url": "https://cdc.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file.
 

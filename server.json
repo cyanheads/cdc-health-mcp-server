@@ -7,6 +7,12 @@
     "source": "github"
   },
   "version": "0.4.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://cdc.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
