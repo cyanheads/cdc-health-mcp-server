@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-04-03 20:19:49
+Generated on: 2026-04-20 00:43:05
 
 ```text
 cdc-health-mcp-server/
@@ -23,6 +23,8 @@ cdc-health-mcp-server/
 │   ├── lint-mcp.ts
 │   └── tree.ts
 ├── skills/
+│   ├── add-app-tool/
+│   │   └── SKILL.md
 │   ├── add-prompt/
 │   │   └── SKILL.md
 │   ├── add-resource/
