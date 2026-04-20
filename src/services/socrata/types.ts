@@ -3,33 +3,33 @@
  * @module services/socrata/types
  */
 
-/** Dataset metadata from the Discovery/Catalog API. */
+/** Dataset metadata from the Discovery/Catalog API. Optional fields reflect upstream sparsity. */
 export interface CatalogDataset {
-  category: string;
-  columnNames: string[];
-  columnTypes: string[];
-  description: string;
+  category?: string;
+  columnNames?: string[];
+  columnTypes?: string[];
+  description?: string;
   id: string;
   name: string;
-  pageViews: number;
-  tags: string[];
-  updatedAt: string;
+  pageViews?: number;
+  tags?: string[];
+  updatedAt?: string;
 }
 
 /** Column schema from the Metadata API. */
 export interface DatasetColumn {
   dataType: string;
-  description: string;
+  description?: string;
   fieldName: string;
 }
 
-/** Full dataset metadata from the Metadata API. */
+/** Full dataset metadata from the Metadata API. Optional fields reflect upstream sparsity. */
 export interface DatasetMetadata {
   columns: DatasetColumn[];
-  description: string;
+  description?: string;
   name: string;
-  rowCount: number;
-  updatedAt: string;
+  rowCount?: number;
+  updatedAt?: string;
 }
 
 /** Result from catalog discovery. */

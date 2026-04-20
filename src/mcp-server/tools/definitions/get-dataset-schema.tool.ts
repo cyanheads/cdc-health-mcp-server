@@ -22,15 +22,18 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
 
   output: z.object({
     name: z.string().describe('Dataset name.'),
-    description: z.string().describe('Dataset description.'),
-    rowCount: z.number().describe('Total number of rows in the dataset.'),
-    updatedAt: z.string().describe('Last data update timestamp.'),
+    description: z.string().optional().describe('Dataset description when provided.'),
+    rowCount: z
+      .number()
+      .optional()
+      .describe('Total number of rows when reported by upstream; omitted when unknown.'),
+    updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
     columns: z
       .array(
         z.object({
           fieldName: z.string().describe('Column field name (use in SoQL queries).'),
           dataType: z.string().describe('Column data type (text, number, calendar_date, etc.).'),
-          description: z.string().describe('Column description.'),
+          description: z.string().optional().describe('Column description when provided.'),
         }),
       )
       .describe('Dataset columns with types and descriptions.'),
@@ -51,16 +54,15 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   },
 
   format: (result) => {
-    const lines = [
-      `## ${result.name}`,
-      '',
-      result.description,
-      '',
-      `**Rows:** ${result.rowCount.toLocaleString()} | **Updated:** ${result.updatedAt}`,
+    const lines = [`## ${result.name}`, ''];
+    if (result.description) lines.push(result.description, '');
+    const rows = typeof result.rowCount === 'number' ? result.rowCount.toLocaleString() : '—';
+    lines.push(
+      `**Rows:** ${rows} | **Updated:** ${result.updatedAt ?? '—'}`,
       '',
       '| Column | Type | Description |',
       '|:-------|:-----|:------------|',
-    ];
+    );
 
     for (const col of result.columns) {
       lines.push(`| \`${col.fieldName}\` | ${col.dataType} | ${col.description || '—'} |`);

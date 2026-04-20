@@ -65,17 +65,25 @@ export class SocrataService {
     const results = (data.results ?? []) as Record<string, unknown>[];
     const datasets: CatalogDataset[] = results.map((r) => {
       const resource = r.resource as Record<string, unknown>;
-      const classification = r.classification as Record<string, unknown>;
+      const classification = r.classification as Record<string, unknown> | undefined;
+      const description = resource.description as string | undefined;
+      const category = classification?.domain_category as string | undefined;
+      const tags = classification?.domain_tags as string[] | undefined;
+      const columnNames = resource.columns_field_name as string[] | undefined;
+      const columnTypes = resource.columns_datatype as string[] | undefined;
+      const updatedAt = resource.data_updated_at as string | undefined;
+      const pageViews = (resource.page_views as Record<string, number> | undefined)
+        ?.page_views_total;
       return {
         id: resource.id as string,
         name: resource.name as string,
-        description: resource.description as string,
-        category: (classification?.domain_category as string) ?? '',
-        tags: (classification?.domain_tags as string[]) ?? [],
-        columnNames: (resource.columns_field_name as string[]) ?? [],
-        columnTypes: (resource.columns_datatype as string[]) ?? [],
-        updatedAt: resource.data_updated_at as string,
-        pageViews: (resource.page_views as Record<string, number>)?.page_views_total ?? 0,
+        ...(description ? { description } : {}),
+        ...(category ? { category } : {}),
+        ...(tags ? { tags } : {}),
+        ...(columnNames ? { columnNames } : {}),
+        ...(columnTypes ? { columnTypes } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
+        ...(typeof pageViews === 'number' ? { pageViews } : {}),
       };
     });
 
@@ -92,21 +100,30 @@ export class SocrataService {
     const data = await this.fetchJson(url, signal);
 
     const rawColumns = (data.columns as Record<string, unknown>[]) ?? [];
-    const columns: DatasetColumn[] = rawColumns.map((col) => ({
-      fieldName: (col.fieldName as string) ?? '',
-      dataType: (col.dataTypeName as string) ?? '',
-      description: (col.description as string) ?? '',
-    }));
+    const columns: DatasetColumn[] = rawColumns.map((col) => {
+      const description = col.description as string | undefined;
+      return {
+        fieldName: (col.fieldName as string) ?? '',
+        dataType: (col.dataTypeName as string) ?? '',
+        ...(description ? { description } : {}),
+      };
+    });
 
     const firstColCache = rawColumns[0]?.cachedContents as Record<string, unknown> | undefined;
+    const rawCount = firstColCache?.count;
+    const parsedCount = rawCount != null ? Number(rawCount) : Number.NaN;
+    const rowCount = Number.isFinite(parsedCount) ? parsedCount : undefined;
     const rowsUpdatedAt = data.rowsUpdatedAt as number | undefined;
+    const updatedAt =
+      typeof rowsUpdatedAt === 'number' ? new Date(rowsUpdatedAt * 1000).toISOString() : undefined;
+    const description = data.description as string | undefined;
 
     return {
       name: (data.name as string) ?? '',
-      description: (data.description as string) ?? '',
-      rowCount: Number(firstColCache?.count) || 0,
-      updatedAt: rowsUpdatedAt ? new Date(rowsUpdatedAt * 1000).toISOString() : '',
       columns,
+      ...(description ? { description } : {}),
+      ...(typeof rowCount === 'number' ? { rowCount } : {}),
+      ...(updatedAt ? { updatedAt } : {}),
     };
   }
 

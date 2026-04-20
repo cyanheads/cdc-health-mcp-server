@@ -50,17 +50,22 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
         z.object({
           id: z.string().describe('Four-by-four dataset identifier (e.g., "bi63-dtpu").'),
           name: z.string().describe('Dataset name.'),
-          description: z.string().describe('Dataset description.'),
-          category: z.string().describe('Domain category.'),
-          tags: z.array(z.string().describe('Tag')).describe('Domain tags.'),
+          description: z
+            .string()
+            .optional()
+            .describe('Dataset description when provided by the catalog.'),
+          category: z.string().optional().describe('Domain category when provided.'),
+          tags: z.array(z.string()).optional().describe('Domain tags when provided.'),
           columnNames: z
-            .array(z.string().describe('Column name'))
-            .describe('Available column field names.'),
+            .array(z.string())
+            .optional()
+            .describe('Available column field names when provided.'),
           columnTypes: z
-            .array(z.string().describe('Column type'))
-            .describe('Column data types (parallel to columnNames).'),
-          updatedAt: z.string().describe('Last data update timestamp.'),
-          pageViews: z.number().describe('Total page views.'),
+            .array(z.string())
+            .optional()
+            .describe('Column data types (parallel to columnNames) when provided.'),
+          updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
+          pageViews: z.number().optional().describe('Total page views when provided.'),
         }),
       )
       .describe('Matching datasets.'),
@@ -120,16 +125,19 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     ];
     for (const d of result.datasets) {
       lines.push(`### ${d.name}`);
+      const views = typeof d.pageViews === 'number' ? d.pageViews.toLocaleString() : '—';
       lines.push(
-        `**ID:** \`${d.id}\` | **Category:** ${d.category || '—'} | **Updated:** ${d.updatedAt} | **Views:** ${d.pageViews.toLocaleString()}`,
+        `**ID:** \`${d.id}\` | **Category:** ${d.category ?? '—'} | **Updated:** ${d.updatedAt ?? '—'} | **Views:** ${views}`,
       );
       if (d.description)
         lines.push(d.description.slice(0, 300) + (d.description.length > 300 ? '...' : ''));
-      if (d.tags.length > 0) lines.push(`**Tags:** ${d.tags.join(', ')}`);
-      const columns = d.columnNames
-        .map((name, i) => `\`${name}\` (${d.columnTypes[i] ?? 'unknown'})`)
-        .join(', ');
-      lines.push(`**Columns:** ${columns}`);
+      if (d.tags && d.tags.length > 0) lines.push(`**Tags:** ${d.tags.join(', ')}`);
+      if (d.columnNames && d.columnNames.length > 0) {
+        const columns = d.columnNames
+          .map((name, i) => `\`${name}\` (${d.columnTypes?.[i] ?? 'unknown'})`)
+          .join(', ');
+        lines.push(`**Columns:** ${columns}`);
+      }
       lines.push('');
     }
     return [{ type: 'text', text: lines.join('\n') }];

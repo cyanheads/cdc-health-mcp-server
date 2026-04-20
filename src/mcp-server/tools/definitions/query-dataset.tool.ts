@@ -9,7 +9,8 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 const MAX_LIMIT = 5000;
 
 export const queryDataset = tool('cdc_query_dataset', {
-  description: `Execute a SoQL query against any CDC dataset. Supports filtering, aggregation, sorting, full-text search, and field selection. Use cdc_discover_datasets to find dataset IDs and cdc_get_dataset_schema to inspect columns before querying.\n\nTip — enumerate column values: use select: "{column}, count(*) as count", group: "{column}", order: "count DESC" to see distinct values.`,
+  description:
+    'Execute a SoQL query against any CDC dataset. Supports filtering, aggregation, sorting, full-text search, and field selection. Use cdc_discover_datasets to find dataset IDs and cdc_get_dataset_schema to inspect columns before querying.',
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -27,7 +28,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .string()
       .optional()
       .describe(
-        'SoQL SELECT clause. Column names, aliases, aggregates: "state, sum(deaths) as total_deaths". Omit for all columns.',
+        'SoQL SELECT clause — column names, aliases, or aggregates: "state, sum(deaths) as total_deaths". Omit for all columns. To enumerate distinct values of a column, set select to "{column}, count(*) as count" with group="{column}" and order="count DESC".',
       ),
     where: z
       .string()
