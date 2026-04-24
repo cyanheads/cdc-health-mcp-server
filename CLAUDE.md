@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-statistics-mcp-server
-**Version:** 0.5.0
+**Version:** 0.6.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -269,16 +269,18 @@ Available skills:
 | `add-prompt` | Scaffold a new prompt definition |
 | `add-service` | Scaffold a new service integration |
 | `add-test` | Scaffold test file for a tool, resource, or service |
-| `field-test` | Exercise tools/resources/prompts with real inputs, verify behavior, report issues |
-| `devcheck` | Lint, format, typecheck, audit |
+| `field-test` | Exercise tools/resources/prompts via live HTTP + JSON-RPC, report findings |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
-| `maintenance` | Sync skills and dependencies after updates |
+| `security-pass` | Eight-axis security audit before release (injection, scope, input sinks, leakage, etc.) |
+| `release-and-publish` | Post-wrapup ship workflow — npm, MCP Registry, GHCR |
+| `maintenance` | Investigate, adopt, and verify dependency updates (framework changelog review + skill/script sync) |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
-| `api-config` | AppConfig, parseConfig, env vars |
+| `api-config` | AppConfig, parseConfig, parseEnvConfig, env vars |
 | `api-context` | Context interface, logger, state, progress |
 | `api-errors` | McpError, JsonRpcErrorCode, error patterns |
+| `api-linter` | Reference for every MCP definition lint rule (`format-parity`, `describe-on-fields`, `server-json-*`, etc.) |
 | `api-services` | LLM, Speech, Graph services |
 | `api-testing` | createMockContext, test patterns |
 | `api-utils` | Formatting, parsing, security, pagination, scheduling |

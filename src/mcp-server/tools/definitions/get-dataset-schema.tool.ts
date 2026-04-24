@@ -30,11 +30,13 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
     columns: z
       .array(
-        z.object({
-          fieldName: z.string().describe('Column field name (use in SoQL queries).'),
-          dataType: z.string().describe('Column data type (text, number, calendar_date, etc.).'),
-          description: z.string().optional().describe('Column description when provided.'),
-        }),
+        z
+          .object({
+            fieldName: z.string().describe('Column field name (use in SoQL queries).'),
+            dataType: z.string().describe('Column data type (text, number, calendar_date, etc.).'),
+            description: z.string().optional().describe('Column description when provided.'),
+          })
+          .describe('A single column in the dataset schema.'),
       )
       .describe('Dataset columns with types and descriptions.'),
   }),

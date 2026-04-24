@@ -4,7 +4,7 @@ description: >
   Scaffold a new MCP tool definition. Use when the user asks to add a tool, create a new tool, or implement a new capability for the server.
 metadata:
   author: cyanheads
-  version: "1.4"
+  version: "1.8"
   audience: external
   type: reference
 ---
@@ -13,9 +13,7 @@ metadata:
 
 Tools use the `tool()` builder from `@cyanheads/mcp-ts-core`. Each tool lives in `src/mcp-server/tools/definitions/` with a `.tool.ts` suffix and is registered into `createApp()` in `src/index.ts`. Some larger repos later add `definitions/index.ts` barrels; match the pattern already used by the project you're editing.
 
-For the full `tool()` API, `Context` interface, and error codes, read:
-
-    node_modules/@cyanheads/mcp-ts-core/CLAUDE.md
+For the full `tool()` API, `Context` interface, and error codes, read `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md`.
 
 ## Steps
 
@@ -26,6 +24,16 @@ For the full `tool()` API, `Context` interface, and error codes, read:
 4. **Register** the tool in the project's existing `createApp()` tool list (directly in `src/index.ts` for fresh scaffolds, or via a barrel if the repo already has one)
 5. **Run `bun run devcheck`** to verify
 6. **Smoke-test** with `bun run dev:stdio` or `dev:http`
+
+## Naming
+
+Tools use lowercase snake_case with a canonical server/domain prefix: `{server}_{verb}_{noun}` — 3 words.
+
+Examples: `pubmed_search_articles`, `pubmed_fetch_fulltext`, `clinicaltrials_find_studies`.
+
+The server prefix uses the canonical platform/brand name, not an abbreviation (`patentsview_` not `patents_`, `clinicaltrials_` not `ct_`). When a name resists the schema — can't pick a verb, noun feels generic, wants 4+ segments — that's usually a signal the scope is fuzzy; split the tool, rename, or reconsider.
+
+For shape selection (Workflow or Instruction variants — standard single-action tools are the default), see the `design-mcp-server` skill's Tool shapes section.
 
 ## Template
 
@@ -57,9 +65,10 @@ export const {{TOOL_EXPORT}} = tool('{{tool_name}}', {
     return { /* output */ };
   },
 
-  // format() populates MCP content[] — the only field most LLM clients forward
-  // to the model. structuredContent (from output) is for programmatic use only.
-  // Render ALL data the LLM needs to reason about the result.
+  // format() populates MCP content[] — the markdown twin of structuredContent.
+  // Different clients read different surfaces (Claude Code → structuredContent,
+  // Claude Desktop → content[]), so both must carry the same data.
+  // Enforced at lint time: every field in `output` must appear in the rendered text.
   format: (result) => {
     const lines: string[] = [];
     // Render each item with all relevant fields — not just a count or title.
@@ -163,6 +172,8 @@ async handler(input, ctx) {
 },
 ```
 
+**Note on the `try/catch`:** this is the deliberate exception to the "logic throws, framework catches" rule. Per-item isolation is the whole point of partial-success batch tools — one failed item must not abort the batch, and the framework's partial-success telemetry (below) depends on seeing a populated `failed` array. Don't remove it to conform to the handler-level rule.
+
 Single-item tools don't need this — they either succeed or throw. The partial success question only arises with array inputs.
 
 **Telemetry:** The framework automatically detects this pattern — when a handler result contains a non-empty `failed` array, the span gets `mcp.tool.partial_success`, `mcp.tool.batch.succeeded_count`, and `mcp.tool.batch.failed_count` attributes. No manual instrumentation needed.
@@ -241,7 +252,8 @@ import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 throw serviceUnavailable(`arXiv API returned HTTP ${status}. Retry in a few seconds.`);
 
 // Structured hint for programmatic recovery
-throw new McpError(JsonRpcErrorCode.InvalidParams,
+import { invalidParams } from '@cyanheads/mcp-ts-core/errors';
+throw invalidParams(
   `Date range exceeds 90-day API limit. Narrow the range or split into multiple queries.`,
   { maxDays: 90, requestedDays: daysBetween },
 );
@@ -264,6 +276,8 @@ return {
   ...(input.operation === 'commit' && { currentStatus: await getStatus() }),
 };
 ```
+
+**Seed orientation context when the next moves are predictable.** Piggybacking a compact snapshot alongside the primary result — recent activity, tracked state, a few reference items — does two things: cuts a predictable follow-up call *and* primes the LLM on the project's conventions (recent commits teach the commit-message style the agent should match; recent tags teach the versioning format; reference records teach the naming format). Natural fits include session open/close tools, state-changing verbs where post-action confirmation helps, and entry points that drop the agent into a new scope. Gather sub-operations with `Promise.allSettled` and surface per-component failures as a warnings array rather than failing the outer call. See `design-mcp-server`'s **Output design** for the full principle.
 
 ### Defend against empty values from form-based clients
 
@@ -312,7 +326,7 @@ Large payloads burn the agent's context window. Default to curated summaries; of
 - [ ] JSDoc `@fileoverview` and `@module` header present
 - [ ] Optional nested objects guarded for empty inner values from form-based clients (check `?.field` truthiness, not just object presence)
 - [ ] `handler(input, ctx)` is pure — throws on failure, no try/catch
-- [ ] `format()` renders all data the LLM needs (not just a count or title) — `content[]` is the only field most clients forward to the model
+- [ ] `format()` renders every field in the output schema — enforced at lint time via sentinel injection, startup fails with `format-parity` errors otherwise. Different clients forward different surfaces (Claude Code → `structuredContent`, Claude Desktop → `content[]`); both must carry the same data. Primary fix: render the missing field in `format()` (use `z.discriminatedUnion` for list/detail variants). Escape hatch: if the output schema was over-typed for a genuinely dynamic upstream API, relax it (`z.object({}).passthrough()`) rather than maintaining aspirational typing
 - [ ] If wrapping external API: output schema and `format()` preserve uncertainty from sparse upstream payloads instead of inventing concrete values
 - [ ] `auth` scopes declared if the tool needs authorization
 - [ ] `task: true` added if the tool is long-running

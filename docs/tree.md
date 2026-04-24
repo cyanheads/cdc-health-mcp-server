@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-04-20 00:43:05
+Generated on: 2026-04-24 20:37:35
 
 ```text
 cdc-health-mcp-server/
@@ -18,6 +18,8 @@ cdc-health-mcp-server/
 │   └── design.md
 ├── scripts/
 │   ├── build.ts
+│   ├── check-docs-sync.ts
+│   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
@@ -43,6 +45,8 @@ cdc-health-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-errors/
 │   │   └── SKILL.md
+│   ├── api-linter/
+│   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
 │   │   │   ├── graph.md
@@ -61,8 +65,6 @@ cdc-health-mcp-server/
 │   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
-│   ├── devcheck/
-│   │   └── SKILL.md
 │   ├── field-test/
 │   │   └── SKILL.md
 │   ├── maintenance/
@@ -76,9 +78,13 @@ cdc-health-mcp-server/
 │   │   │   ├── readme.md
 │   │   │   └── server-json.md
 │   │   └── SKILL.md
+│   ├── release-and-publish/
+│   │   └── SKILL.md
 │   ├── report-issue-framework/
 │   │   └── SKILL.md
 │   ├── report-issue-local/
+│   │   └── SKILL.md
+│   ├── security-pass/
 │   │   └── SKILL.md
 │   └── setup/
 │       └── SKILL.md

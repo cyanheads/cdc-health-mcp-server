@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.6.0] - 2026-04-24
+
+Framework upgrade to `@cyanheads/mcp-ts-core` 0.7.0, adoption of the new `parseEnvConfig` helper for env-var-aware startup errors, and internal cleanup.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` bumped `^0.4.1` → `^0.7.0` (spans three minor releases — see the framework's per-version changelogs under `node_modules/@cyanheads/mcp-ts-core/changelog/` for details).
+- **Server config adopts `parseEnvConfig`** — `src/config/server-config.ts` now uses the new `parseEnvConfig` helper (shipped in framework 0.5.0) so startup errors name the actual env var at fault (`CDC_APP_TOKEN`) instead of the internal Zod path (`appToken`). Existing behavior unchanged when env vars validate.
+- **`SocrataService.fetchJson` genericized** — `fetchJson<T = Record<string, unknown>>(url, signal): Promise<T>` removes the `as unknown as Record<string, unknown>[]` double cast at the `query()` call site. Default type preserves existing behavior for `discover()` and `getMetadata()`.
+- **`cdc_query_dataset` empty-rows check simplified** — `if (result.rows.length === 0 || !result.rows[0])` → `if (!result.rows[0])` (equivalent TS narrowing, one fewer condition).
+- **Tool output schemas: array-element `.describe()`** — `cdc_discover_datasets.output.datasets[]` and `cdc_get_dataset_schema.output.columns[]` now include `.describe()` on the inner `z.object({...})` shape, satisfying the framework 0.6.16 recursive `describe-on-fields` linter rule.
+- **Agent protocol (`CLAUDE.md`) skill table updated** — dropped `devcheck` (removed from framework in 0.5.2), added `api-linter`, `security-pass`, `release-and-publish`.
+- **Dev dependencies bumped**: `@biomejs/biome` ^2.4.12 → ^2.4.13, `vitest` ^4.1.4 → ^4.1.5, `@vitest/coverage-istanbul` ^4.1.4 → ^4.1.5.
+
+### Added
+
+- **`scripts/check-docs-sync.ts`** and **`scripts/check-skills-sync.ts`** — sync-check scripts from framework 0.5.3 / 0.6.14, wired into `devcheck` as new `Docs Sync` and `Skills Sync` steps. Catches drift between `CLAUDE.md` / `AGENTS.md` and between `skills/` and its agent-mirror (`.claude/skills/`).
+- **`skills/api-linter/`** (v1.1) — reference for every MCP definition lint rule (`format-parity`, `describe-on-fields`, `server-json-*`, etc.).
+- **`skills/security-pass/`** (v1.1) — eight-axis security audit skill for pre-release review (injection vector, scope, input sinks, leakage, etc.).
+- **`skills/release-and-publish/`** (v2.1) — post-wrapup ship workflow with retries for transient publish failures.
+
+### Synced
+
+- **19 project skills refreshed from framework 0.7.0**: `add-app-tool`, `add-prompt`, `add-resource`, `add-service`, `add-tool`, `api-config`, `api-context`, `api-services`, `api-utils`, `design-mcp-server`, `field-test`, `maintenance`, `polish-docs-meta`, `report-issue-framework`, `report-issue-local`, `setup`, plus the three new skills listed above.
+- **`scripts/devcheck.ts`** and **`scripts/tree.ts`** synced from package — includes the 0.5.4 regex-sanitization CodeQL fix in the `esc()` helper.
+- **`.claude/skills/`** mirror resynced to match `skills/` (Skills Sync devcheck step now green).
+
+### Removed
+
+- **`skills/devcheck/`** — removed from framework in 0.5.2 as a thin restatement of the Commands table. The command itself still prints a self-documenting summary; CLAUDE.md continues to reference `bun run devcheck` directly.
+
+### Fixed
+
+- **Issue template descriptions** (`.github/ISSUE_TEMPLATE/bug_report.yml`, `feature_request.yml`) — reference the scoped package name `@cyanheads/cdc-health-mcp-server` instead of the old identifier `cdc-health-statistics-mcp-server`.
+
 ## [0.5.0] - 2026-04-19
 
 Framework upgrade to `@cyanheads/mcp-ts-core` 0.4.1, honest handling of sparse upstream data, and skill sync.

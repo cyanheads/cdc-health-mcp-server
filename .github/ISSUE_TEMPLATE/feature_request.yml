@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new feature or improvement for cdc-health-statistics-mcp-server
+description: Suggest a new feature or improvement for @cyanheads/cdc-health-mcp-server
 labels: ["enhancement"]
 body:
   - type: textarea

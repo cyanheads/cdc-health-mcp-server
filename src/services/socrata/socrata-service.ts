@@ -146,7 +146,7 @@ export class SocrataService {
 
     const queryString = params.toString();
     const url = `${config.baseUrl}/resource/${options.datasetId}.json?${queryString}`;
-    const rows = (await this.fetchJson(url, signal)) as unknown as Record<string, unknown>[];
+    const rows = await this.fetchJson<Record<string, unknown>[]>(url, signal);
 
     return {
       rows,
@@ -185,7 +185,10 @@ export class SocrataService {
     }
   }
 
-  private async fetchJson(url: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  private async fetchJson<T = Record<string, unknown>>(
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<T> {
     await this.throttle();
     const config = getServerConfig();
 
@@ -215,7 +218,7 @@ export class SocrataService {
       throw new Error(`Socrata API error ${response.status}: ${body.slice(0, 500)}`);
     }
 
-    return (await response.json()) as Record<string, unknown>;
+    return (await response.json()) as T;
   }
 
   private async throttle(): Promise<void> {

@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in cdc-health-statistics-mcp-server
+description: Report a bug in @cyanheads/cdc-health-mcp-server
 labels: ["bug"]
 body:
   - type: markdown

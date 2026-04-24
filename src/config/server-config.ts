@@ -4,6 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
   appToken: z.string().optional().describe('Socrata app token for higher rate limits'),
@@ -24,10 +25,10 @@ export type ServerConfig = z.infer<typeof ServerConfigSchema>;
 let _config: ServerConfig | undefined;
 
 export function getServerConfig(): ServerConfig {
-  _config ??= ServerConfigSchema.parse({
-    appToken: process.env.CDC_APP_TOKEN,
-    baseUrl: process.env.CDC_BASE_URL,
-    catalogUrl: process.env.CDC_CATALOG_URL,
+  _config ??= parseEnvConfig(ServerConfigSchema, {
+    appToken: 'CDC_APP_TOKEN',
+    baseUrl: 'CDC_BASE_URL',
+    catalogUrl: 'CDC_CATALOG_URL',
   });
   return _config;
 }

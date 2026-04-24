@@ -47,26 +47,28 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
   output: z.object({
     datasets: z
       .array(
-        z.object({
-          id: z.string().describe('Four-by-four dataset identifier (e.g., "bi63-dtpu").'),
-          name: z.string().describe('Dataset name.'),
-          description: z
-            .string()
-            .optional()
-            .describe('Dataset description when provided by the catalog.'),
-          category: z.string().optional().describe('Domain category when provided.'),
-          tags: z.array(z.string()).optional().describe('Domain tags when provided.'),
-          columnNames: z
-            .array(z.string())
-            .optional()
-            .describe('Available column field names when provided.'),
-          columnTypes: z
-            .array(z.string())
-            .optional()
-            .describe('Column data types (parallel to columnNames) when provided.'),
-          updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
-          pageViews: z.number().optional().describe('Total page views when provided.'),
-        }),
+        z
+          .object({
+            id: z.string().describe('Four-by-four dataset identifier (e.g., "bi63-dtpu").'),
+            name: z.string().describe('Dataset name.'),
+            description: z
+              .string()
+              .optional()
+              .describe('Dataset description when provided by the catalog.'),
+            category: z.string().optional().describe('Domain category when provided.'),
+            tags: z.array(z.string()).optional().describe('Domain tags when provided.'),
+            columnNames: z
+              .array(z.string())
+              .optional()
+              .describe('Available column field names when provided.'),
+            columnTypes: z
+              .array(z.string())
+              .optional()
+              .describe('Column data types (parallel to columnNames) when provided.'),
+            updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
+            pageViews: z.number().optional().describe('Total page views when provided.'),
+          })
+          .describe('A single dataset catalog entry.'),
       )
       .describe('Matching datasets.'),
     totalCount: z.number().describe('Total matching datasets (for pagination).'),

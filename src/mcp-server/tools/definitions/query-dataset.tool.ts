@@ -79,7 +79,7 @@ export const queryDataset = tool('cdc_query_dataset', {
   },
 
   format: (result) => {
-    if (result.rows.length === 0 || !result.rows[0]) {
+    if (!result.rows[0]) {
       return [
         {
           type: 'text',
