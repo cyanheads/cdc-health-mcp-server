@@ -4,12 +4,30 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 export const discoverDatasets = tool('cdc_discover_datasets', {
   description:
     'Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, descriptions, column lists, and update timestamps. Use this first to find the right dataset before querying.',
   annotations: { readOnlyHint: true },
+
+  errors: [
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'Socrata API returns 429 Too Many Requests.',
+      retryable: true,
+      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+    },
+    {
+      reason: 'upstream_error',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'Socrata catalog API returned a non-success status outside of 404/429.',
+      retryable: true,
+      recovery: 'Retry after a brief delay; the catalog may be temporarily unavailable.',
+    },
+  ],
 
   input: z.object({
     query: z

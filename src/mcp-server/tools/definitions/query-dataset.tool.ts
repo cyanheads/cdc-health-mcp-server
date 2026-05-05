@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 const MAX_LIMIT = 5000;
@@ -12,6 +13,51 @@ export const queryDataset = tool('cdc_query_dataset', {
   description:
     'Execute a SoQL query against any CDC dataset. Supports filtering, aggregation, sorting, full-text search, and field selection. Use cdc_discover_datasets to find dataset IDs and cdc_get_dataset_schema to inspect columns before querying.',
   annotations: { readOnlyHint: true },
+
+  errors: [
+    {
+      reason: 'dataset_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Dataset ID does not exist or has been retired.',
+      recovery:
+        'Search again with cdc_discover_datasets to find a current ID for the topic of interest.',
+    },
+    {
+      reason: 'no_such_column',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'WHERE/SELECT/GROUP/ORDER references a column that does not exist on this dataset.',
+      recovery:
+        'Call cdc_get_dataset_schema for this dataset and rewrite the query using actual column names.',
+    },
+    {
+      reason: 'type_mismatch',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Filter value type does not match the column data type (e.g., quoting a number).',
+      recovery:
+        'Inspect column types via cdc_get_dataset_schema and adjust filter literals to match (numbers unquoted, strings single-quoted).',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Socrata rejected the SoQL query for other syntax or semantic reasons.',
+      recovery:
+        'Read the error message for the specific clause and consult the dataset schema before retrying.',
+    },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'Socrata API returns 429 Too Many Requests.',
+      retryable: true,
+      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+    },
+    {
+      reason: 'upstream_error',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'Socrata data API returned a non-success status outside of the modeled cases.',
+      retryable: true,
+      recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
+    },
+  ],
 
   input: z.object({
     datasetId: z

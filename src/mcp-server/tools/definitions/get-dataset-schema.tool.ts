@@ -4,12 +4,37 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description:
     'Fetch the full column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Essential before writing SoQL queries against unfamiliar datasets.',
   annotations: { readOnlyHint: true },
+
+  errors: [
+    {
+      reason: 'dataset_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Dataset ID does not exist or has been retired.',
+      recovery:
+        'Search again with cdc_discover_datasets to find a current ID for the topic of interest.',
+    },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'Socrata API returns 429 Too Many Requests.',
+      retryable: true,
+      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+    },
+    {
+      reason: 'upstream_error',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'Socrata metadata API returned a non-success status outside of 404/429.',
+      retryable: true,
+      recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
+    },
+  ],
 
   input: z.object({
     datasetId: z

@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-statistics-mcp-server
-**Version:** 0.6.0
+**Version:** 0.6.1
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -73,7 +73,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ## Core Rules
 
-- **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
+- **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. The framework catches, classifies, and formats. Prefer typed error contracts (`errors[]` + `ctx.fail`) for declared failure modes; fall back to error factories (`notFound()`, `validationError()`, etc.) for ad-hoc throws.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
 - **Check `ctx.elicit` / `ctx.sample`** for presence before calling.
@@ -87,11 +87,19 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description: 'Fetch the full column schema for a CDC dataset.',
   annotations: { readOnlyHint: true },
+
+  errors: [
+    { reason: 'dataset_not_found', code: JsonRpcErrorCode.NotFound,
+      when: 'Dataset ID does not exist or has been retired.',
+      recovery: 'Search again with cdc_discover_datasets to find a current ID.' },
+  ],
+
   input: z.object({
     datasetId: z.string().regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/).describe('Four-by-four dataset identifier.'),
   }),
@@ -109,8 +117,9 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     return metadata;
   },
 
-  // format() populates content[] — the only field most LLM clients forward to
-  // the model. Render all data the LLM needs, not just a count or title.
+  // Different MCP clients read different surfaces — Claude Code reads
+  // structuredContent, Claude Desktop reads content[]. format() is the
+  // markdown twin of structuredContent and must carry the same data.
   format: (result) => [{
     type: 'text',
     text: [`## ${result.name}`, ...result.columns.map(c => `- \`${c.fieldName}\` (${c.dataType})`)].join('\n'),
@@ -160,22 +169,26 @@ export const analyzeHealthTrend = prompt('analyze_health_trend', {
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
 import { z } from '@cyanheads/mcp-ts-core';
+import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
   appToken: z.string().optional().describe('Socrata app token for higher rate limits'),
   baseUrl: z.string().url().default('https://data.cdc.gov').describe('Base URL for SODA API requests'),
   catalogUrl: z.string().url().default('https://api.us.socrata.com/api/catalog/v1').describe('Discovery API URL'),
 });
+
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
-  _config ??= ServerConfigSchema.parse({
-    appToken: process.env.CDC_APP_TOKEN,
-    baseUrl: process.env.CDC_BASE_URL,
-    catalogUrl: process.env.CDC_CATALOG_URL,
+  _config ??= parseEnvConfig(ServerConfigSchema, {
+    appToken: 'CDC_APP_TOKEN',
+    baseUrl: 'CDC_BASE_URL',
+    catalogUrl: 'CDC_CATALOG_URL',
   });
   return _config;
 }
 ```
+
+`parseEnvConfig` maps Zod schema paths → env var names so validation errors name the actual variable (`CDC_APP_TOKEN`) rather than the internal path (`appToken`).
 
 ---
 
@@ -198,24 +211,40 @@ Handlers receive a unified `ctx` object. Key properties:
 
 ## Errors
 
-Handlers throw — the framework catches, classifies, and formats. Three escalation levels:
+Handlers throw — the framework catches, classifies, and formats.
+
+**Recommended: typed error contract.** Declare `errors: [{ reason, code, when, recovery, retryable? }]` on `tool()` / `resource()` to receive a typed `ctx.fail(reason, …)` keyed by the declared reason union. TypeScript catches `ctx.fail('typo')` at compile time, `data.reason` is auto-populated for observability, and the linter enforces conformance against the handler body. The `recovery` field is required descriptive metadata (≥ 5 words, lint-validated) — the contract is the single source of truth. Spread `ctx.recoveryFor('reason')` into `data` to opt the contract recovery onto the wire. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`) bubble freely without declaring.
 
 ```ts
-// 1. Plain Error — framework auto-classifies from message patterns
-throw new Error('Item not found');           // → NotFound
-throw new Error('Invalid query format');     // → ValidationError
+errors: [
+  { reason: 'no_match', code: JsonRpcErrorCode.NotFound,
+    when: 'No item matched the query.',
+    recovery: 'Broaden the query or check the spelling and try again.' },
+],
+async handler(input, ctx) {
+  const item = await db.find(input.id);
+  if (!item) throw ctx.fail('no_match', `No item ${input.id}`, { ...ctx.recoveryFor('no_match') });
+  return item;
+}
+```
 
-// 2. Error factories — explicit code, concise
-import { notFound, validationError, forbidden, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+**Declare contracts inline on each tool, even when similar across tools.** The contract is part of the tool's documented public surface — per-tool repetition is the intended cost of locality. Don't extract a shared `errors[]` constant.
+
+**Service-thrown errors** carry contract `reason` via `data: { reason }` on the factory call — services don't have `ctx.fail`. The auto-classifier preserves `data` so clients see the same shape.
+
+**Fallback** for ad-hoc throws (no contract entry fits, prototype tools, service-layer code):
+
+```ts
+import { notFound, validationError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 throw notFound('Item not found', { itemId });
 throw serviceUnavailable('API unavailable', { url }, { cause: err });
 
-// 3. McpError — full control over code and data
+// McpError — when no factory exists for the code
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 throw new McpError(JsonRpcErrorCode.DatabaseError, 'Connection failed', { pool: 'primary' });
 ```
 
-Plain `Error` is fine for most cases. Use factories when the error code matters. See framework CLAUDE.md for the full auto-classification table and all available factories.
+See framework CLAUDE.md and the `api-errors` skill for the full auto-classification table, factory list, and contract reference.
 
 ---
 
@@ -265,21 +294,25 @@ Available skills:
 | `setup` | Post-init project orientation |
 | `design-mcp-server` | Design tool surface, resources, and services for a new server |
 | `add-tool` | Scaffold a new tool definition |
+| `add-app-tool` | Scaffold an MCP App tool + paired UI resource |
 | `add-resource` | Scaffold a new resource definition |
 | `add-prompt` | Scaffold a new prompt definition |
 | `add-service` | Scaffold a new service integration |
 | `add-test` | Scaffold test file for a tool, resource, or service |
 | `field-test` | Exercise tools/resources/prompts via live HTTP + JSON-RPC, report findings |
+| `tool-defs-analysis` | Read-only audit of definition language across the surface (10 categories) |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
 | `security-pass` | Eight-axis security audit before release (injection, scope, input sinks, leakage, etc.) |
 | `release-and-publish` | Post-wrapup ship workflow — npm, MCP Registry, GHCR |
 | `maintenance` | Investigate, adopt, and verify dependency updates (framework changelog review + skill/script sync) |
+| `migrate-mcp-ts-template` | Migrate a fork of mcp-ts-template to depend on the framework as a package |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
+| `api-canvas` | DataCanvas Tier 3 SQL/analytical workspace + `spillover()` helper (opt-in via CANVAS_PROVIDER_TYPE) |
 | `api-config` | AppConfig, parseConfig, parseEnvConfig, env vars |
 | `api-context` | Context interface, logger, state, progress |
-| `api-errors` | McpError, JsonRpcErrorCode, error patterns |
+| `api-errors` | McpError, JsonRpcErrorCode, typed error contracts, error patterns |
 | `api-linter` | Reference for every MCP definition lint rule (`format-parity`, `describe-on-fields`, `server-json-*`, etc.) |
 | `api-services` | LLM, Speech, Graph services |
 | `api-testing` | createMockContext, test patterns |
@@ -301,10 +334,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting |
 | `bun run test` | Run tests |
-| `bun run dev:stdio` | Dev mode (stdio) |
-| `bun run dev:http` | Dev mode (HTTP) |
-| `bun run start:stdio` | Production mode (stdio) |
-| `bun run start:http` | Production mode (HTTP) |
+| `bun run start:stdio` | Production mode (stdio) — `bun run rebuild && bun run start:stdio` for dev smoke-tests |
+| `bun run start:http` | Production mode (HTTP) — `bun run rebuild && bun run start:http` for dev smoke-tests |
 
 ---
 
@@ -323,12 +354,13 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 ## Checklist
 
-- [ ] Zod schemas: all fields have `.describe()`, only JSON-Schema-serializable types (no `z.custom()`, `z.date()`, `z.transform()`, etc.)
-- [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`)
+- [ ] Zod schemas: all fields have `.describe()`, only JSON-Schema-serializable types (no `z.custom()`, `z.date()`, `z.transform()`, `z.bigint()`, `z.symbol()`, `z.void()`, `z.map()`, `z.set()`, `z.function()`, `z.nan()`)
+- [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`). When regex/length constraints matter, use `z.union([z.literal(''), z.string().regex(...).describe(...)])` — literal variants are exempt from `describe-on-fields`.
 - [ ] JSDoc `@fileoverview` + `@module` on every file
 - [ ] `ctx.log` for logging, `ctx.state` for storage
-- [ ] Handlers throw on failure — error factories or plain `Error`, no try/catch
-- [ ] `format()` renders all data the LLM needs — `content[]` is the only field most clients forward to the model
+- [ ] Handlers throw on failure — typed `errors[]` + `ctx.fail` for declared modes, factories or `Error` for ad-hoc; no try/catch
+- [ ] `format()` renders all data the LLM needs — different clients forward different surfaces (Claude Code → `structuredContent`, Claude Desktop → `content[]`); both must carry the same data
+- [ ] Service-thrown errors carry contract `reason` via `data: { reason }` on factory calls when applicable
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
 - [ ] `bun run devcheck` passes

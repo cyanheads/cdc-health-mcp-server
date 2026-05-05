@@ -4,6 +4,7 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
@@ -11,6 +12,30 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   description:
     'Dataset metadata and column schema for a specific CDC dataset. Equivalent to cdc_get_dataset_schema — useful for injecting dataset context directly.',
   mimeType: 'application/json',
+
+  errors: [
+    {
+      reason: 'dataset_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Dataset ID does not exist or has been retired.',
+      recovery:
+        'Search again with cdc_discover_datasets to find a current ID for the topic of interest.',
+    },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'Socrata API returns 429 Too Many Requests.',
+      retryable: true,
+      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+    },
+    {
+      reason: 'upstream_error',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'Socrata metadata API returned a non-success status outside of 404/429.',
+      retryable: true,
+      recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
+    },
+  ],
 
   list: async () => ({
     resources: [

@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.6.1] - 2026-05-05
+
+Framework upgrade to `@cyanheads/mcp-ts-core` 0.8.15 and adoption of the new typed error contracts on every tool, resource, and the Socrata service layer.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` bumped `^0.7.0` → `^0.8.15` (spans the 0.8.x line — typed error contracts in 0.8.0, `httpErrorFromResponse` / `partialResult` utilities, three additional error factories, the `spillover()` canvas helper in 0.8.15, and supporting handler-body + conformance lints).
+- **Typed error contracts on every tool and resource** — `cdc_discover_datasets`, `cdc_get_dataset_schema`, `cdc_query_dataset`, and the `cdc://datasets/{datasetId}` resource each declare an inline `errors: [{ reason, code, when, recovery, retryable? }]`. Reasons cover `dataset_not_found`, `rate_limited`, `upstream_error`, plus `cdc_query_dataset`-specific `no_such_column` / `type_mismatch` / `invalid_query`. Surfaces in `tools/list` / `resources/list` under `_meta['mcp-ts-core/errors']` so clients see the failure modes and recovery hints upfront.
+- **`SocrataService` switches from `throw new Error(...)` to error factories** — `notFound`, `rateLimited`, `serviceUnavailable`, and `validationError` from `@cyanheads/mcp-ts-core/errors`. Every throw site now carries `data: { reason, ... }` matching the tool/resource contracts so the framework's auto-classifier preserves the `reason` discriminator end-to-end (services don't have `ctx.fail`).
+- **`SocrataService.formatBadRequestError` → `throwBadRequest`** — was a string-formatter feeding `throw new Error(...)`; now throws `validationError` directly with reason discrimination (`no_such_column`, `type_mismatch`, `invalid_query`) and the originating URL captured in `data`.
+- **`SocrataService.validateDatasetId`** — now throws `validationError` with `data: { reason: 'invalid_dataset_id', datasetId }` instead of a plain `Error`.
+- **`getMetadata` row-count parsing** — folds the finite-number guard into the conditional spread (`Number.isFinite(rowCount) ? { rowCount } : {}`), removing an intermediate `parsedCount` variable.
+- **Agent protocol (`CLAUDE.md`)** — Errors section rewritten to lead with the typed-contract path (`errors[]` + `ctx.fail`); factories demoted to fallback. Skill table gained `add-app-tool`, `tool-defs-analysis`, `migrate-mcp-ts-template`, `api-canvas`. `dev:stdio` / `dev:http` rows removed; Commands table notes `bun run rebuild && bun run start:*` for dev smoke-tests. Checklist updated to flag service-layer `data: { reason }` as part of the error-contract pattern.
+- **Removed `dev:stdio` / `dev:http` package scripts** — unused; the rebuild-and-start pattern noted in CLAUDE.md replaces them.
+- **Dev dependencies bumped**: `@biomejs/biome` ^2.4.13 → ^2.4.14, `tsc-alias` ^1.8.16 → ^1.8.17.
+
+### Added
+
+- **`scripts/check-framework-antipatterns.ts`** — new devcheck step (`Framework Antipatterns`) that flags SDK-coupling shortcuts the framework can't catch through type-checking alone.
+- **`scripts/build-changelog.ts` and `scripts/split-changelog.ts`** — synced from framework 0.8.x for changelog directory tooling (assemble flat `CHANGELOG.md` from `changelog/<minor>.x/<version>.md` entries; split a flat changelog back into the directory layout).
+- **`skills/api-canvas/`** — new skill from framework 0.8.x covering the DataCanvas Tier 3 SQL/analytical workspace and the `spillover()` helper for paginated upstream APIs.
+- **`skills/tool-defs-analysis/`** — new skill from framework 0.8.x for read-only audits of definition language across the surface (10 categories: voice, leaks, defaults, recovery hints, examples, structure, etc.).
+
+### Synced
+
+- **18 project skills refreshed from framework 0.8.15**: `add-service`, `add-tool`, `api-config`, `api-context`, `api-errors` (typed-contract surface), `api-linter` (handler-body + conformance lint families), `api-workers`, `design-mcp-server`, `field-test`, `maintenance`, `release-and-publish`, `report-issue-framework`, `report-issue-local`, `security-pass`, `setup`, plus the two new skills above.
+- **`scripts/devcheck.ts`** — adds the `Framework Antipatterns` check to the pipeline.
+- **`.claude/skills/`** mirror resynced to match `skills/`.
+
 ## [0.6.0] - 2026-04-24
 
 Framework upgrade to `@cyanheads/mcp-ts-core` 0.7.0, adoption of the new `parseEnvConfig` helper for env-var-aware startup errors, and internal cleanup.

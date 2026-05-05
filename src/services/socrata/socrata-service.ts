@@ -4,6 +4,12 @@
  * @module services/socrata/socrata-service
  */
 
+import {
+  notFound,
+  rateLimited,
+  serviceUnavailable,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
   CatalogDataset,
@@ -111,8 +117,7 @@ export class SocrataService {
 
     const firstColCache = rawColumns[0]?.cachedContents as Record<string, unknown> | undefined;
     const rawCount = firstColCache?.count;
-    const parsedCount = rawCount != null ? Number(rawCount) : Number.NaN;
-    const rowCount = Number.isFinite(parsedCount) ? parsedCount : undefined;
+    const rowCount = rawCount != null ? Number(rawCount) : Number.NaN;
     const rowsUpdatedAt = data.rowsUpdatedAt as number | undefined;
     const updatedAt =
       typeof rowsUpdatedAt === 'number' ? new Date(rowsUpdatedAt * 1000).toISOString() : undefined;
@@ -122,7 +127,7 @@ export class SocrataService {
       name: (data.name as string) ?? '',
       columns,
       ...(description ? { description } : {}),
-      ...(typeof rowCount === 'number' ? { rowCount } : {}),
+      ...(Number.isFinite(rowCount) ? { rowCount } : {}),
       ...(updatedAt ? { updatedAt } : {}),
     };
   }
@@ -155,32 +160,51 @@ export class SocrataService {
     };
   }
 
-  private formatBadRequestError(body: string): string {
+  private throwBadRequest(body: string, url: string): never {
+    let parsed: Record<string, unknown> | undefined;
     try {
-      const parsed = JSON.parse(body) as Record<string, unknown>;
-      const code = parsed.errorCode as string | undefined;
-      const data = parsed.data as Record<string, unknown> | undefined;
-
-      if (code === 'query.soql.no-such-column') {
-        const col = data?.column ?? 'unknown';
-        return `No such column "${col}". Use cdc_get_dataset_schema to see available columns for this dataset.`;
-      }
-      if (code === 'query.soql.type-mismatch') {
-        return `SoQL type mismatch: ${(parsed.message as string)?.split(';')[1]?.trim() ?? 'check column types'}. Use cdc_get_dataset_schema to verify column data types.`;
-      }
-
-      const msg = parsed.message ?? parsed.error;
-      if (typeof msg === 'string') return `Socrata query error: ${msg.slice(0, 300)}`;
+      parsed = JSON.parse(body) as Record<string, unknown>;
     } catch {
-      // Body wasn't JSON — fall through
+      // Body wasn't JSON — fall through to generic.
     }
-    return `Socrata API error 400: ${body.slice(0, 300)}`;
+
+    const code = parsed?.errorCode as string | undefined;
+    const data = parsed?.data as Record<string, unknown> | undefined;
+
+    if (code === 'query.soql.no-such-column') {
+      const col = data?.column ?? 'unknown';
+      throw validationError(
+        `No such column "${col}". Use cdc_get_dataset_schema to see available columns for this dataset.`,
+        { reason: 'no_such_column', column: col, url },
+      );
+    }
+    if (code === 'query.soql.type-mismatch') {
+      const detail = (parsed?.message as string)?.split(';')[1]?.trim() ?? 'check column types';
+      throw validationError(
+        `SoQL type mismatch: ${detail}. Use cdc_get_dataset_schema to verify column data types.`,
+        { reason: 'type_mismatch', url },
+      );
+    }
+
+    const msg = parsed && (parsed.message ?? parsed.error);
+    if (typeof msg === 'string') {
+      throw validationError(`Socrata query error: ${msg.slice(0, 300)}`, {
+        reason: 'invalid_query',
+        url,
+      });
+    }
+
+    throw validationError(`Socrata API error 400: ${body.slice(0, 300)}`, {
+      reason: 'invalid_query',
+      url,
+    });
   }
 
   private validateDatasetId(datasetId: string): void {
     if (!DATASET_ID_PATTERN.test(datasetId)) {
-      throw new Error(
+      throw validationError(
         `Invalid dataset ID "${datasetId}" — must match format [a-z0-9]{4}-[a-z0-9]{4} (e.g., "bi63-dtpu"). Get valid IDs from cdc_discover_datasets.`,
+        { reason: 'invalid_dataset_id', datasetId },
       );
     }
   }
@@ -203,19 +227,25 @@ export class SocrataService {
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       if (response.status === 404) {
-        throw new Error(
+        throw notFound(
           'Dataset not found (404). Verify the dataset ID exists — it may have been retired or replaced. Search again with cdc_discover_datasets.',
+          { reason: 'dataset_not_found', url },
         );
       }
       if (response.status === 429) {
-        throw new Error(
+        throw rateLimited(
           'Rate limited by Socrata API (429). Retry after a brief delay. Consider setting CDC_APP_TOKEN for higher limits.',
+          { reason: 'rate_limited', url },
         );
       }
       if (response.status === 400) {
-        throw new Error(this.formatBadRequestError(body));
+        this.throwBadRequest(body, url);
       }
-      throw new Error(`Socrata API error ${response.status}: ${body.slice(0, 500)}`);
+      throw serviceUnavailable(`Socrata API error ${response.status}: ${body.slice(0, 500)}`, {
+        reason: 'upstream_error',
+        status: response.status,
+        url,
+      });
     }
 
     return (await response.json()) as T;
@@ -239,6 +269,8 @@ export function initSocrataService(): void {
 
 export function getSocrataService(): SocrataService {
   if (!_service)
-    throw new Error('SocrataService not initialized — call initSocrataService() in setup()');
+    throw serviceUnavailable(
+      'SocrataService not initialized — call initSocrataService() in setup()',
+    );
   return _service;
 }

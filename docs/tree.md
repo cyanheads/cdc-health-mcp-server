@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-04-24 20:37:35
+Generated on: 2026-05-05 14:09:48
 
 ```text
 cdc-health-mcp-server/
@@ -17,12 +17,15 @@ cdc-health-mcp-server/
 ├── docs/
 │   └── design.md
 ├── scripts/
+│   ├── build-changelog.ts
 │   ├── build.ts
 │   ├── check-docs-sync.ts
+│   ├── check-framework-antipatterns.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
+│   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
 │   ├── add-app-tool/
@@ -38,6 +41,8 @@ cdc-health-mcp-server/
 │   ├── add-tool/
 │   │   └── SKILL.md
 │   ├── api-auth/
+│   │   └── SKILL.md
+│   ├── api-canvas/
 │   │   └── SKILL.md
 │   ├── api-config/
 │   │   └── SKILL.md
@@ -86,7 +91,9 @@ cdc-health-mcp-server/
 │   │   └── SKILL.md
 │   ├── security-pass/
 │   │   └── SKILL.md
-│   └── setup/
+│   ├── setup/
+│   │   └── SKILL.md
+│   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
 │   ├── config/
