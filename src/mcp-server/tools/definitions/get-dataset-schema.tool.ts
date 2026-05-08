@@ -9,7 +9,7 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description:
-    'Fetch the full column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Essential before writing SoQL queries against unfamiliar datasets.',
+    'Fetch the full column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Get dataset IDs from cdc_discover_datasets.',
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -25,7 +25,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
       retryable: true,
-      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+      recovery: 'Retry after a brief delay; the request was rate-limited.',
     },
     {
       reason: 'upstream_error',
@@ -46,7 +46,11 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   }),
 
   output: z.object({
-    name: z.string().describe('Dataset name.'),
+    name: z
+      .string()
+      .describe(
+        'Dataset display name from the catalog (e.g., "Provisional COVID-19 Deaths by Sex and Age").',
+      ),
     description: z.string().optional().describe('Dataset description when provided.'),
     rowCount: z
       .number()

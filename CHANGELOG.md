@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.3] - 2026-05-08
+
+Definition-language polish across every tool, resource, and prompt — driven by a `tool-defs-analysis` audit. Tightens query defaults, removes display truncation that hid data from the LLM, fills in a missing error contract on `cdc://datasets`, and drops a duplicate dataset-ID validation that the Zod schema already enforces at the edge.
+
+### Changed
+
+- **`cdc_query_dataset` default limit** `1000` → `100` (max unchanged at 5000). The previous 1000-row default frequently sent multi-MB payloads to the LLM for exploratory queries; 100 is enough for orientation, and callers who need more set `limit` explicitly. Schema description and assembled query string updated to match.
+- **`cdc_query_dataset.format` no longer truncates display at 50 rows** — the markdown table now renders every row in `result.rows`. Volume is already bounded by the schema-enforced `limit` (default 100, max 5000), so the 50-row clamp was actively hiding data the caller had explicitly requested.
+- **`cdc_discover_datasets.format` no longer truncates dataset descriptions at 300 chars** — full description text is rendered. Dataset descriptions are typically a paragraph or two; the clamp was lossy without meaningfully bounding output size.
+- **Recovery messages on `rate_limited` simplified** across all four definitions (`cdc_discover_datasets`, `cdc_get_dataset_schema`, `cdc_query_dataset`, `cdc://datasets/{datasetId}`): `"Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits."` → `"Retry after a brief delay; the request was rate-limited."`. The `CDC_APP_TOKEN` hint was deployment-time guidance, not request-time recovery — clients reading recovery hints can't act on it. Token-setup guidance lives in README/CLAUDE.md.
+- **Tool descriptions de-jargoned** — removed SoQL-internal references like "(maps to `$q`)" and "for debugging" from user-facing descriptions; replaced ambient framing ("Use this first to find...", "Essential before writing SoQL queries...") with concrete pointers ("Get dataset IDs from `cdc_discover_datasets`."). Output `name` field describes gain a concrete example (`'Provisional COVID-19 Deaths by Sex and Age'`) so the LLM knows the catalog's display-name style.
+- **`cdc_query_dataset.output.query` describe** — `"Assembled SoQL query string (for debugging)."` → `"Assembled SoQL query string sent to Socrata."`. The string is the actual upstream request, not a debug artifact.
+- **`cdc://datasets/{datasetId}` description** — collapsed `"Equivalent to cdc_get_dataset_schema — useful for injecting dataset context directly."` to `"Same payload as cdc_get_dataset_schema."` (the URI-addressability is the differentiator, already implicit in the resource type).
+- **`analyze_health_trend` prompt** — `geography` arg gains a concrete state example (`"California"`); step 3 ("Baseline") explicitly names `cdc_query_dataset` instead of "Query the most relevant dataset".
+- **`docs/design.md`** synced to match the new `cdc_query_dataset` defaults and description language.
+
+### Added
+
+- **`cdc://datasets` resource gains a typed `errors[]` contract** — `rate_limited` and `upstream_error` reasons are now declared inline. Previously the resource threw via service-layer factories without surfacing failure modes through `_meta['mcp-ts-core/errors']`. Brings the catalog resource to parity with `cdc://datasets/{datasetId}` and the three tools.
+
+### Removed
+
+- **`SocrataService.validateDatasetId`** — duplicate of the Zod regex (`^[a-z0-9]{4}-[a-z0-9]{4}$`) already enforced on every caller (`cdc_get_dataset_schema.input.datasetId`, `cdc_query_dataset.input.datasetId`, `cdc://datasets/{datasetId}` params). The service-layer check fired only on inputs that couldn't reach it and added a second source of truth for the format. Tests for the service-level check removed; tool/resource Zod parsing covers the contract.
+
 ## [0.6.2] - 2026-05-08
 
 Framework refresh to `@cyanheads/mcp-ts-core` 0.8.19 — picks up the HTTP SSE per-request retention leak fix, the `ctx.sessionId` and `ctx.auth.token` surfacing fixes, and the engines bump to Bun ≥1.3.0 / Node ≥24.0.0. No tool/resource/prompt code changes — CDC server doesn't consume the new context fields, but production HTTP deployments benefit from the SSE leak fix immediately.

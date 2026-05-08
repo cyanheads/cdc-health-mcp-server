@@ -10,7 +10,7 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   name: 'CDC Dataset Detail',
   description:
-    'Dataset metadata and column schema for a specific CDC dataset. Equivalent to cdc_get_dataset_schema — useful for injecting dataset context directly.',
+    'Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Same payload as cdc_get_dataset_schema.',
   mimeType: 'application/json',
 
   errors: [
@@ -26,7 +26,7 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
       retryable: true,
-      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+      recovery: 'Retry after a brief delay; the request was rate-limited.',
     },
     {
       reason: 'upstream_error',

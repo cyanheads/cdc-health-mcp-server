@@ -20,7 +20,7 @@ const sampleResult: QueryResult = {
     { state: 'Texas', year: '2020', deaths: '4500' },
   ],
   rowCount: 2,
-  query: '$where=year%3D2020&$limit=1000',
+  query: '$where=year%3D2020&$limit=100',
 };
 
 describe('cdc_query_dataset', () => {
@@ -75,7 +75,7 @@ describe('cdc_query_dataset', () => {
   });
 
   it('allows query with no filters (returns all rows)', async () => {
-    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=1000' });
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
     const ctx = createMockContext();
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu' });
     const result = await queryDataset.handler(input, ctx);
@@ -86,9 +86,9 @@ describe('cdc_query_dataset', () => {
     expect(() => queryDataset.input.parse({ datasetId: 'bad', where: 'x=1' })).toThrow();
   });
 
-  it('applies default limit of 1000', () => {
+  it('applies default limit of 100', () => {
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'x=1' });
-    expect(input.limit).toBe(1000);
+    expect(input.limit).toBe(100);
   });
 
   it('rejects limit above 5000', () => {
@@ -114,13 +114,6 @@ describe('cdc_query_dataset', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No rows matched the query');
       expect(text).toContain('$where=x');
-    });
-
-    it('truncates display at 50 rows', () => {
-      const manyRows = Array.from({ length: 60 }, (_, i) => ({ id: String(i) }));
-      const blocks = queryDataset.format!({ rows: manyRows, rowCount: 60, query: '' });
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('...and 10 more rows');
     });
 
     it('escapes pipe characters in cell values', () => {

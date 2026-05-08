@@ -24,7 +24,7 @@ export const analyzeHealthTrend = prompt('analyze_health_trend', {
       .string()
       .optional()
       .describe(
-        'Geographic scope — "national", a specific state name, or "all states" for comparison. Defaults to national.',
+        'Geographic scope — "national", a specific state name (e.g., "California"), or "all states" for comparison. Defaults to national.',
       ),
   }),
   generate: (args) => {
@@ -47,7 +47,7 @@ export const analyzeHealthTrend = prompt('analyze_health_trend', {
             '',
             '2. **Inspect** — Use `cdc_get_dataset_schema` on the top 2-3 candidates. Check column names, types, and what filtering dimensions are available (year, state, demographic breakdowns, etc.).',
             '',
-            '3. **Baseline** — Query the most relevant dataset for an initial picture. Start broad, then narrow. Check what years, states, and categories are actually present in the data.',
+            '3. **Baseline** — Use `cdc_query_dataset` against the most relevant dataset for an initial picture. Start broad, then narrow. Check what years, states, and categories are actually present in the data.',
             '',
             '4. **Compare** — Look for trends over time, geographic variation, or demographic disparities depending on what the data supports. Use aggregation (GROUP BY) for summaries.',
             '',

@@ -48,12 +48,12 @@ export const queryDataset = tool('cdc_query_dataset', {
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
       retryable: true,
-      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+      recovery: 'Retry after a brief delay; the request was rate-limited.',
     },
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata data API returned a non-success status outside of the modeled cases.',
+      when: 'Socrata data API returned a non-success status outside of 404, 429, or validation errors.',
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -68,7 +68,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .string()
       .optional()
       .describe(
-        'Full-text search across all text columns (maps to $q). For precise filtering use where instead.',
+        'Full-text search across all text columns. For precise filtering use the where parameter instead.',
       ),
     select: z
       .string()
@@ -96,8 +96,8 @@ export const queryDataset = tool('cdc_query_dataset', {
       .int()
       .min(1)
       .max(MAX_LIMIT)
-      .default(1000)
-      .describe(`Max rows to return (default 1000, max ${MAX_LIMIT}).`),
+      .default(100)
+      .describe(`Max rows to return (default 100, max ${MAX_LIMIT}).`),
     offset: z.number().int().min(0).default(0).describe('Row offset for pagination.'),
   }),
 
@@ -108,7 +108,7 @@ export const queryDataset = tool('cdc_query_dataset', {
         'Result rows with requested fields. Most values are strings (including numbers/dates); geo columns return GeoJSON objects.',
       ),
     rowCount: z.number().describe('Number of rows returned in this response.'),
-    query: z.string().describe('Assembled SoQL query string (for debugging).'),
+    query: z.string().describe('Assembled SoQL query string sent to Socrata.'),
   }),
 
   async handler(input, ctx) {
@@ -151,18 +151,13 @@ export const queryDataset = tool('cdc_query_dataset', {
       `| ${columns.map(() => '---').join(' | ')} |`,
     ];
 
-    const displayRows = result.rows.slice(0, 50);
-    for (const row of displayRows) {
+    for (const row of result.rows) {
       const cells = columns.map((c) => {
         const v = row[c];
         const s = typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v);
         return s.replaceAll('|', '\\|').replaceAll('\n', ' ');
       });
       lines.push(`| ${cells.join(' | ')} |`);
-    }
-
-    if (result.rows.length > 50) {
-      lines.push('', `*...and ${result.rows.length - 50} more rows (truncated in display)*`);
     }
 
     lines.push('', `**Query:** \`${result.query}\``);

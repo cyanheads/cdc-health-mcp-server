@@ -145,12 +145,6 @@ describe('SocrataService', () => {
       expect(url).toBe('https://data.cdc.gov/api/views/bi63-dtpu.json');
     });
 
-    it('throws on invalid dataset ID format', async () => {
-      await expect(service.getMetadata('invalid-id')).rejects.toThrow(/Invalid dataset ID/);
-      await expect(service.getMetadata('ABCD-1234')).rejects.toThrow(/Invalid dataset ID/);
-      await expect(service.getMetadata('abc')).rejects.toThrow(/Invalid dataset ID/);
-    });
-
     it('throws on 404', async () => {
       mockFetchError(404);
       await expect(service.getMetadata('bi63-dtpu')).rejects.toThrow(/not found/);
@@ -220,12 +214,6 @@ describe('SocrataService', () => {
 
       const url = spy.mock.calls[0][0] as string;
       expect(url).toContain('%24limit=1000');
-    });
-
-    it('throws on invalid dataset ID', async () => {
-      await expect(service.query({ datasetId: 'not-valid!', search: 'test' })).rejects.toThrow(
-        /Invalid dataset ID/,
-      );
     });
   });
 });

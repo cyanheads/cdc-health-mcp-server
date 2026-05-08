@@ -121,14 +121,6 @@ describe('cdc_discover_datasets', () => {
       expect(text).toContain('No datasets found');
     });
 
-    it('truncates long descriptions', () => {
-      const longDesc = { ...sampleResult };
-      longDesc.datasets = [{ ...sampleResult.datasets[0], description: 'x'.repeat(400) }];
-      const blocks = discoverDatasets.format!(longDesc);
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('...');
-    });
-
     it('renders all columns without truncation', () => {
       const manyColumns = { ...sampleResult };
       const cols = Array.from({ length: 15 }, (_, i) => `col_${i}`);

@@ -9,7 +9,7 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
 export const discoverDatasets = tool('cdc_discover_datasets', {
   description:
-    'Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, descriptions, column lists, and update timestamps. Use this first to find the right dataset before querying.',
+    'Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, descriptions, column lists, and update timestamps.',
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -18,7 +18,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
       retryable: true,
-      recovery: 'Wait briefly and retry, or set CDC_APP_TOKEN for higher rate limits.',
+      recovery: 'Retry after a brief delay; the request was rate-limited.',
     },
     {
       reason: 'upstream_error',
@@ -68,7 +68,11 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
         z
           .object({
             id: z.string().describe('Four-by-four dataset identifier (e.g., "bi63-dtpu").'),
-            name: z.string().describe('Dataset name.'),
+            name: z
+              .string()
+              .describe(
+                'Dataset display name from the catalog (e.g., "Provisional COVID-19 Deaths by Sex and Age").',
+              ),
             description: z
               .string()
               .optional()
@@ -96,7 +100,9 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
         category: z.string().optional().describe('Category filter used.'),
         tags: z.array(z.string()).optional().describe('Tag filters used.'),
       })
-      .describe('Filters applied to this search (echoed for diagnostics).'),
+      .describe(
+        'Filters that were applied to this query; absent fields indicate no filter on that dimension.',
+      ),
   }),
 
   async handler(input, ctx) {
@@ -149,8 +155,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       lines.push(
         `**ID:** \`${d.id}\` | **Category:** ${d.category ?? '—'} | **Updated:** ${d.updatedAt ?? '—'} | **Views:** ${views}`,
       );
-      if (d.description)
-        lines.push(d.description.slice(0, 300) + (d.description.length > 300 ? '...' : ''));
+      if (d.description) lines.push(d.description);
       if (d.tags && d.tags.length > 0) lines.push(`**Tags:** ${d.tags.join(', ')}`);
       if (d.columnNames && d.columnNames.length > 0) {
         const columns = d.columnNames

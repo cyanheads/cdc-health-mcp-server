@@ -78,21 +78,21 @@ Accepts either a convenience `search` parameter for simple full-text queries, or
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `datasetId` | string | Yes | Four-by-four dataset identifier matching `[a-z0-9]{4}-[a-z0-9]{4}`. |
-| `search` | string | No | Convenience full-text search across all text columns (maps to `$q`). Use for exploratory queries. For precise filtering, use `where` instead. |
+| `search` | string | No | Convenience full-text search across all text columns. Use for exploratory queries. For precise filtering, use `where` instead. |
 | `select` | string | No | SoQL SELECT clause. Column names, aliases, aggregates: `"state, sum(deaths) as total_deaths"`. Omit for all columns. |
 | `where` | string | No | SoQL WHERE clause. Supports `=`, `!=`, `>`, `<`, `>=`, `<=`, `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT NULL`, `LIKE`, `IN(...)`, `BETWEEN`, `starts_with()`, `contains()`. Strings must be single-quoted: `"state='California' AND year=2020"`. |
 | `group` | string | No | SoQL GROUP BY clause. Requires aggregate functions in `select`. |
 | `having` | string | No | SoQL HAVING clause. Filters aggregated results. |
 | `order` | string | No | SoQL ORDER BY clause. Field name with optional `ASC`/`DESC`: `"total_deaths DESC"`. |
-| `limit` | number | No | Max rows to return (default 1000, no hard ceiling -- but large limits mean large responses). Use with `offset` for pagination. |
+| `limit` | number | No | Max rows to return (default 100, max 5000). Use with `offset` for pagination. |
 | `offset` | number | No | Row offset for pagination. |
 
-**Returns:** Array of row objects with requested fields. Includes `rowCount` (length of returned rows) and `query` (the assembled SoQL for debugging).
+**Returns:** Array of row objects with requested fields. Includes `rowCount` (length of returned rows) and `query` (the assembled SoQL string sent to Socrata).
 
 **Tip -- enumerating column values:** To see distinct values for a column (e.g., what states or years exist), use `select: "{column}, count(*) as count"`, `group: "{column}"`, `order: "count DESC"`. Add a `where` clause to scope the enumeration (e.g., only values where `year=2020`).
 
 **Quirks discovered during API probing:**
-- Default limit is 1000 rows. No enforced maximum -- `$limit=50000` works but returns massive payloads.
+- Socrata's own `$limit` default is 1000 with no upstream ceiling -- `$limit=50000` works but returns massive payloads. The wrapper enforces a 5000-row schema max and a 100-row default to keep typical responses manageable.
 - Column types in responses are always strings (even numbers). The server should parse numeric columns based on schema metadata.
 - Year columns vary -- some datasets store year as a number, others as text. The `where` clause must match the actual type.
 - Aggregate queries (`$group`) return computed columns as strings.
@@ -123,7 +123,7 @@ List of all dataset categories with counts. Provides an overview of the CDC data
 
 ### `cdc://datasets/{datasetId}`
 
-Dataset metadata and schema. Equivalent to `cdc_get_dataset_schema` -- useful for injecting dataset context directly. `datasetId` must match `[a-z0-9]{4}-[a-z0-9]{4}`.
+Dataset metadata and schema, addressable by URI. Same payload as `cdc_get_dataset_schema`. `datasetId` must match `[a-z0-9]{4}-[a-z0-9]{4}`.
 
 ---
 
@@ -148,7 +148,7 @@ Structured workflow for investigating a public health question across CDC data. 
 - **Response types** -- All values in SODA v2.1 JSON responses are strings, including numbers and dates. Parse based on column type metadata from the schema endpoint.
 - **Dataset staleness** -- Some datasets are marked as no longer updated (particularly COVID-era datasets). The `data_updated_at` field from the catalog/metadata API indicates freshness. Surface this to the agent.
 - **Suppressed values** -- Some health datasets suppress small counts for privacy. These appear as missing values or footnote markers rather than zeros. Surface footnote columns when present.
-- **Large datasets** -- Default limit is 1000 rows. No enforced max, but the server should cap at a sane default (e.g., 5000) to avoid sending 100MB responses to the LLM. Always include the total row count so the agent knows if results are truncated.
+- **Large datasets** -- Default limit is 100 rows; schema enforces a 5000-row max. Always include the total row count so the agent knows if results are truncated.
 
 ---
 

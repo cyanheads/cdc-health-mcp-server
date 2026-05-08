@@ -19,7 +19,6 @@ import type {
   QueryResult,
 } from './types.js';
 
-const DATASET_ID_PATTERN = /^[a-z0-9]{4}-[a-z0-9]{4}$/;
 const MIN_REQUEST_INTERVAL_MS = 250;
 
 /** Options for discovering datasets. */
@@ -100,7 +99,6 @@ export class SocrataService {
    * Fetch full metadata and column schema for a dataset.
    */
   async getMetadata(datasetId: string, signal?: AbortSignal): Promise<DatasetMetadata> {
-    this.validateDatasetId(datasetId);
     const config = getServerConfig();
     const url = `${config.baseUrl}/api/views/${datasetId}.json`;
     const data = await this.fetchJson(url, signal);
@@ -136,7 +134,6 @@ export class SocrataService {
    * Execute a SoQL query against a CDC dataset.
    */
   async query(options: QueryOptions, signal?: AbortSignal): Promise<QueryResult> {
-    this.validateDatasetId(options.datasetId);
     const config = getServerConfig();
     const params = new URLSearchParams();
 
@@ -198,15 +195,6 @@ export class SocrataService {
       reason: 'invalid_query',
       url,
     });
-  }
-
-  private validateDatasetId(datasetId: string): void {
-    if (!DATASET_ID_PATTERN.test(datasetId)) {
-      throw validationError(
-        `Invalid dataset ID "${datasetId}" — must match format [a-z0-9]{4}-[a-z0-9]{4} (e.g., "bi63-dtpu"). Get valid IDs from cdc_discover_datasets.`,
-        { reason: 'invalid_dataset_id', datasetId },
-      );
-    }
   }
 
   private async fetchJson<T = Record<string, unknown>>(
