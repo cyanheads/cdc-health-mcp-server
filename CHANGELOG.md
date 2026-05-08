@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.2] - 2026-05-08
+
+Framework refresh to `@cyanheads/mcp-ts-core` 0.8.19 — picks up the HTTP SSE per-request retention leak fix, the `ctx.sessionId` and `ctx.auth.token` surfacing fixes, and the engines bump to Bun ≥1.3.0 / Node ≥24.0.0. No tool/resource/prompt code changes — CDC server doesn't consume the new context fields, but production HTTP deployments benefit from the SSE leak fix immediately.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` `^0.8.15` → `^0.8.19`. Notable changes for this server's runtime:
+  - `0.8.16` — HTTP SSE per-request retention leak fix ([cyanheads/mcp-ts-core#50](https://github.com/cyanheads/mcp-ts-core/issues/50)). `closePerRequestInstances` now binds to the request `AbortSignal` so ungraceful client disconnects (the dominant SSE GET case) close the per-request `McpServer` / `McpSessionTransport` pair. The `mcp.http.close_failures` counter gains a `trigger=sse-abort` tag.
+  - `0.8.17` — `ctx.sessionId` surfaced on `Context` for HTTP handlers ([cyanheads/mcp-ts-core#116](https://github.com/cyanheads/mcp-ts-core/issues/116)). Defined under stateful / auto session mode; opt-in for stateless via `createApp({ context: { exposeStatelessSessionId: true } })`. Not consumed by this server.
+  - `0.8.18` — `ctx.auth.token` no longer dropped by `toAuthContext` ([cyanheads/mcp-ts-core#121](https://github.com/cyanheads/mcp-ts-core/issues/121)). Public `AuthContext` type gains `token?: string`. Not consumed by this server.
+  - `0.8.19` — telemetry visualization docs (Grafana dashboard JSON + vendor-agnostic query recipes), the new `api-telemetry` skill, and the engines bump.
+- **Engines**: `node` `>=22.0.0` → `>=24.0.0` (mirrors framework 0.8.19 floor; `bun` already at `>=1.3.2`).
+- **Docker base image**: `oven/bun:1` → `oven/bun:1.3` for both build and production stages.
+- **Dev dependency**: `@types/node` `^25.6.0` → `^25.6.2`.
+
+### Added
+
+- **`skills/api-telemetry/`** (v1.0) — new framework skill catalog covering every span name, metric name + attributes, completion-log field, env var, runtime caveat, and cardinality rule the framework emits. Cross-linked from `CLAUDE.md` skill index.
+
+### Synced
+
+- **6 project skills refreshed from framework 0.8.17 / 0.8.19**: `api-context` 1.2 → 1.3 (new `ctx.sessionId` section), `api-utils` 2.1 → 2.2 (telemetry section header points to the new `api-telemetry` skill), `maintenance` 2.0 → 2.1 (Phase C now resyncs pristine reference files on content-hash mismatch), `report-issue-framework` 1.5 → 1.6 and `report-issue-local` 1.4 → 1.5 (terser issue-writing guidance, Bun `1.3.x` examples), `setup` 1.6 → 1.7 (`bunx` examples, substituted-name verification, adds `release-and-publish` to the rough progression).
+- **`scripts/build-changelog.ts`** synced from framework 0.8.19 (parses and validates the new `security: boolean` frontmatter field).
+- **`.claude/skills/`** mirror resynced to match `skills/`.
+
 ## [0.6.1] - 2026-05-05
 
 Framework upgrade to `@cyanheads/mcp-ts-core` 0.8.15 and adoption of the new typed error contracts on every tool, resource, and the Socrata service layer.
