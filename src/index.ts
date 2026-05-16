@@ -14,6 +14,7 @@ import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.
 import { initSocrataService } from '@/services/socrata/socrata-service.js';
 
 await createApp({
+  instructions: `Use the cdc_* tools to access the CDC Open Data portal (~1,487 datasets) via the Socrata SODA API: search the catalog, inspect dataset schemas, and run SoQL queries across mortality, vaccinations, behavioral risk, surveillance, and other public health domains. Datasets are addressed by four-by-four IDs (e.g. bi63-dtpu); the catalog is heterogeneous, so the workflow is discover → inspect schema → query. All values come back as strings, and a column like "year" may be numeric in one dataset and text in another — match WHERE literals to the actual dataType from the schema.`,
   tools: [discoverDatasets, getDatasetSchema, queryDataset],
   resources: [datasetsResource, datasetDetailResource],
   prompts: [analyzeHealthTrend],

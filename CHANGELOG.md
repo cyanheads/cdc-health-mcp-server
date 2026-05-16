@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.4] - 2026-05-16
+
+Framework refresh to `@cyanheads/mcp-ts-core` 0.9.1. Adopts the new server-level `instructions` field and `httpErrorFromResponse` utility, gains the portability lint rules from 0.9.x at build time, and syncs project skills from upstream. No tool/resource/prompt API changes.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` `^0.8.19` → `^0.9.1`. 0.9.0 introduced the `instructions` field on `createApp` / `createWorkerHandler` (server-level model orientation surfaced on every `initialize`), the `mcp_tool_scopes` JWT-claim union and `MCP_AUTH_DISABLE_SCOPE_CHECKS` bypass flag for OIDC providers that can't override the standard `scope` claim, and five new schema-portability lint rules (`schema-format-portability`, `schema-anyof-needs-type`, `schema-no-discriminator-keyword`, `schema-no-defs`, `schema-dialect-tag`). 0.9.1 carried follow-up linter and skill polish.
+- **`SocrataService.fetchJson`** — generic upstream error path now delegates to `httpErrorFromResponse` from `@cyanheads/mcp-ts-core/utils`. Replaces the previous hand-rolled `serviceUnavailable` throw with status-aware classification: 500/501 → `InternalError`, 502/503 → `ServiceUnavailable`, 504 → `Timeout`. The dedicated 400/404/429 branches above it are unchanged.
+- **Dev dependencies**: `@biomejs/biome` `^2.4.14` → `^2.4.15`, `@vitest/coverage-istanbul` and `vitest` `^4.1.5` → `^4.1.6`, `@types/node` `^25.6.2` → `^25.8.0`.
+- **`scripts/devcheck.ts`** — `bun outdated` parser updated for the new markdown-table output. Bun started emitting leading `|` (shifting the package cell from index 0 to 1) and appending a `(dev|peer|prod|optional)` workspace marker to the package name; the allowlist now strips the marker before lookup.
+- **`scripts/build-changelog.ts`** — `SUMMARY_MAX_LENGTH` `250` → `350` (synced from framework template; gives a little more room for one-line release headlines).
+- **README** — `OTEL_ENABLED` env-var row now links to the framework's telemetry docs and notes what gets instrumented (spans, metrics, completion logs).
+
+### Added
+
+- **Server-level `instructions`** in `src/index.ts` — concise orientation forwarded on every `initialize`: domain summary, four-by-four ID format, discover → inspect → query workflow, and the SODA string-typed-values gotcha. Clients that surface `instructions` to the model get session-level grounding without the text bloating individual tool descriptions.
+
+### Synced
+
+- **9 project skills refreshed from framework 0.9.x**: `add-tool` 2.8 → 2.9 (mutator response design), `api-auth` 1.0 → 1.1 (`mcp_tool_scopes` claim union, `MCP_AUTH_DISABLE_SCOPE_CHECKS` bypass), `api-config` 1.3 → 1.4 (new bypass env var), `api-errors` 1.5 → 1.6 ("When not to throw" section), `api-linter` 1.2 → 1.3 (portability rules), `api-workers` 1.3 → 1.4 (`instructions` resolver), `design-mcp-server` 2.10 → 2.11 (server-reports / agent-decides split), `field-test` 2.3 → 2.4 (mutator observability test category), `polish-docs-meta` 1.7 → 1.8 (350-char summary limit), `security-pass` 1.3 → 1.4 (scope-bypass audit), `tool-defs-analysis` 1.0 → 1.2 (mutator observability + unit-bearing numeric names — 10 → 12 categories).
+- **`.claude/skills/`** mirror resynced to match `skills/`.
+
 ## [0.6.3] - 2026-05-08
 
 Definition-language polish across every tool, resource, and prompt — driven by a `tool-defs-analysis` audit. Tightens query defaults, removes display truncation that hid data from the LLM, fills in a missing error contract on `cdc://datasets`, and drops a duplicate dataset-ID validation that the Zod schema already enforces at the edge.

@@ -10,6 +10,7 @@ import {
   serviceUnavailable,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
+import { httpErrorFromResponse } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import type {
   CatalogDataset,
@@ -229,10 +230,10 @@ export class SocrataService {
       if (response.status === 400) {
         this.throwBadRequest(body, url);
       }
-      throw serviceUnavailable(`Socrata API error ${response.status}: ${body.slice(0, 500)}`, {
-        reason: 'upstream_error',
-        status: response.status,
-        url,
+      throw await httpErrorFromResponse(response, {
+        service: 'Socrata',
+        captureBody: false,
+        data: { reason: 'upstream_error', url, body: body.slice(0, 500) },
       });
     }
 
