@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-05-16 19:22:39
+Generated on: 2026-05-23 12:24:12
 
 ```text
 cdc-health-mcp-server/
@@ -25,6 +25,8 @@ cdc-health-mcp-server/
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
+│   ├── lint-packaging.ts
+│   ├── list-skills.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
@@ -143,6 +145,7 @@ cdc-health-mcp-server/
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
+├── .mcpbignore
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
@@ -152,6 +155,7 @@ cdc-health-mcp-server/
 ├── devcheck.config.json
 ├── Dockerfile
 ├── LICENSE
+├── manifest.json
 ├── package.json
 ├── README.md
 ├── server.json

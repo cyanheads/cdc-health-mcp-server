@@ -1,0 +1,40 @@
+{
+  "manifest_version": "0.3",
+  "name": "cdc-health-mcp-server",
+  "version": "0.6.5",
+  "description": "Discover and query CDC public health datasets via the Socrata SODA API.",
+  "author": { "name": "cyanheads" },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_AUTH_MODE": "none",
+        "NODE_ENV": "production"
+      }
+    }
+  },
+  "compatibility": {
+    "runtimes": { "node": ">=24.0.0" }
+  },
+  "tools_generated": true,
+  "prompts_generated": true,
+  "user_config": {
+    "CDC_APP_TOKEN": {
+      "title": "Socrata App Token",
+      "type": "string",
+      "description": "Optional app token for higher CDC Open Data rate limits.",
+      "required": false
+    },
+    "MCP_LOG_LEVEL": {
+      "title": "Log Level",
+      "type": "string",
+      "description": "Minimum log level for output (debug, info, warn, error).",
+      "required": false,
+      "default": "info"
+    }
+  }
+}

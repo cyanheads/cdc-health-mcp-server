@@ -1,8 +1,9 @@
 # Agent Protocol
 
 **Server:** cdc-health-statistics-mcp-server
-**Version:** 0.6.4
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
+**Version:** 0.6.5
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.6`
+**Engines:** Bun ≥1.3.2, Node ≥24.0.0
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -64,8 +65,9 @@ When the user asks what to do next, what's left, or needs direction, suggest rel
 5. **Add tests** — scaffold tests for existing definitions using the `add-test` skill
 6. **Field-test definitions** — exercise tools/resources/prompts with real inputs using the `field-test` skill, get a report of issues and pain points
 7. **Run `devcheck`** — lint, format, typecheck, and security audit
-8. **Run the `polish-docs-meta` skill** — finalize README, CHANGELOG, metadata, and agent protocol for shipping
-9. **Run the `maintenance` skill** — sync skills and dependencies after framework updates
+8. **Run the `security-pass` skill** — audit handlers for MCP-specific security gaps: output injection, scope blast radius, input sinks, tenant isolation
+9. **Run the `polish-docs-meta` skill** — finalize README, CHANGELOG, metadata, and agent protocol for shipping
+10. **Run the `maintenance` skill** — investigate changelogs, adopt upstream changes, and sync skills after `bun update --latest`
 
 Tailor suggestions to what's actually missing or stale — don't recite the full list every time.
 
@@ -73,7 +75,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ## Core Rules
 
-- **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. The framework catches, classifies, and formats. Prefer typed error contracts (`errors[]` + `ctx.fail`) for declared failure modes; fall back to error factories (`notFound()`, `validationError()`, etc.) for ad-hoc throws.
+- **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
 - **Check `ctx.elicit` / `ctx.sample`** for presence before calling.
@@ -285,7 +287,7 @@ src/
 
 Skills are modular instructions in `skills/` at the project root. Read them directly when a task matches — e.g., `skills/add-tool/SKILL.md` when adding a tool.
 
-**Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). This makes skills available as context without needing to reference `skills/` paths manually. After framework updates, re-copy to pick up changes.
+**Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
 
 Available skills:
 
@@ -299,17 +301,17 @@ Available skills:
 | `add-prompt` | Scaffold a new prompt definition |
 | `add-service` | Scaffold a new service integration |
 | `add-test` | Scaffold test file for a tool, resource, or service |
-| `field-test` | Exercise tools/resources/prompts via live HTTP + JSON-RPC, report findings |
+| `field-test` | Exercise tools/resources/prompts with real inputs, verify behavior, report issues |
 | `tool-defs-analysis` | Read-only audit of definition language across the surface (10 categories) |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
 | `security-pass` | Eight-axis security audit before release (injection, scope, input sinks, leakage, etc.) |
 | `release-and-publish` | Post-wrapup ship workflow — npm, MCP Registry, GHCR |
-| `maintenance` | Investigate, adopt, and verify dependency updates (framework changelog review + skill/script sync) |
+| `maintenance` | Investigate changelogs, adopt upstream changes, sync skills to agent dirs |
 | `migrate-mcp-ts-template` | Migrate a fork of mcp-ts-template to depend on the framework as a package |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
-| `api-canvas` | DataCanvas Tier 3 SQL/analytical workspace + `spillover()` helper (opt-in via CANVAS_PROVIDER_TYPE) |
+| `api-canvas` | DataCanvas: register tabular data, run SQL, export, plus the `spillover()` helper for big result sets — Tier 3 opt-in |
 | `api-config` | AppConfig, parseConfig, parseEnvConfig, env vars |
 | `api-context` | Context interface, logger, state, progress |
 | `api-errors` | McpError, JsonRpcErrorCode, typed error contracts, error patterns |
@@ -317,7 +319,7 @@ Available skills:
 | `api-services` | LLM, Speech, Graph services |
 | `api-telemetry` | OTel catalog: spans, metrics, completion logs, env config, cardinality rules |
 | `api-testing` | createMockContext, test patterns |
-| `api-utils` | Formatting, parsing, security, pagination, scheduling |
+| `api-utils` | Formatting, parsing, security, pagination, scheduling, telemetry helpers |
 | `api-workers` | Cloudflare Workers runtime |
 
 When you complete a skill's checklist, check the boxes and add a completion timestamp at the end (e.g., `Completed: 2026-03-11`).
@@ -331,12 +333,46 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run build` | Compile TypeScript |
 | `bun run rebuild` | Clean + build |
 | `bun run clean` | Remove build artifacts |
-| `bun run devcheck` | Lint + format + typecheck + security |
+| `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
+| `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-audit. Use when `devcheck` flags a transitive advisory — stale lockfile can mask already-patched deps. If advisory survives, it's real. |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting |
+| `bun run list-skills` | Print skill index from project `skills/` |
+| `bun run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |
+| `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
+| `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run test` | Run tests |
 | `bun run start:stdio` | Production mode (stdio) — `bun run rebuild && bun run start:stdio` for dev smoke-tests |
 | `bun run start:http` | Production mode (HTTP) — `bun run rebuild && bun run start:http` for dev smoke-tests |
+
+---
+
+## Bundling
+
+`bun run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. MCPB is stdio-only — HTTP deployments are unaffected. Delete `manifest.json` and `.mcpbignore` to skip; `lint:packaging` skips cleanly when `manifest.json` is absent.
+
+**Adding an env var requires both files:** `server.json` (`environmentVariables[]`) and `manifest.json` (`mcp_config.env` + `user_config`). `lint:packaging` (wired into `devcheck`) verifies alignment.
+
+---
+
+## Changelog
+
+Directory-based, grouped by minor series. Source of truth: `changelog/<major.minor>.x/<version>.md` — one file per release. `changelog/template.md` is a pristine format reference — never edit or move it. `CHANGELOG.md` is a navigation index regenerated by `bun run changelog:build` — devcheck hard-fails on drift; never hand-edit it.
+
+Each per-version file opens with YAML frontmatter:
+
+```markdown
+---
+summary: "One-line headline, ≤350 chars"
+breaking: false
+security: false
+---
+
+# 0.7.0 — YYYY-MM-DD
+...
+```
+
+**Section order** (Keep a Changelog): Added, Changed, Deprecated, Removed, Fixed, Security. Include only sections with entries.
 
 ---
 
@@ -359,9 +395,11 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 - [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`). When regex/length constraints matter, use `z.union([z.literal(''), z.string().regex(...).describe(...)])` — literal variants are exempt from `describe-on-fields`.
 - [ ] JSDoc `@fileoverview` + `@module` on every file
 - [ ] `ctx.log` for logging, `ctx.state` for storage
-- [ ] Handlers throw on failure — typed `errors[]` + `ctx.fail` for declared modes, factories or `Error` for ad-hoc; no try/catch
+- [ ] Handlers throw on failure — error factories or plain `Error`, no try/catch
 - [ ] `format()` renders all data the LLM needs — different clients forward different surfaces (Claude Code → `structuredContent`, Claude Desktop → `content[]`); both must carry the same data
-- [ ] Service-thrown errors carry contract `reason` via `data: { reason }` on factory calls when applicable
+- [ ] If wrapping external API: raw/domain/output schemas reviewed against real upstream sparsity/nullability before finalizing required vs optional fields
+- [ ] If wrapping external API: normalization and `format()` preserve uncertainty; do not fabricate facts from missing upstream data
+- [ ] If wrapping external API: tests include at least one sparse payload case with omitted upstream fields
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
 - [ ] `bun run devcheck` passes

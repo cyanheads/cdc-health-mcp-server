@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.6.5] - 2026-05-23
+
+Framework refresh to `@cyanheads/mcp-ts-core` ^0.9.6, `zod` promoted to a direct dependency, `publish-mcp` script, `manifest.json` + `.mcpbignore` scaffolded for MCPB bundle support, install badges added to README, and action-first description rewrites across tools.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` `^0.9.1` → `^0.9.6`. Picks up fixes and polish across the 0.9.x patch series.
+- **`zod`**: promoted from implicit transitive to direct dependency `^4.4.3`. Zod is used directly in tool/resource schemas; the explicit entry prevents accidental version skew when the framework updates its own peer.
+- **Dev dependencies**: `@types/node` `^25.8.0` → `^25.9.1`, `@vitest/coverage-istanbul` and `vitest` `^4.1.6` → `^4.1.7`.
+- **`package.json` `description`**: `"MCP server for discovering and querying CDC public health datasets via the Socrata SODA API."` → `"Discover and query CDC public health datasets via the Socrata SODA API via MCP. STDIO or Streamable HTTP."` — action-first, surfaces both transport modes.
+- **`package.json` `files`**: `manifest.json` and `.mcpbignore` added to the published set so MCPB bundles include them.
+- **`scripts/devcheck.ts`**: `bun outdated` parser updated (upstream format changes).
+- **README badge row**: consolidated to a single line; `Docker`, `TypeScript`, and `Bun` badges added; badge order updated for scan consistency.
+
+### Added
+
+- **`publish-mcp` script** in `package.json`: `bun run build && npm publish --access public` — one-step publish after a clean build.
+- **`bundle` script** in `package.json`: `bun run build && npx -y @anthropic-ai/mcpb pack ...` — produces a `.mcpb` extension bundle for one-click Claude Desktop install.
+- **`manifest.json`**: MCPB manifest scaffolded with env var declarations for `CDC_APP_TOKEN` and `MCP_LOG_LEVEL`.
+- **`.mcpbignore`**: excludes non-bundle files from the packed `.mcpb` artifact.
+- **Install badges** in README: Claude Desktop `.mcpb` install, Cursor deep-link, VS Code MCP install.
+
+### Synced
+
+- **Skills refreshed from framework 0.9.x**: `field-test` 2.4 → 2.5, `maintenance` 2.1 → 2.2, `polish-docs-meta` 1.8 → 1.9, `release-and-publish` 1.x → latest.
+- **`.claude/skills/`** mirror resynced to match `skills/`.
+
 ## [0.6.4] - 2026-05-16
 
 Framework refresh to `@cyanheads/mcp-ts-core` 0.9.1. Adopts the new server-level `instructions` field and `httpErrorFromResponse` utility, gains the portability lint rules from 0.9.x at build time, and syncs project skills from upstream. No tool/resource/prompt API changes.
