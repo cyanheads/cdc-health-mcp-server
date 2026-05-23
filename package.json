@@ -30,7 +30,7 @@
     "list-skills": "bun scripts/list-skills.ts",
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
     "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/cdc-health-mcp-server.mcpb",
-    "publish-mcp": "bun run build && npm publish --access public",
+    "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish",
     "changelog:build": "bun scripts/build-changelog.ts",
     "changelog:check": "bun scripts/check-docs-sync.ts",
     "test": "vitest run",
