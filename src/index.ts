@@ -18,6 +18,7 @@ await createApp({
   tools: [discoverDatasets, getDatasetSchema, queryDataset],
   resources: [datasetsResource, datasetDetailResource],
   prompts: [analyzeHealthTrend],
+  landing: { requireAuth: false },
   setup() {
     initSocrataService();
   },

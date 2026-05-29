@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/cdc-health-mcp-server",
-  "description": "Discover and query CDC public health datasets via the Socrata SODA API.",
+  "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk.",
   "repository": {
     "url": "https://github.com/cyanheads/cdc-health-mcp-server",
     "source": "github"
   },
-  "version": "0.6.5",
+  "version": "0.6.6",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/cdc-health-mcp-server",
       "runtimeHint": "node",
-      "version": "0.6.5",
+      "version": "0.6.6",
       "packageArguments": [
         {
           "type": "positional",
@@ -54,7 +54,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/cdc-health-mcp-server",
       "runtimeHint": "node",
-      "version": "0.6.5",
+      "version": "0.6.6",
       "packageArguments": [
         {
           "type": "positional",

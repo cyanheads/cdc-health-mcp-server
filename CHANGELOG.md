@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.6] - 2026-05-28
+
+Framework adoption to `@cyanheads/mcp-ts-core` ^0.9.13, HTTP transport hardening (413 body cap, session-init gate, quieter 401/403/400/404 logging), landing page inventory now public, GET /mcp surfaces package keywords, and description/keyword polish.
+
+### Added
+
+- **`landing.requireAuth: false`** in `src/index.ts` — keeps the tool/resource/prompt inventory visible to unauthenticated callers on the public hosted endpoint, consistent with `MCP_AUTH_MODE=none` behavior. Opt-in required after framework 0.9.10 changed the default to gated when auth is active.
+- **`package.json` keywords**: `bun`, `stdio`, `streamable-http` added — surfaced on `GET /mcp` via framework 0.9.12.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` `^0.9.6` → `^0.9.13`. User-facing changes across the range:
+  - **`MCP_HTTP_MAX_BODY_BYTES`** (0.9.13) — oversized inbound HTTP bodies rejected with 413 before the SDK parses them. Default 1 MiB; set to `0` to disable.
+  - **HTTP session-init gate** (0.9.10) — stateful HTTP mode rejects requests without `Mcp-Session-Id` with 400, preventing uninitialized session minting.
+  - **Quieter expected-error logging** (0.9.10) — 401, 403, 400, 404 responses now logged at `warning` level instead of running through the full error pipeline with stack traces.
+  - **`GET /mcp` surfaces `package.json` keywords** (0.9.12) — discovery metadata richer for tool-registry clients.
+- **`package.json` description**: updated to lead with concrete data domains (mortality, vaccinations, surveillance, behavioral risk).
+- **`server.json` description**: trimmed to remove "Socrata SODA API" implementation detail — description now reads as user-facing scope.
+- **Dev dependencies**: `@biomejs/biome` ^2.4.15 → ^2.4.16.
+
+### Synced
+
+- Skills refreshed from framework 0.9.7–0.9.13: `api-canvas`, `api-config`, `design-mcp-server`, `polish-docs-meta` (with references), `release-and-publish`, `report-issue-framework`. `migrate-mcp-ts-template` removed (migration era complete). `code-simplifier` and `git-wrapup` added as new skills.
+- `.claude-plugin/` and `.codex-plugin/` plugin metadata directories scaffolded.
+
 ## [0.6.5] - 2026-05-23
 
 Framework refresh to `@cyanheads/mcp-ts-core` ^0.9.6, `zod` promoted to a direct dependency, `publish-mcp` script, `manifest.json` + `.mcpbignore` scaffolded for MCPB bundle support, install badges added to README, and action-first description rewrites across tools.
