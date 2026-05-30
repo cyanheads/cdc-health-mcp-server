@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/discover-datasets
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import type { DiscoverResult } from '@/services/socrata/types.js';
@@ -31,11 +31,6 @@ const sampleServiceResult: DiscoverResult = {
   totalCount: 1,
 };
 
-const sampleResult = {
-  ...sampleServiceResult,
-  appliedFilters: { query: 'diabetes' },
-};
-
 describe('cdc_discover_datasets', () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -48,9 +43,42 @@ describe('cdc_discover_datasets', () => {
     const result = await discoverDatasets.handler(input, ctx);
 
     expect(result.datasets).toHaveLength(1);
-    expect(result.totalCount).toBe(1);
     expect(result.datasets[0].id).toBe('bi63-dtpu');
-    expect(result.appliedFilters).toEqual({ query: 'diabetes' });
+  });
+
+  it('enriches with totalCount and appliedFilters', async () => {
+    mockDiscover.mockResolvedValue(sampleServiceResult);
+    const ctx = createMockContext();
+    const input = discoverDatasets.input.parse({ query: 'diabetes', category: 'NCHS' });
+    await discoverDatasets.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(1);
+    expect(enrichment.appliedFilters).toEqual({ query: 'diabetes', category: 'NCHS' });
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('emits a notice when no datasets matched', async () => {
+    mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+    const ctx = createMockContext();
+    const input = discoverDatasets.input.parse({ query: 'nonexistent' });
+    await discoverDatasets.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toContain('No datasets found');
+    expect(enrichment.notice).toContain('nonexistent');
+    expect(enrichment.totalCount).toBe(0);
+  });
+
+  it('emits a notice with no criteria when no filters applied', async () => {
+    mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+    const ctx = createMockContext();
+    const input = discoverDatasets.input.parse({});
+    await discoverDatasets.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toContain('No datasets found');
+    expect(enrichment.appliedFilters).toEqual({});
   });
 
   it('passes all options to the service', async () => {
@@ -89,43 +117,27 @@ describe('cdc_discover_datasets', () => {
 
   describe('format', () => {
     it('renders dataset details in markdown', () => {
-      const blocks = discoverDatasets.format!(sampleResult);
+      const blocks = discoverDatasets.format!({ datasets: sampleServiceResult.datasets });
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('text');
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('1 datasets found');
       expect(text).toContain('bi63-dtpu');
       expect(text).toContain('Diabetes Mortality');
       expect(text).toContain('NCHS');
       expect(text).toContain('`state` (text), `year` (number), `deaths` (number)');
     });
 
-    it('renders empty-state message with criteria echo', () => {
-      const blocks = discoverDatasets.format!({
-        datasets: [],
-        totalCount: 0,
-        appliedFilters: { query: 'nonexistent' },
-      });
+    it('renders empty-state message when no datasets', () => {
+      const blocks = discoverDatasets.format!({ datasets: [] });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No datasets found');
-      expect(text).toContain('nonexistent');
-    });
-
-    it('renders empty-state message without filters', () => {
-      const blocks = discoverDatasets.format!({
-        datasets: [],
-        totalCount: 0,
-        appliedFilters: {},
-      });
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No datasets found');
+      expect(text).toContain('No datasets matched');
     });
 
     it('renders all columns without truncation', () => {
-      const manyColumns = { ...sampleResult };
       const cols = Array.from({ length: 15 }, (_, i) => `col_${i}`);
-      manyColumns.datasets = [{ ...sampleResult.datasets[0], columnNames: cols }];
-      const blocks = discoverDatasets.format!(manyColumns);
+      const blocks = discoverDatasets.format!({
+        datasets: [{ ...sampleServiceResult.datasets[0], columnNames: cols }],
+      });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('`col_0` (text)');
       expect(text).toContain('`col_14` (unknown)');

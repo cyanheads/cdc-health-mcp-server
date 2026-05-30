@@ -108,12 +108,32 @@ export const queryDataset = tool('cdc_query_dataset', {
         'Result rows with requested fields. Most values are strings (including numbers/dates); geo columns return GeoJSON objects.',
       ),
     rowCount: z.number().describe('Number of rows returned in this response.'),
-    query: z.string().describe('Assembled SoQL query string sent to Socrata.'),
   }),
+
+  // Agent-facing result-set context: the assembled SoQL query sent to Socrata (for
+  // debugging and reproducibility) and a recovery notice when nothing matched.
+  // Reaches structuredContent AND content[] automatically — no format() entry needed.
+  enrichment: {
+    effectiveQuery: z.string().describe('Assembled SoQL query string sent to the Socrata API.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no rows matched — suggests how to verify filter values or broaden the WHERE clause.',
+      ),
+  },
 
   async handler(input, ctx) {
     const service = getSocrataService();
     const result = await service.query(input, ctx.signal);
+
+    ctx.enrich({ effectiveQuery: result.query });
+
+    if (result.rows.length === 0) {
+      ctx.enrich.notice(
+        'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.',
+      );
+    }
 
     ctx.log.info('Query executed', {
       datasetId: input.datasetId,
@@ -121,7 +141,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       query: result.query,
     });
 
-    return result;
+    return { rows: result.rows, rowCount: result.rowCount };
   },
 
   format: (result) => {
@@ -131,8 +151,6 @@ export const queryDataset = tool('cdc_query_dataset', {
           type: 'text',
           text: [
             'No rows matched the query.',
-            '',
-            `**Query:** \`${result.query}\``,
             '',
             'Suggestions:',
             '- Verify string values are spelled exactly as stored (check with a GROUP BY enumeration)',
@@ -160,7 +178,6 @@ export const queryDataset = tool('cdc_query_dataset', {
       lines.push(`| ${cells.join(' | ')} |`);
     }
 
-    lines.push('', `**Query:** \`${result.query}\``);
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

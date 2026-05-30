@@ -7,6 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 
+const AppliedFiltersSchema = z.object({
+  query: z.string().optional().describe('Search query used.'),
+  category: z.string().optional().describe('Category filter used.'),
+  tags: z.array(z.string()).optional().describe('Tag filters used.'),
+});
+
 export const discoverDatasets = tool('cdc_discover_datasets', {
   description:
     'Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, descriptions, column lists, and update timestamps.',
@@ -93,21 +99,61 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
           .describe('A single dataset catalog entry.'),
       )
       .describe('Matching datasets.'),
-    totalCount: z.number().describe('Total matching datasets (for pagination).'),
-    appliedFilters: z
-      .object({
-        query: z.string().optional().describe('Search query used.'),
-        category: z.string().optional().describe('Category filter used.'),
-        tags: z.array(z.string()).optional().describe('Tag filters used.'),
-      })
-      .describe(
-        'Filters that were applied to this query; absent fields indicate no filter on that dimension.',
-      ),
   }),
+
+  // Agent-facing result-set context: total for pagination, the filters as the server
+  // applied them, and a recovery notice when nothing matched. Reaches structuredContent
+  // AND content[] automatically — no format() entry needed or allowed.
+  enrichment: {
+    totalCount: z.number().describe('Total matching datasets in the catalog (for pagination).'),
+    appliedFilters: AppliedFiltersSchema.describe(
+      'Filters applied to this query; absent fields indicate no filter on that dimension.',
+    ),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no datasets matched — echoes the applied filters and suggests how to broaden the search.',
+      ),
+  },
+
+  enrichmentTrailer: {
+    totalCount: { label: 'Total Matching' },
+    appliedFilters: {
+      render: (f) => {
+        const parts: string[] = [];
+        if (f.query) parts.push(`- **Query:** "${f.query}"`);
+        if (f.category) parts.push(`- **Category:** "${f.category}"`);
+        if (f.tags?.length) parts.push(`- **Tags:** ${f.tags.join(', ')}`);
+        return parts.length > 0
+          ? `**Applied Filters:**\n${parts.join('\n')}`
+          : '**Applied Filters:** none';
+      },
+    },
+  },
 
   async handler(input, ctx) {
     const service = getSocrataService();
     const result = await service.discover(input, ctx.signal);
+
+    const appliedFilters = {
+      ...(input.query ? { query: input.query } : {}),
+      ...(input.category ? { category: input.category } : {}),
+      ...(input.tags?.length ? { tags: input.tags } : {}),
+    };
+
+    ctx.enrich({ totalCount: result.totalCount, appliedFilters });
+
+    if (result.datasets.length === 0) {
+      const filterParts: string[] = [];
+      if (input.query) filterParts.push(`query "${input.query}"`);
+      if (input.category) filterParts.push(`category "${input.category}"`);
+      if (input.tags?.length) filterParts.push(`tags [${input.tags.join(', ')}]`);
+      const criteria = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No datasets found${criteria}. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.`,
+      );
+    }
 
     ctx.log.info('Dataset discovery completed', {
       query: input.query,
@@ -116,39 +162,20 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       totalCount: result.totalCount,
     });
 
-    return {
-      ...result,
-      appliedFilters: {
-        ...(input.query ? { query: input.query } : {}),
-        ...(input.category ? { category: input.category } : {}),
-        ...(input.tags?.length ? { tags: input.tags } : {}),
-      },
-    };
+    return { datasets: result.datasets };
   },
 
   format: (result) => {
-    const filters = result.appliedFilters;
-    const filterParts: string[] = [];
-    if (filters.query) filterParts.push(`query "${filters.query}"`);
-    if (filters.category) filterParts.push(`category "${filters.category}"`);
-    if (filters.tags?.length) filterParts.push(`tags [${filters.tags.join(', ')}]`);
-
     if (result.datasets.length === 0) {
-      const criteria = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
-
       return [
         {
           type: 'text',
-          text: `No datasets found${criteria}. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.`,
+          text: 'No datasets matched the search criteria.',
         },
       ];
     }
 
-    const filterSuffix = filterParts.length > 0 ? ` — filtered by ${filterParts.join(', ')}` : '';
-
-    const lines = [
-      `**${result.totalCount} datasets found** (showing ${result.datasets.length})${filterSuffix}\n`,
-    ];
+    const lines: string[] = [`**${result.datasets.length} datasets returned**\n`];
     for (const d of result.datasets) {
       lines.push(`### ${d.name}`);
       const views = typeof d.pageViews === 'number' ? d.pageViews.toLocaleString() : '—';

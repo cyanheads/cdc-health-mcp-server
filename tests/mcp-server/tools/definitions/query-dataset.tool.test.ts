@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/query-dataset
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import type { QueryResult } from '@/services/socrata/types.js';
@@ -28,7 +28,7 @@ describe('cdc_query_dataset', () => {
     vi.clearAllMocks();
   });
 
-  it('returns query results for valid input', async () => {
+  it('returns rows and rowCount for valid input', async () => {
     mockQuery.mockResolvedValue(sampleResult);
     const ctx = createMockContext();
     const input = queryDataset.input.parse({
@@ -39,7 +39,30 @@ describe('cdc_query_dataset', () => {
 
     expect(result.rows).toHaveLength(2);
     expect(result.rowCount).toBe(2);
-    expect(result.query).toContain('where');
+    // query is now enrichment, not output
+    expect((result as Record<string, unknown>).query).toBeUndefined();
+  });
+
+  it('enriches with effectiveQuery', async () => {
+    mockQuery.mockResolvedValue(sampleResult);
+    const ctx = createMockContext();
+    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'year=2020' });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toContain('where');
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('emits a notice when no rows matched', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$where=x' });
+    const ctx = createMockContext();
+    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'x=1' });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toContain('No rows matched');
+    expect(enrichment.effectiveQuery).toBe('$where=x');
   });
 
   it('passes all SoQL clauses to the service', async () => {
@@ -74,7 +97,7 @@ describe('cdc_query_dataset', () => {
     );
   });
 
-  it('allows query with no filters (returns all rows)', async () => {
+  it('allows query with no filters', async () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
     const ctx = createMockContext();
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu' });
@@ -99,30 +122,26 @@ describe('cdc_query_dataset', () => {
 
   describe('format', () => {
     it('renders a markdown table', () => {
-      const blocks = queryDataset.format!(sampleResult);
+      const blocks = queryDataset.format!({ rows: sampleResult.rows, rowCount: 2 });
       expect(blocks).toHaveLength(1);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('2 rows returned');
       expect(text).toContain('| state | year | deaths |');
       expect(text).toContain('California');
       expect(text).toContain('Texas');
-      expect(text).toContain('**Query:**');
     });
 
     it('renders empty-state message', () => {
-      const blocks = queryDataset.format!({ rows: [], rowCount: 0, query: '$where=x' });
+      const blocks = queryDataset.format!({ rows: [], rowCount: 0 });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No rows matched the query');
-      expect(text).toContain('$where=x');
     });
 
     it('escapes pipe characters in cell values', () => {
-      const result: QueryResult = {
+      const blocks = queryDataset.format!({
         rows: [{ name: 'A | B' }],
         rowCount: 1,
-        query: '',
-      };
-      const blocks = queryDataset.format!(result);
+      });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('A \\| B');
     });
