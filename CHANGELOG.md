@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.7] - 2026-05-30
+
+Enrichment adoption on `cdc_discover_datasets` and `cdc_query_dataset` — query echoes, result totals, and empty-result guidance now surface in a typed `enrichment` block reaching both the `structuredContent` JSON and the `content[]` markdown trailer.
+
+### Changed
+
+- **`cdc_discover_datasets`**: `totalCount` and `appliedFilters` moved from the `output` block into a typed `enrichment` block (`enrichment.totalCount`, `enrichment.appliedFilters`). Values are preserved and reach both channels. An `enrichment.notice` fires when no datasets match, echoing the applied filters and suggesting how to broaden the search.
+- **`cdc_query_dataset`**: `query` field removed from the `output` block and re-surfaced as `enrichment.effectiveQuery` (renamed for clarity). An `enrichment.notice` fires when no rows match, with guidance on verifying filter values and broadening the WHERE clause.
+- **Framework**: `@cyanheads/mcp-ts-core` `^0.9.13` → `^0.9.16`. User-facing changes across the range:
+  - **Enrichment block** (0.9.14) — typed `enrichment`/`enrichmentTrailer` on `tool()` for agent-facing result context (totals, query echoes, notices). Reaches `structuredContent` and `content[]` automatically.
+  - **`ctx.enrich` helpers** (0.9.14) — `.notice()`, `.total()`, `.echo()`, `.delta()` kind-tagged methods on the handler context.
+  - **`ctx.enrich` always present** (0.9.15) — no presence-check required; typed via `HandlerContext<R, E>` when an `enrichment` block is declared.
+  - **AGENTS.md template** (0.9.15) — `bunx @cyanheads/mcp-ts-core init` scaffolds AGENTS.md alongside CLAUDE.md.
+  - **`api-linter` lint rules** (0.9.14–0.9.15) — enrichment contract validation added.
+- **Skills**: synced from framework 0.9.13–0.9.16 (`add-tool`, `add-app-tool`, `add-service`, `api-context`, `api-linter`, `design-mcp-server`, `git-wrapup`, `maintenance`, `polish-docs-meta` + references, `setup`).
+
 ## [0.6.6] - 2026-05-28
 
 Framework adoption to `@cyanheads/mcp-ts-core` ^0.9.13, HTTP transport hardening (413 body cap, session-init gate, quieter 401/403/400/404 logging), landing page inventory now public, GET /mcp surfaces package keywords, and description/keyword polish.

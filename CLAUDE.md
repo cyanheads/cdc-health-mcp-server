@@ -1,8 +1,8 @@
 # Agent Protocol
 
 **Server:** cdc-health-statistics-mcp-server
-**Version:** 0.6.6
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.13`
+**Version:** 0.6.7
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.16`
 **Engines:** Bun ≥1.3.2, Node ≥24.0.0
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -207,6 +207,7 @@ Handlers receive a unified `ctx` object. Key properties:
 | `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
 | `ctx.signal` | `AbortSignal` for cancellation. |
 | `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
+| `ctx.enrich` | Success-path enrichment — accumulates agent-facing context (notices, totals, query echo) onto the request. Reaches `structuredContent` + `content[]` automatically. Kind-tagged helpers: `.notice(text)`, `.total(n)`, `.echo(query)`, `.delta({ field, before, after })`. Always present; typed on `HandlerContext<R, E>` when an `enrichment` block is declared. |
 | `ctx.requestId` | Unique request ID. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
 
@@ -339,7 +340,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
 | `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-run `bun audit`. Use when `devcheck` flags a transitive advisory — Bun's `update` is sticky on transitive resolutions, so the advisory may be a stale-lockfile false positive. If it survives the refresh, it's real. |
 | `bun run tree` | Generate directory structure doc |
-| `bun run format` | Auto-fix formatting |
+| `bun run format` | Auto-fix formatting (safe rules only) |
+| `bun run format:unsafe` | Auto-fix formatting including unsafe rules (review diff before committing) |
 | `bun run list-skills` | Print skill index from project `skills/` |
 | `bun run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
