@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.8] - 2026-06-02
+
+Framework adoption to `@cyanheads/mcp-ts-core` ^0.9.21, new `release:github` script, and skill sync from framework 0.9.16–0.9.21.
+
+### Changed
+
+- **Framework**: `@cyanheads/mcp-ts-core` `^0.9.16` → `^0.9.21`. User-facing changes across the range:
+  - **HTTP transport per-request log context** (0.9.17) — per-request logs and traces now carry fresh request + trace/span IDs instead of the frozen boot context.
+  - **`fetchWithTimeout` secret scrubbing** (0.9.18) — query-string secrets (e.g. `?api_key=`) stripped from error messages and logs.
+  - **`withRetry` fail-fast** (0.9.19) — non-retryable errors abort immediately; `ctx.fail` auto-populates the `retryable` flag.
+- **Skills**: synced from framework 0.9.16–0.9.21 (`add-tool`, `add-service`, `api-canvas`, `api-context`, `api-linter`, `api-utils`, `design-mcp-server`, `release-and-publish` + new `api-mirror`, `orchestrations`).
+- **`scripts/devcheck.ts`**: updated devcheck script from framework 0.9.21.
+- **README client-config keys**: renamed from `cdc-health` to the full package name `cdc-health-mcp-server` for consistency across config examples.
+- **Plugin manifests**: `.claude-plugin/plugin.json` and `.codex-plugin/mcp.json` args simplified — redundant `run start:stdio` positional dropped.
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.9.16 → ^0.9.21
+- `@vitest/coverage-istanbul` ^4.1.7 → ^4.1.8
+- `vitest` ^4.1.7 → ^4.1.8
+
 ## [0.6.7] - 2026-05-30
 
 Enrichment adoption on `cdc_discover_datasets` and `cdc_query_dataset` — query echoes, result totals, and empty-result guidance now surface in a typed `enrichment` block reaching both the `structuredContent` JSON and the `content[]` markdown trailer.

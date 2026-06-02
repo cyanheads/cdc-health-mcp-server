@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "cdc-health-mcp-server",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API).",
   "author": {
     "name": "cyanheads"

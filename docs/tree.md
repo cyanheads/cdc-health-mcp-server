@@ -1,10 +1,15 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-05-23 12:24:12
+Generated on: 2026-06-02 13:56:18
 
 ```text
 cdc-health-mcp-server/
 ├── .claude/
+├── .claude-plugin/
+│   └── plugin.json
+├── .codex-plugin/
+│   ├── mcp.json
+│   └── plugin.json
 ├── .github/
 │   └── ISSUE_TEMPLATE/
 │       ├── bug_report.yml
@@ -21,12 +26,14 @@ cdc-health-mcp-server/
 │   ├── build.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
@@ -54,6 +61,8 @@ cdc-health-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-linter/
 │   │   └── SKILL.md
+│   ├── api-mirror/
+│   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
 │   │   │   ├── graph.md
@@ -72,13 +81,22 @@ cdc-health-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-workers/
 │   │   └── SKILL.md
+│   ├── code-simplifier/
+│   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
 │   ├── field-test/
 │   │   └── SKILL.md
+│   ├── git-wrapup/
+│   │   └── SKILL.md
 │   ├── maintenance/
 │   │   └── SKILL.md
-│   ├── migrate-mcp-ts-template/
+│   ├── orchestrations/
+│   │   ├── workflows/
+│   │   │   ├── field-test-fix.md
+│   │   │   ├── fix-wrapup-release.md
+│   │   │   ├── greenfield-build.md
+│   │   │   └── maintenance-release.md
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
@@ -122,6 +140,7 @@ cdc-health-mcp-server/
 │   └── index.ts
 ├── tests/
 │   ├── config/
+│   │   ├── server-config-edge.test.ts
 │   │   └── server-config.test.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -129,17 +148,26 @@ cdc-health-mcp-server/
 │   │   │       └── analyze-health-trend.prompt.test.ts
 │   │   ├── resources/
 │   │   │   └── definitions/
+│   │   │       ├── dataset-detail-edge.resource.test.ts
 │   │   │       ├── dataset-detail.resource.test.ts
+│   │   │       ├── datasets-edge.resource.test.ts
 │   │   │       └── datasets.resource.test.ts
 │   │   └── tools/
 │   │       └── definitions/
+│   │           ├── discover-datasets-edge.tool.test.ts
 │   │           ├── discover-datasets.tool.test.ts
+│   │           ├── get-dataset-schema-edge.tool.test.ts
 │   │           ├── get-dataset-schema.tool.test.ts
+│   │           ├── query-dataset-edge.tool.test.ts
 │   │           └── query-dataset.tool.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── security/
+│   │   └── tools-security.test.ts
 │   ├── services/
 │   │   └── socrata/
+│   │       ├── socrata-service-errors.test.ts
+│   │       ├── socrata-service-token.test.ts
 │   │       └── socrata-service.test.ts
 │   └── tools/
 ├── .dockerignore
