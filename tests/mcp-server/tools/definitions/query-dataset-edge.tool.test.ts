@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/query-dataset-edge
  */
 
+import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
@@ -86,6 +87,68 @@ describe('cdc_query_dataset — edge cases', () => {
     });
   });
 
+  describe('handler — truncation notice', () => {
+    it('emits truncation notice when rowCount equals limit', async () => {
+      mockQuery.mockResolvedValue({ rows: [{ state: 'CA' }], rowCount: 100, query: '$limit=100' });
+      const ctx = createMockContext();
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 100 });
+      await queryDataset.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.notice).toContain('truncated');
+      expect(enrichment.notice).toContain('100');
+      expect(enrichment.notice).toContain('offset');
+    });
+
+    it('does not emit truncation notice when rowCount is less than limit', async () => {
+      mockQuery.mockResolvedValue({ rows: [{ state: 'CA' }], rowCount: 50, query: '$limit=100' });
+      const ctx = createMockContext();
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 100 });
+      await queryDataset.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.notice).toBeUndefined();
+    });
+
+    it('does not emit truncation notice for empty results', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
+      const ctx = createMockContext();
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 100 });
+      await queryDataset.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.notice).toContain('No rows matched');
+    });
+  });
+
+  describe('handler — service error re-throw with recovery', () => {
+    it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {
+      const serviceErr = new McpError(-32602, 'No such column "badcol"', {
+        reason: 'no_such_column',
+        column: 'badcol',
+      });
+      mockQuery.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', where: "badcol='x'" });
+
+      await expect(queryDataset.handler(input, ctx)).rejects.toMatchObject({
+        data: expect.objectContaining({
+          reason: 'no_such_column',
+          recovery: { hint: expect.stringContaining('cdc_get_dataset_schema') },
+        }),
+      });
+    });
+
+    it('re-throws non-McpError errors unchanged', async () => {
+      const plainErr = new Error('network failure');
+      mockQuery.mockRejectedValue(plainErr);
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34' });
+
+      await expect(queryDataset.handler(input, ctx)).rejects.toThrow('network failure');
+    });
+  });
+
   describe('format — additional edge cases', () => {
     it('renders single row correctly', () => {
       const blocks = queryDataset.format!({
@@ -123,6 +186,23 @@ describe('cdc_query_dataset — edge cases', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No rows matched the query');
       expect(text).toContain('Suggestions');
+    });
+
+    it('non-empty result includes schema tip', () => {
+      const blocks = queryDataset.format!({
+        rows: [{ state: 'Alaska', deaths: '42' }],
+        rowCount: 1,
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('cdc_get_dataset_schema');
+    });
+  });
+
+  describe('input schema — datasetId description', () => {
+    it('datasetId description includes cdc_discover_datasets pointer', () => {
+      const shape = queryDataset.input.shape;
+      const desc = shape.datasetId.description;
+      expect(desc).toContain('cdc_discover_datasets');
     });
   });
 });

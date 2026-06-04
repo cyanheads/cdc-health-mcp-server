@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
+import type { DiscoverResult } from '@/services/socrata/types.js';
 
 const AppliedFiltersSchema = z.object({
   query: z.string().optional().describe('Search query used.'),
@@ -29,9 +30,16 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata catalog API returned a non-success status outside of 404/429.',
+      when: 'Socrata catalog API returned a non-success status outside of 400/404/429.',
       retryable: true,
       recovery: 'Retry after a brief delay; the catalog may be temporarily unavailable.',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Catalog API returned 400 — typically a malformed query or invalid filter value.',
+      recovery:
+        'Check that category names and tag values match what the catalog accepts; try removing filters to confirm basic discovery works.',
     },
   ],
 
@@ -134,7 +142,16 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
 
   async handler(input, ctx) {
     const service = getSocrataService();
-    const result = await service.discover(input, ctx.signal);
+    let result: DiscoverResult;
+    try {
+      result = await service.discover(input, ctx.signal);
+    } catch (err) {
+      if (err instanceof McpError && typeof err.data?.reason === 'string') {
+        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
+        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+      }
+      throw err;
+    }
 
     const appliedFilters = {
       ...(input.query ? { query: input.query } : {}),

@@ -208,12 +208,12 @@ describe('SocrataService', () => {
       expect(url).toContain('%24having=');
     });
 
-    it('defaults limit to 1000', async () => {
+    it('defaults limit to 100', async () => {
       const spy = mockFetch([]);
       await service.query({ datasetId: 'bi63-dtpu', search: 'test' });
 
       const url = spy.mock.calls[0][0] as string;
-      expect(url).toContain('%24limit=1000');
+      expect(url).toContain('%24limit=100');
     });
   });
 });

@@ -144,7 +144,7 @@ export class SocrataService {
     if (options.group) params.set('$group', options.group);
     if (options.having) params.set('$having', options.having);
     if (options.order) params.set('$order', options.order);
-    params.set('$limit', String(options.limit ?? 1000));
+    params.set('$limit', String(options.limit ?? 100));
     params.set('$offset', String(options.offset ?? 0));
 
     const queryString = params.toString();

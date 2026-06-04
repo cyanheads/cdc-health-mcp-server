@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/discover-datasets
  */
 
+import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
@@ -141,6 +142,44 @@ describe('cdc_discover_datasets', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('`col_0` (text)');
       expect(text).toContain('`col_14` (unknown)');
+    });
+  });
+
+  describe('error contract', () => {
+    it('declares invalid_query contract entry', () => {
+      const entry = discoverDatasets.errors?.find((e) => e.reason === 'invalid_query');
+      expect(entry).toBeDefined();
+      expect(entry?.recovery).toContain('category names');
+    });
+
+    it('upstream_error description excludes 400 from catch-all', () => {
+      const entry = discoverDatasets.errors?.find((e) => e.reason === 'upstream_error');
+      expect(entry?.when).toContain('400/404/429');
+    });
+
+    it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {
+      const serviceErr = new McpError(-32602, 'Invalid filter value', {
+        reason: 'invalid_query',
+      });
+      mockDiscover.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      const input = discoverDatasets.input.parse({ category: 'Bad Category!' });
+
+      await expect(discoverDatasets.handler(input, ctx)).rejects.toMatchObject({
+        data: expect.objectContaining({
+          reason: 'invalid_query',
+          recovery: { hint: expect.stringContaining('category names') },
+        }),
+      });
+    });
+
+    it('re-throws non-McpError errors unchanged', async () => {
+      const plainErr = new Error('network failure');
+      mockDiscover.mockRejectedValue(plainErr);
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      const input = discoverDatasets.input.parse({});
+
+      await expect(discoverDatasets.handler(input, ctx)).rejects.toThrow('network failure');
     });
   });
 });

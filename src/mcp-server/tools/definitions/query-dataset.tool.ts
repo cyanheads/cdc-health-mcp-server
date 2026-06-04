@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
+import type { QueryResult } from '@/services/socrata/types.js';
 
 const MAX_LIMIT = 5000;
 
@@ -63,7 +64,9 @@ export const queryDataset = tool('cdc_query_dataset', {
     datasetId: z
       .string()
       .regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/)
-      .describe('Four-by-four dataset identifier (e.g., "bi63-dtpu").'),
+      .describe(
+        'Four-by-four dataset identifier (e.g., "bi63-dtpu"). Obtain from cdc_discover_datasets.',
+      ),
     search: z
       .string()
       .optional()
@@ -125,13 +128,26 @@ export const queryDataset = tool('cdc_query_dataset', {
 
   async handler(input, ctx) {
     const service = getSocrataService();
-    const result = await service.query(input, ctx.signal);
+    let result: QueryResult;
+    try {
+      result = await service.query(input, ctx.signal);
+    } catch (err) {
+      if (err instanceof McpError && typeof err.data?.reason === 'string') {
+        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
+        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+      }
+      throw err;
+    }
 
     ctx.enrich({ effectiveQuery: result.query });
 
     if (result.rows.length === 0) {
       ctx.enrich.notice(
         'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.',
+      );
+    } else if (result.rowCount === input.limit) {
+      ctx.enrich.notice(
+        `Results may be truncated — rowCount equals the requested limit (${input.limit}). Use the offset parameter to paginate or increase limit (max ${MAX_LIMIT}).`,
       );
     }
 
@@ -177,6 +193,11 @@ export const queryDataset = tool('cdc_query_dataset', {
       });
       lines.push(`| ${cells.join(' | ')} |`);
     }
+
+    lines.push(
+      '',
+      'Tip: Use cdc_get_dataset_schema to inspect column names and types if filter results are unexpected.',
+    );
 
     return [{ type: 'text', text: lines.join('\n') }];
   },
