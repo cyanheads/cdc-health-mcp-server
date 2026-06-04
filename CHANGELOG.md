@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.9] - 2026-06-04
+
+Error contracts, truncation signals, and query DX improvements.
+
+### Fixed
+
+- **`cdc_query_dataset` service default**: `SocrataService.query()` internal `$limit` fallback corrected from 1000 to 100 to match the tool's documented and Zod-enforced default (#5).
+- **`cdc_discover_datasets` invalid_query contract**: added missing `invalid_query` error contract entry covering HTTP 400 responses from the catalog API; updated `upstream_error` `when` description to accurately exclude 400 alongside 404/429 (#7).
+- **`cdc_query_dataset` service errors lack recovery**: handlers for `cdc_query_dataset` and `cdc_discover_datasets` now wrap service-thrown `McpError` with `ctx.fail` + `ctx.recoveryFor()` so the declared contract recovery hint reaches wire clients in `data.recovery.hint` (#6).
+- **`cdc_query_dataset` truncation blind spot**: emits a `notice` enrichment when `rowCount === input.limit`, signaling that results may be truncated and advising use of `offset` or a higher `limit` (#8).
+- **`cdc_query_dataset` datasetId description**: added "Obtain from cdc_discover_datasets" cross-reference to the `datasetId` field description, matching the guidance already present in `cdc_get_dataset_schema` (#9).
+
+### Changed
+
+- **`cdc_query_dataset` success-path schema tip**: `format()` now appends a footer line pointing agents to `cdc_get_dataset_schema` on non-empty results, closing the guidance loop for unexpected filter behavior (#8).
+
 ## [0.6.8] - 2026-06-02
 
 Framework adoption to `@cyanheads/mcp-ts-core` ^0.9.21, new `release:github` script, and skill sync from framework 0.9.16–0.9.21.
