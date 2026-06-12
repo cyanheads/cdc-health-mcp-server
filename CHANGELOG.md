@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.10] - 2026-06-12
+
+Framework adoption to `@cyanheads/mcp-ts-core` ^0.10.6, structured truncation enrichment, display-name fixes, and packaging/Docker hardening.
+
+### Added
+
+- **`cdc_query_dataset` structured truncation signal**: when `rowCount === input.limit`, the tool now emits the framework's `ctx.enrich.truncated()` helper with `truncated`/`shown`/`cap` enrichment fields plus a `notice`, replacing the prior free-text-only `notice`. Agents get a machine-readable flag alongside the pagination guidance.
+- **Docker `HEALTHCHECK`**: bun-native `fetch` against `/healthz` (the slim runtime image ships no curl/wget); `ARG APP_VERSION` feeds the `org.opencontainers.image.version` OCI label.
+- **`scripts/clean-mcpb.ts`**: post-pack MCPB bundle cleaner wired into the `bundle` script — runs `mcpb clean`, then strips dependency-shipped agent-doc trees (`skills/`, `.claude/`, `.agents/`, `SKILL.md`) nested under `node_modules/` that root-anchored `.mcpbignore` patterns cannot reach.
+
+### Changed
+
+- **Server display identity**: `createApp()` now sets `name` and `title` explicitly to `cdc-health-mcp-server`; corrected the stale `cdc-health-statistics-mcp-server` string in `CLAUDE.md` and the `src/index.ts` `@fileoverview`.
+- **`.mcpbignore` patterns root-anchored** (`/skills/`, `/Dockerfile`, …) so they match only top-level entries rather than any nested path.
+- **`check-framework-antipatterns.ts`**: added a rule flagging `z.coerce.boolean()` on env flags (`Boolean("false")` is `true`, so the flag can't be disabled via env — use `z.stringbool()`); comment lines are now skipped so documenting the pattern doesn't trip its own rule.
+- **Skills**: synced to framework 0.10.6, plus the new `techniques` skill.
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.9.21 → ^0.10.6
+- `@types/node` ^25.9.1 → ^25.9.3
+- `hono` 4.12.23 → 4.12.25 (transitive)
+- `@modelcontextprotocol/ext-apps` 1.7.3 → 1.7.4 (transitive)
+
 ## [0.6.9] - 2026-06-04
 
 Error contracts, truncation signals, and query DX improvements.
