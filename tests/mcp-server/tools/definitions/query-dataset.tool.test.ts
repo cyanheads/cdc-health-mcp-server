@@ -65,6 +65,34 @@ describe('cdc_query_dataset', () => {
     expect(enrichment.effectiveQuery).toBe('$where=x');
   });
 
+  it('discloses truncation when rowCount hits the requested limit', async () => {
+    mockQuery.mockResolvedValue({ ...sampleResult, rowCount: 2 });
+    const ctx = createMockContext();
+    const input = queryDataset.input.parse({
+      datasetId: 'bi63-dtpu',
+      where: 'year=2020',
+      limit: 2,
+    });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(2);
+    expect(enrichment.cap).toBe(2);
+    expect(enrichment.notice).toContain('truncated');
+  });
+
+  it('does not disclose truncation when rowCount is below the limit', async () => {
+    mockQuery.mockResolvedValue(sampleResult);
+    const ctx = createMockContext();
+    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'year=2020' });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.notice).toBeUndefined();
+  });
+
   it('passes all SoQL clauses to the service', async () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '' });
     const ctx = createMockContext();

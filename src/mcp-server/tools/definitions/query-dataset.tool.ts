@@ -114,15 +114,21 @@ export const queryDataset = tool('cdc_query_dataset', {
   }),
 
   // Agent-facing result-set context: the assembled SoQL query sent to Socrata (for
-  // debugging and reproducibility) and a recovery notice when nothing matched.
-  // Reaches structuredContent AND content[] automatically — no format() entry needed.
+  // debugging and reproducibility), capped-list disclosure, and a recovery notice when
+  // nothing matched. Reaches structuredContent AND content[] automatically — no format() entry.
   enrichment: {
     effectiveQuery: z.string().describe('Assembled SoQL query string sent to the Socrata API.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when the result row count hit the requested limit and may be incomplete.'),
+    shown: z.number().optional().describe('Number of rows returned in this response.'),
+    cap: z.number().optional().describe('The requested limit that bounded this response.'),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no rows matched — suggests how to verify filter values or broaden the WHERE clause.',
+        'Guidance when no rows matched or results were truncated — how to verify filters, paginate, or broaden the query.',
       ),
   },
 
@@ -146,9 +152,11 @@ export const queryDataset = tool('cdc_query_dataset', {
         'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.',
       );
     } else if (result.rowCount === input.limit) {
-      ctx.enrich.notice(
-        `Results may be truncated — rowCount equals the requested limit (${input.limit}). Use the offset parameter to paginate or increase limit (max ${MAX_LIMIT}).`,
-      );
+      ctx.enrich.truncated({
+        shown: result.rowCount,
+        cap: input.limit,
+        guidance: `Results may be truncated — rowCount equals the requested limit (${input.limit}). Use the offset parameter to paginate or increase limit (max ${MAX_LIMIT}).`,
+      });
     }
 
     ctx.log.info('Query executed', {
