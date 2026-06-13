@@ -205,4 +205,12 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(desc).toContain('cdc_discover_datasets');
     });
   });
+
+  describe('input schema — where description', () => {
+    it('where description includes reserved-word backtick-escape guidance', () => {
+      const desc = queryDataset.input.shape.where.description;
+      expect(desc).toMatch(/backtick/i);
+      expect(desc).toContain('group');
+    });
+  });
 });

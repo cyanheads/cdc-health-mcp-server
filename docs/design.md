@@ -80,7 +80,7 @@ Accepts either a convenience `search` parameter for simple full-text queries, or
 | `datasetId` | string | Yes | Four-by-four dataset identifier matching `[a-z0-9]{4}-[a-z0-9]{4}`. |
 | `search` | string | No | Convenience full-text search across all text columns. Use for exploratory queries. For precise filtering, use `where` instead. |
 | `select` | string | No | SoQL SELECT clause. Column names, aliases, aggregates: `"state, sum(deaths) as total_deaths"`. Omit for all columns. |
-| `where` | string | No | SoQL WHERE clause. Supports `=`, `!=`, `>`, `<`, `>=`, `<=`, `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT NULL`, `LIKE`, `IN(...)`, `BETWEEN`, `starts_with()`, `contains()`. Strings must be single-quoted: `"state='California' AND year=2020"`. |
+| `where` | string | No | SoQL WHERE clause. Supports `=`, `!=`, `>`, `<`, `>=`, `<=`, `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT NULL`, `LIKE`, `IN(...)`, `BETWEEN`, `starts_with()`, `contains()`. Strings must be single-quoted: `"state='California' AND year=2020"`. Column names matching SoQL keywords (`group`, `select`, `where`, `order`, `limit`, `offset`, `having`, `search`) must be backtick-escaped: `` `group`='By Year' ``. |
 | `group` | string | No | SoQL GROUP BY clause. Requires aggregate functions in `select`. |
 | `having` | string | No | SoQL HAVING clause. Filters aggregated results. |
 | `order` | string | No | SoQL ORDER BY clause. Field name with optional `ASC`/`DESC`: `"total_deaths DESC"`. |
@@ -105,6 +105,8 @@ Accepts either a convenience `search` parameter for simple full-text queries, or
 | Dataset not found (404) | Valid format but ID doesn't exist | Search again with `cdc_discover_datasets` |
 | SoQL syntax error (400) | Malformed `where`/`select`/`group` clause -- common causes: unquoted string literals (use single quotes: `state='California'`), type mismatch (comparing text column to number or vice versa), referencing nonexistent column names | Check column names and types via `cdc_get_dataset_schema`, fix quoting, and retry |
 | Type mismatch in WHERE | Comparing a text-typed year column with a number (`year=2020` vs `year='2020'`) | Inspect the column's `dataType` from schema -- use quotes for text, bare values for numbers |
+| Column not in GROUP BY (400) | `select` mixes a non-aggregated column with an aggregate (e.g. `state, sum(deaths)`) without a matching `group` | Add the column to `group`, or wrap it in an aggregate like `sum()` |
+| Reserved-word column name (400) | A column name matches a SoQL keyword (e.g. a column literally named `group`) and isn't escaped | Backtick-escape the column in the clause: `` `group`='By Year' `` |
 | Empty results | Query is valid but no rows match the filter | Broaden the `where` clause. Use the column-values pattern above to check what values actually exist |
 | Rate limited (429) | Too many requests without app token | Retry after brief delay. Use `CDC_APP_TOKEN` for higher limits |
 | Response timeout | Query too broad or dataset too large without filters | Add a `where` clause to narrow scope, reduce `limit`, or add `select` to reduce payload size |

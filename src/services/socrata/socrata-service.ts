@@ -44,6 +44,14 @@ export interface QueryOptions {
   where?: string | undefined;
 }
 
+/**
+ * Strip the trailing Scala `; position: Map(...)` debug dump that Socrata appends
+ * to SoQL error messages — noise for an agent acting on the error.
+ */
+function stripPositionTail(message: string): string {
+  return message.replace(/;\s*position:\s*Map\([\s\S]*$/, '').trimEnd();
+}
+
 export class SocrataService {
   private lastRequestTime = 0;
 
@@ -166,8 +174,11 @@ export class SocrataService {
       // Body wasn't JSON — fall through to generic.
     }
 
-    const code = parsed?.errorCode as string | undefined;
+    // Socrata names the error code `errorCode` for query.soql.* (semantic) errors
+    // but `code` for query.compiler.* (parse) errors — check both.
+    const code = (parsed?.errorCode ?? parsed?.code) as string | undefined;
     const data = parsed?.data as Record<string, unknown> | undefined;
+    const rawMessage = (parsed?.message ?? parsed?.error) as string | undefined;
 
     if (code === 'query.soql.no-such-column') {
       const col = data?.column ?? 'unknown';
@@ -177,16 +188,32 @@ export class SocrataService {
       );
     }
     if (code === 'query.soql.type-mismatch') {
-      const detail = (parsed?.message as string)?.split(';')[1]?.trim() ?? 'check column types';
+      const detail = rawMessage?.split(';')[1]?.trim() ?? 'check column types';
       throw validationError(
         `SoQL type mismatch: ${detail}. Use cdc_get_dataset_schema to verify column data types.`,
         { reason: 'type_mismatch', url },
       );
     }
+    if (code === 'query.soql.column-not-in-group-bys') {
+      const col = data?.column ?? 'unknown';
+      throw validationError(
+        `Column "${col}" must appear in GROUP BY or be wrapped in an aggregate (e.g. sum()). Add group="${col}" or aggregate it in select.`,
+        { reason: 'invalid_query', column: col, url },
+      );
+    }
+    if (
+      code === 'query.compiler.malformed' &&
+      rawMessage &&
+      /Expected an expression, but got/i.test(rawMessage)
+    ) {
+      throw validationError(
+        `SoQL parse error: ${stripPositionTail(rawMessage).slice(0, 200)}. If a column name matches a SoQL keyword (group, select, where, order, limit, offset, having, search), wrap it in backticks — e.g. \`group\`='By Year'.`,
+        { reason: 'invalid_query', url },
+      );
+    }
 
-    const msg = parsed && (parsed.message ?? parsed.error);
-    if (typeof msg === 'string') {
-      throw validationError(`Socrata query error: ${msg.slice(0, 300)}`, {
+    if (typeof rawMessage === 'string') {
+      throw validationError(`Socrata query error: ${stripPositionTail(rawMessage).slice(0, 300)}`, {
         reason: 'invalid_query',
         url,
       });

@@ -111,6 +111,68 @@ describe('SocrataService — error handling', () => {
         /Socrata API error 400/,
       );
     });
+
+    it('normalizes column-not-in-group-bys using the structured column name', async () => {
+      mockFetchText(
+        JSON.stringify({
+          errorCode: 'query.soql.column-not-in-group-bys',
+          data: { column: 'state' },
+          message:
+            'Query coordinator error: query.soql.column-not-in-group-bys; Column \'state\' is not in group by; position: Map(row -> 1, column -> 8, line -> "SELECT `state`")',
+        }),
+        400,
+      );
+      await expect(
+        service.query({ datasetId: 'ab12-cd34', select: 'state, sum(deaths) as d' }),
+      ).rejects.toThrow(/Column "state" must appear in GROUP BY/);
+    });
+
+    it('falls back to "unknown" for column-not-in-group-bys without column data', async () => {
+      mockFetchText(
+        JSON.stringify({
+          errorCode: 'query.soql.column-not-in-group-bys',
+          data: {},
+          message: 'Column is not in group by',
+        }),
+        400,
+      );
+      await expect(service.query({ datasetId: 'ab12-cd34' })).rejects.toThrow(
+        /Column "unknown" must appear in GROUP BY/,
+      );
+    });
+
+    it('strips the Scala position tail from generic 400 messages', async () => {
+      mockFetchText(
+        JSON.stringify({
+          errorCode: 'query.soql.no-such-function',
+          message:
+            'Query coordinator error: query.soql.no-such-function; Unknown function `foo`; position: Map(row -> 1, column -> 8, line -> "SELECT foo(x)")',
+        }),
+        400,
+      );
+      const err = (await service
+        .query({ datasetId: 'ab12-cd34', select: 'foo(x)' })
+        .catch((e) => e)) as Error;
+      expect(err.message).toContain('Unknown function');
+      expect(err.message).not.toContain('position: Map');
+    });
+
+    it('surfaces backtick guidance for reserved-word parse errors', async () => {
+      // query.compiler.* parse errors carry the code under `code` (not `errorCode`).
+      mockFetchText(
+        JSON.stringify({
+          code: 'query.compiler.malformed',
+          error: true,
+          message:
+            "Could not parse SoQL query \"select * where group='By Year'\" at line 1 character 16: Expected an expression, but got `GROUP'",
+          data: { query: "select * where group='By Year'", position: {} },
+        }),
+        400,
+      );
+      await expect(
+        service.query({ datasetId: 'ab12-cd34', where: "group='By Year'" }),
+      ).rejects.toThrow(/wrap it in backticks/);
+    });
   });
 
   describe('HTTP error codes', () => {

@@ -83,7 +83,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .string()
       .optional()
       .describe(
-        'SoQL WHERE clause. Strings must be single-quoted: "state=\'California\' AND year=2020".',
+        'SoQL WHERE clause. Strings must be single-quoted: "state=\'California\' AND year=2020". If a column name matches a SoQL keyword (group, select, where, order, limit, offset, having, search), wrap it in backticks: "`group`=\'By Year\'".',
       ),
     group: z
       .string()
