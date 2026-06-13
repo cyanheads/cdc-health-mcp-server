@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.11] - 2026-06-13
+
+SoQL error-handling DX: cleaner 400 messages, recovery hints on schema lookups, and reserved-word guidance.
+
+### Changed
+
+- **SoQL 400 error normalization** (`socrata-service.ts`): `throwBadRequest` now normalizes `query.soql.column-not-in-group-bys` into `Column "{col}" must appear in GROUP BY or be wrapped in an aggregate...` using the structured `data.column` from the upstream response (falls back to `"unknown"`), and strips the trailing Scala `; position: Map(...)` debug dump from every un-mapped 400 message so agents act on the error without parsing internals. Parse failures (`query.compiler.malformed`) matching `Expected an expression, but got` now surface backtick-escaping guidance. The error-code lookup reads `errorCode` (Socrata's field for `query.soql.*` semantic errors) **or** `code` (its field for `query.compiler.*` parse errors). (#13, #11)
+- **`cdc_query_dataset` `where` description**: documents that column names matching SoQL keywords (`group`, `select`, `where`, `order`, `limit`, `offset`, `having`, `search`) must be backtick-escaped, e.g. `` `group`='By Year' ``. (#11)
+- **`docs/design.md`**: added "Column not in GROUP BY" and "Reserved-word column name" rows to the query error-mode table. (#13, #11)
+
+### Fixed
+
+- **Recovery hints on dataset-schema errors** (#10): `cdc_get_dataset_schema` and the `cdc://datasets/{datasetId}` resource called `getMetadata()` bare, so service-thrown `McpError`s bypassed the typed contract and `data.recovery.hint` never reached the wire. Both handlers now catch the reason-tagged `McpError` and re-throw via `ctx.fail(reason, ..., { ...ctx.recoveryFor(reason) })`, matching the pattern adopted for `cdc_query_dataset` in 0.6.9.
+
+### Dependencies
+
+- `@biomejs/biome` ^2.4.16 → ^2.5.0
+
 ## [0.6.10] - 2026-06-12
 
 Framework adoption to `@cyanheads/mcp-ts-core` ^0.10.6, structured truncation enrichment, display-name fixes, and packaging/Docker hardening.
