@@ -3,6 +3,7 @@
  * @module tests/mcp-server/resources/definitions/dataset-detail-edge
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { datasetDetailResource } from '@/mcp-server/resources/definitions/dataset-detail.resource.js';
@@ -76,6 +77,24 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
       for (const r of listing.resources) {
         expect(r.uri).toMatch(/^cdc:\/\/datasets\/[a-z0-9]{4}-[a-z0-9]{4}$/);
       }
+    });
+  });
+
+  describe('handler — service error re-throw with recovery', () => {
+    it('surfaces recovery.hint when the service throws a reason-tagged McpError', async () => {
+      const serviceErr = new McpError(JsonRpcErrorCode.NotFound, 'Dataset not found (404).', {
+        reason: 'dataset_not_found',
+      });
+      mockGetMetadata.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
+      const params = datasetDetailResource.params!.parse({ datasetId: 'ab12-cd34' });
+
+      await expect(datasetDetailResource.handler(params, ctx)).rejects.toMatchObject({
+        data: expect.objectContaining({
+          reason: 'dataset_not_found',
+          recovery: { hint: expect.stringContaining('cdc_discover_datasets') },
+        }),
+      });
     });
   });
 });

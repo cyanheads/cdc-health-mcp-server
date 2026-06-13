@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/get-dataset-schema-edge
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
@@ -132,6 +133,32 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('`col_0`');
       expect(text).toContain('`col_19`');
+    });
+  });
+
+  describe('handler — service error re-throw with recovery', () => {
+    it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {
+      const serviceErr = new McpError(JsonRpcErrorCode.NotFound, 'Dataset not found (404).', {
+        reason: 'dataset_not_found',
+      });
+      mockGetMetadata.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
+
+      await expect(getDatasetSchema.handler(input, ctx)).rejects.toMatchObject({
+        data: expect.objectContaining({
+          reason: 'dataset_not_found',
+          recovery: { hint: expect.stringContaining('cdc_discover_datasets') },
+        }),
+      });
+    });
+
+    it('re-throws non-McpError errors unchanged', async () => {
+      mockGetMetadata.mockRejectedValue(new Error('network failure'));
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
+
+      await expect(getDatasetSchema.handler(input, ctx)).rejects.toThrow('network failure');
     });
   });
 });

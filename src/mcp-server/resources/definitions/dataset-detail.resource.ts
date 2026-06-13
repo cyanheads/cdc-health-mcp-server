@@ -4,8 +4,9 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
+import type { DatasetMetadata } from '@/services/socrata/types.js';
 
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   name: 'CDC Dataset Detail',
@@ -61,7 +62,16 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
 
   async handler(params, ctx) {
     const service = getSocrataService();
-    const metadata = await service.getMetadata(params.datasetId, ctx.signal);
+    let metadata: DatasetMetadata;
+    try {
+      metadata = await service.getMetadata(params.datasetId, ctx.signal);
+    } catch (err) {
+      if (err instanceof McpError && typeof err.data?.reason === 'string') {
+        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
+        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+      }
+      throw err;
+    }
 
     ctx.log.info('Dataset detail resource accessed', {
       datasetId: params.datasetId,

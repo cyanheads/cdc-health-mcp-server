@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
+import type { DatasetMetadata } from '@/services/socrata/types.js';
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description:
@@ -72,7 +73,16 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
 
   async handler(input, ctx) {
     const service = getSocrataService();
-    const metadata = await service.getMetadata(input.datasetId, ctx.signal);
+    let metadata: DatasetMetadata;
+    try {
+      metadata = await service.getMetadata(input.datasetId, ctx.signal);
+    } catch (err) {
+      if (err instanceof McpError && typeof err.data?.reason === 'string') {
+        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
+        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+      }
+      throw err;
+    }
 
     ctx.log.info('Schema retrieved', {
       datasetId: input.datasetId,
