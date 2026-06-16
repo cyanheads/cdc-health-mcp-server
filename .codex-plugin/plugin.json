@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/cdc-health-mcp-server",
+  "name": "cdc-health-mcp-server",
   "version": "0.6.11",
   "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.",
   "author": {
@@ -13,7 +13,7 @@
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "cdc", "public-health", "socrata", "health-data", "typescript"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
-    "displayName": "@cyanheads/cdc-health-mcp-server",
+    "displayName": "cdc-health-mcp-server",
     "shortDescription": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API).",
     "longDescription": "Provides access to the CDC Open Data portal (~1,487 datasets) via the Socrata SODA API. Supports catalog discovery, schema inspection, and SoQL queries across mortality, vaccinations, behavioral risk, surveillance, and other public health domains.",
     "developerName": "cyanheads",

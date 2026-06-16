@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/cdc-health-mcp-server",
+  "name": "cdc-health-mcp-server",
   "version": "0.6.11",
   "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.",
   "author": {
@@ -9,7 +9,7 @@
   "repository": "https://github.com/cyanheads/cdc-health-mcp-server",
   "license": "Apache-2.0",
   "mcpServers": {
-    "@cyanheads/cdc-health-mcp-server": {
+    "cdc-health-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/cdc-health-mcp-server"],
       "env": {
