@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-06-12 07:32:25
+Generated on: 2026-06-20 10:52:00
 
 ```text
 cdc-health-mcp-server/
@@ -25,6 +25,7 @@ cdc-health-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts

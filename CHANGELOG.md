@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.12] - 2026-06-20
+
+Framework maintenance: `@cyanheads/mcp-ts-core` ^0.10.6 → ^0.10.9, re-synced skills and devcheck scripts.
+
+### Changed
+
+- **`@cyanheads/mcp-ts-core` ^0.10.6 → ^0.10.9**: picks up the `ctx.content` collector for non-text content blocks (image/audio bytes ride `content[]` only, never `structuredContent`); Canvas SQL gate now classifies SELECT-shaped prepare failures as `invalid_sql` with the DuckDB binder column named in `data.binderMessage`; `DuckdbProvider.describe({ tableName })` ambiguous-column fix; and fresh-scaffold devcheck guards (changelog-sync and git-dependent checks skip cleanly before `git init`).
+- **devcheck**: added the `check-dependency-specifiers` step (`scripts/check-dependency-specifiers.ts`) — hard-fails floating specifiers (`latest`/`*`/pre-release dist-tags) in `package.json` dependency sections and the `bun.lock` workspace map. Plugin-marketplace manifest validation (`.claude-plugin`/`.codex-plugin` descriptions, unscoped display names, full-scoped install args) added to `lint:packaging`, gated by the new `devcheck.config.json` `packaging.pluginManifests` flag.
+- Re-synced framework-managed skills (`add-tool`, `api-canvas`, `api-config`, `api-context`, `api-telemetry`, `git-wrapup`, `orchestrations`, `polish-docs-meta`) and devcheck scripts to the 0.10.9 baseline.
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.10.6 → ^0.10.9
+- `@types/node` ^25.9.3 → ^26.0.0
+- `@vitest/coverage-istanbul` ^4.1.8 → ^4.1.9
+- `vitest` ^4.1.8 → ^4.1.9
+
 ## [0.6.11] - 2026-06-13
 
 SoQL error-handling DX: cleaner 400 messages, recovery hints on schema lookups, and reserved-word guidance.
