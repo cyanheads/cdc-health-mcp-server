@@ -18,6 +18,7 @@ import type {
   DatasetMetadata,
   DiscoverResult,
   QueryResult,
+  SocrataDomain,
 } from './types.js';
 
 const MIN_REQUEST_INTERVAL_MS = 250;
@@ -25,6 +26,7 @@ const MIN_REQUEST_INTERVAL_MS = 250;
 /** Options for discovering datasets. */
 export interface DiscoverOptions {
   category?: string | undefined;
+  domain?: SocrataDomain | undefined;
   limit?: number | undefined;
   offset?: number | undefined;
   query?: string | undefined;
@@ -34,6 +36,7 @@ export interface DiscoverOptions {
 /** Options for querying a dataset via SoQL. */
 export interface QueryOptions {
   datasetId: string;
+  domain?: SocrataDomain | undefined;
   group?: string | undefined;
   having?: string | undefined;
   limit?: number | undefined;
@@ -56,13 +59,23 @@ export class SocrataService {
   private lastRequestTime = 0;
 
   /**
+   * Resolve the SODA base URL for a request. An explicit allowlisted `domain` selects the
+   * host; otherwise the configured `CDC_BASE_URL` (default `https://data.cdc.gov`) applies,
+   * so env-based overrides keep working for callers that don't pass a domain.
+   */
+  private baseUrlFor(domain: SocrataDomain | undefined): string {
+    return domain ? `https://${domain}` : getServerConfig().baseUrl;
+  }
+
+  /**
    * Search the CDC dataset catalog by keyword, category, or tag.
    */
   async discover(options: DiscoverOptions, signal?: AbortSignal): Promise<DiscoverResult> {
     const config = getServerConfig();
+    const domain = options.domain ?? 'data.cdc.gov';
     const params = new URLSearchParams({
-      domains: 'data.cdc.gov',
-      search_context: 'data.cdc.gov',
+      domains: domain,
+      search_context: domain,
     });
 
     if (options.query) params.set('q', options.query);
@@ -106,10 +119,15 @@ export class SocrataService {
 
   /**
    * Fetch full metadata and column schema for a dataset.
+   *
+   * @param domain - Allowlisted CDC Socrata host. Omit to use the configured default host.
    */
-  async getMetadata(datasetId: string, signal?: AbortSignal): Promise<DatasetMetadata> {
-    const config = getServerConfig();
-    const url = `${config.baseUrl}/api/views/${datasetId}.json`;
+  async getMetadata(
+    datasetId: string,
+    signal?: AbortSignal,
+    domain?: SocrataDomain,
+  ): Promise<DatasetMetadata> {
+    const url = `${this.baseUrlFor(domain)}/api/views/${datasetId}.json`;
     const data = await this.fetchJson(url, signal);
 
     const rawColumns = (data.columns as Record<string, unknown>[]) ?? [];
@@ -143,7 +161,6 @@ export class SocrataService {
    * Execute a SoQL query against a CDC dataset.
    */
   async query(options: QueryOptions, signal?: AbortSignal): Promise<QueryResult> {
-    const config = getServerConfig();
     const params = new URLSearchParams();
 
     if (options.search) params.set('$q', options.search);
@@ -156,7 +173,7 @@ export class SocrataService {
     params.set('$offset', String(options.offset ?? 0));
 
     const queryString = params.toString();
-    const url = `${config.baseUrl}/resource/${options.datasetId}.json?${queryString}`;
+    const url = `${this.baseUrlFor(options.domain)}/resource/${options.datasetId}.json?${queryString}`;
     const rows = await this.fetchJson<Record<string, unknown>[]>(url, signal);
 
     return {

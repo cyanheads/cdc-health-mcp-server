@@ -40,7 +40,24 @@ describe('cdc_get_dataset_schema', () => {
     expect(result.name).toBe('Diabetes Mortality');
     expect(result.rowCount).toBe(50000);
     expect(result.columns).toHaveLength(3);
-    expect(mockGetMetadata).toHaveBeenCalledWith('bi63-dtpu', ctx.signal);
+    // Default domain is threaded as the third argument.
+    expect(mockGetMetadata).toHaveBeenCalledWith('bi63-dtpu', ctx.signal, 'data.cdc.gov');
+  });
+
+  it('threads an explicit domain through to getMetadata', async () => {
+    mockGetMetadata.mockResolvedValue(sampleMetadata);
+    const ctx = createMockContext();
+    const input = getDatasetSchema.input.parse({
+      datasetId: 'swc5-untb',
+      domain: 'chronicdata.cdc.gov',
+    });
+    await getDatasetSchema.handler(input, ctx);
+
+    expect(mockGetMetadata).toHaveBeenCalledWith('swc5-untb', ctx.signal, 'chronicdata.cdc.gov');
+  });
+
+  it('defaults domain to data.cdc.gov', () => {
+    expect(getDatasetSchema.input.parse({ datasetId: 'bi63-dtpu' }).domain).toBe('data.cdc.gov');
   });
 
   it('rejects invalid dataset ID format', () => {

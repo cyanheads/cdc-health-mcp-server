@@ -6,7 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import type { DatasetMetadata } from '@/services/socrata/types.js';
+import { CDC_SOCRATA_DOMAINS, type DatasetMetadata } from '@/services/socrata/types.js';
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description:
@@ -38,6 +38,12 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   ],
 
   input: z.object({
+    domain: z
+      .enum(CDC_SOCRATA_DOMAINS)
+      .default('data.cdc.gov')
+      .describe(
+        'CDC Socrata portal hosting the dataset. Use the same portal you found the dataset on via cdc_discover_datasets: "data.cdc.gov" (default) or "chronicdata.cdc.gov".',
+      ),
     datasetId: z
       .string()
       .regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/)
@@ -75,7 +81,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     const service = getSocrataService();
     let metadata: DatasetMetadata;
     try {
-      metadata = await service.getMetadata(input.datasetId, ctx.signal);
+      metadata = await service.getMetadata(input.datasetId, ctx.signal, input.domain);
     } catch (err) {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
@@ -85,6 +91,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     }
 
     ctx.log.info('Schema retrieved', {
+      domain: input.domain,
       datasetId: input.datasetId,
       name: metadata.name,
       columnCount: metadata.columns.length,

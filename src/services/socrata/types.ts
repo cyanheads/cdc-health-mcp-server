@@ -3,6 +3,16 @@
  * @module services/socrata/types
  */
 
+/**
+ * Allowlisted CDC Socrata hosts. The discovery, metadata, and query paths can target
+ * either portal; both speak SODA 2.1 and accept the same app token. Restricting to this
+ * set keeps host selection from becoming an arbitrary-URL (SSRF) surface.
+ */
+export const CDC_SOCRATA_DOMAINS = ['data.cdc.gov', 'chronicdata.cdc.gov'] as const;
+
+/** A CDC Socrata host the service may address. */
+export type SocrataDomain = (typeof CDC_SOCRATA_DOMAINS)[number];
+
 /** Dataset metadata from the Discovery/Catalog API. Optional fields reflect upstream sparsity. */
 export interface CatalogDataset {
   category?: string;

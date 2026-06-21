@@ -6,7 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import type { QueryResult } from '@/services/socrata/types.js';
+import { CDC_SOCRATA_DOMAINS, type QueryResult } from '@/services/socrata/types.js';
 
 const MAX_LIMIT = 5000;
 
@@ -61,6 +61,12 @@ export const queryDataset = tool('cdc_query_dataset', {
   ],
 
   input: z.object({
+    domain: z
+      .enum(CDC_SOCRATA_DOMAINS)
+      .default('data.cdc.gov')
+      .describe(
+        'CDC Socrata portal hosting the dataset. Must match the portal the dataset lives on: "data.cdc.gov" (default) or "chronicdata.cdc.gov" (PLACES and other chronic-disease/small-area datasets).',
+      ),
     datasetId: z
       .string()
       .regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/)
@@ -160,6 +166,7 @@ export const queryDataset = tool('cdc_query_dataset', {
     }
 
     ctx.log.info('Query executed', {
+      domain: input.domain,
       datasetId: input.datasetId,
       rowCount: result.rowCount,
       query: result.query,

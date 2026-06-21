@@ -133,6 +133,26 @@ describe('cdc_query_dataset', () => {
     expect(result.rowCount).toBe(0);
   });
 
+  it('threads an explicit domain through to the service', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
+    const ctx = createMockContext();
+    const input = queryDataset.input.parse({
+      datasetId: 'swc5-untb',
+      domain: 'chronicdata.cdc.gov',
+      where: "measureid='OBESITY' AND stateabbr='WA'",
+    });
+    await queryDataset.handler(input, ctx);
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ datasetId: 'swc5-untb', domain: 'chronicdata.cdc.gov' }),
+      ctx.signal,
+    );
+  });
+
+  it('defaults domain to data.cdc.gov', () => {
+    expect(queryDataset.input.parse({ datasetId: 'bi63-dtpu' }).domain).toBe('data.cdc.gov');
+  });
+
   it('rejects invalid dataset ID in schema', () => {
     expect(() => queryDataset.input.parse({ datasetId: 'bad', where: 'x=1' })).toThrow();
   });

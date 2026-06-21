@@ -54,6 +54,46 @@ describe('Security — input validation', () => {
     });
   });
 
+  describe('domain allowlist enforcement (SSRF guard)', () => {
+    const disallowedDomains = [
+      'evil.com',
+      'data.cdc.gov.evil.com',
+      'http://data.cdc.gov',
+      'localhost',
+      '169.254.169.254',
+      'DATA.CDC.GOV', // case-sensitive enum
+      '',
+    ];
+
+    it.each(disallowedDomains)('rejects domain %j in discoverDatasets', (domain) => {
+      expect(() => discoverDatasets.input.parse({ domain })).toThrow();
+    });
+
+    it.each(disallowedDomains)('rejects domain %j in getDatasetSchema', (domain) => {
+      expect(() => getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', domain })).toThrow();
+    });
+
+    it.each(disallowedDomains)('rejects domain %j in queryDataset', (domain) => {
+      expect(() => queryDataset.input.parse({ datasetId: 'ab12-cd34', domain })).toThrow();
+    });
+
+    it('accepts the two allowlisted CDC Socrata hosts', () => {
+      for (const domain of ['data.cdc.gov', 'chronicdata.cdc.gov'] as const) {
+        expect(discoverDatasets.input.parse({ domain }).domain).toBe(domain);
+        expect(getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', domain }).domain).toBe(
+          domain,
+        );
+        expect(queryDataset.input.parse({ datasetId: 'ab12-cd34', domain }).domain).toBe(domain);
+      }
+    });
+
+    it('defaults domain to data.cdc.gov when omitted', () => {
+      expect(discoverDatasets.input.parse({}).domain).toBe('data.cdc.gov');
+      expect(getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }).domain).toBe('data.cdc.gov');
+      expect(queryDataset.input.parse({ datasetId: 'ab12-cd34' }).domain).toBe('data.cdc.gov');
+    });
+  });
+
   describe('discoverDatasets — input bounds', () => {
     it('rejects limit of 0', () => {
       expect(() => discoverDatasets.input.parse({ limit: 0 })).toThrow();

@@ -77,7 +77,27 @@ describe('SocrataService', () => {
 
       const url = spy.mock.calls[0][0] as string;
       expect(url).toContain('domains=data.cdc.gov');
+      expect(url).toContain('search_context=data.cdc.gov');
       expect(url).toContain('q=diabetes');
+    });
+
+    it('defaults the catalog domain to data.cdc.gov when none is given', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({});
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toContain('domains=data.cdc.gov');
+      expect(url).toContain('search_context=data.cdc.gov');
+    });
+
+    it('routes discovery to chronicdata.cdc.gov when domain is set', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({ domain: 'chronicdata.cdc.gov', query: 'places' });
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toContain('domains=chronicdata.cdc.gov');
+      expect(url).toContain('search_context=chronicdata.cdc.gov');
+      expect(url).not.toContain('domains=data.cdc.gov');
     });
 
     it('passes category and tags as query params', async () => {
@@ -145,6 +165,14 @@ describe('SocrataService', () => {
       expect(url).toBe('https://data.cdc.gov/api/views/bi63-dtpu.json');
     });
 
+    it('routes metadata to chronicdata.cdc.gov when domain is set', async () => {
+      const spy = mockFetch(metadataResponse);
+      await service.getMetadata('swc5-untb', undefined, 'chronicdata.cdc.gov');
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toBe('https://chronicdata.cdc.gov/api/views/swc5-untb.json');
+    });
+
     it('throws on 404', async () => {
       mockFetchError(404);
       await expect(service.getMetadata('bi63-dtpu')).rejects.toThrow(/not found/);
@@ -183,7 +211,20 @@ describe('SocrataService', () => {
       expect(result.query).toContain('$order=deaths');
 
       const url = spy.mock.calls[0][0] as string;
-      expect(url).toContain('/resource/bi63-dtpu.json');
+      expect(url).toContain('https://data.cdc.gov/resource/bi63-dtpu.json');
+    });
+
+    it('routes queries to chronicdata.cdc.gov when domain is set', async () => {
+      const spy = mockFetch(queryResponse);
+      await service.query({
+        datasetId: 'swc5-untb',
+        domain: 'chronicdata.cdc.gov',
+        where: "measureid='OBESITY' AND stateabbr='WA'",
+      });
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toContain('https://chronicdata.cdc.gov/resource/swc5-untb.json');
+      expect(url.startsWith('https://chronicdata.cdc.gov/')).toBe(true);
     });
 
     it('passes search as $q parameter', async () => {
