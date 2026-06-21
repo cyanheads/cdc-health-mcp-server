@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.6.12-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -44,8 +44,9 @@ Search the CDC dataset catalog to find relevant datasets.
 - Full-text search across dataset names and descriptions
 - Filter by domain category (e.g., "NNDSS", "Vaccinations", "Behavioral Risk Factors")
 - Filter by domain tags (e.g., `["covid19", "surveillance"]`)
-- Returns dataset IDs, names, descriptions, column lists, and update timestamps
+- Returns dataset IDs, names, truncated descriptions, a column count with a short column sample, and update timestamps — use `cdc_get_dataset_schema` for the full column list
 - Pagination via offset for browsing large result sets
+- `domain` selects the portal: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
 
 ---
 
@@ -57,6 +58,7 @@ Fetch the full column schema for a specific dataset.
 - Row count and last-updated timestamp
 - Essential for understanding column types before writing `$where` clauses
 - Accepts four-by-four dataset identifiers (e.g., `bi63-dtpu`)
+- `domain` selects the portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
 
 ---
 
@@ -69,6 +71,7 @@ Execute SoQL queries against any CDC dataset.
 - Up to 5,000 rows per request with pagination
 - Returns the assembled SoQL query string for debugging
 - All response values are strings (per SODA v2.1) — parse based on column type metadata
+- `domain` selects the portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
 
 ## Resources and prompt
 
@@ -93,6 +96,7 @@ CDC-specific:
 
 - Wraps the [Socrata SODA API v2.1](https://dev.socrata.com/) — no auth required, optional app token for higher rate limits
 - Discovery-first approach for a heterogeneous catalog (~1,487 datasets across many health domains)
+- Two CDC Socrata portals via the `domain` input — [`data.cdc.gov`](https://data.cdc.gov/) (default) and [`chronicdata.cdc.gov`](https://chronicdata.cdc.gov/) (PLACES small-area estimates, the Heart Disease & Stroke Atlas, Environmental Public Health Tracking); restricted to this allowlist
 - Conservative request spacing for rate limit compliance (no rate-limit headers returned by Socrata)
 - Handles SODA string-typed responses — all values returned as strings, parsed via column type metadata
 

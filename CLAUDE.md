@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-mcp-server
-**Version:** 0.6.12
+**Version:** 0.7.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.9`
 **Engines:** Bun ≥1.3.2, Node ≥24.0.0
 
@@ -19,10 +19,12 @@ Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) via th
 
 **Design doc:** `docs/design.md` — full parameter tables, error modes, API endpoints, and implementation notes.
 
+All three tools take an allowlisted `domain` input (`data.cdc.gov` default, `chronicdata.cdc.gov`) — Zod `z.enum` rejects any other host before the handler runs (the SSRF guard). The two `cdc://datasets…` resources stay on the default host.
+
 | Definition | Type | Purpose |
 |:-----------|:-----|:--------|
-| `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point for all queries. |
-| `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. |
+| `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point. Trimmed payload — `columnCount` + an 8-name `columnSample` and a 300-char description; full column detail comes from `cdc_get_dataset_schema`. |
+| `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. Full-detail surface. |
 | `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. |
 | `cdc://datasets` | resource | Top 50 datasets by popularity for orientation. |
 | `cdc://datasets/{datasetId}` | resource | Dataset metadata + schema (equivalent to schema tool). |
@@ -30,11 +32,13 @@ Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) via th
 
 ### Socrata API Endpoints
 
+`{domain}` is allowlisted to `data.cdc.gov` (default) or `chronicdata.cdc.gov` (PLACES, Heart Disease & Stroke Atlas, Environmental Public Health Tracking) — selected per call via the `domain` tool input. The app token works unchanged across both hosts.
+
 | Endpoint | Purpose |
 |:---------|:--------|
-| `GET https://api.us.socrata.com/api/catalog/v1?domains=data.cdc.gov` | Discovery/catalog search |
-| `GET https://data.cdc.gov/api/views/{datasetId}.json` | Dataset metadata + schema |
-| `GET https://data.cdc.gov/resource/{datasetId}.json?$select=...&$where=...` | SoQL data queries |
+| `GET https://api.us.socrata.com/api/catalog/v1?domains={domain}` | Discovery/catalog search |
+| `GET https://{domain}/api/views/{datasetId}.json` | Dataset metadata + schema |
+| `GET https://{domain}/resource/{datasetId}.json?$select=...&$where=...` | SoQL data queries |
 
 ### Quirks
 

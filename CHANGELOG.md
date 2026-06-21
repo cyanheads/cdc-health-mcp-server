@@ -1,6 +1,16 @@
 # Changelog
 
-## [0.6.12] - 2026-06-20
+## [0.7.0] - 2026-06-21
+
+Multi-portal access via an allowlisted `domain` input, plus a leaner discovery payload.
+
+### Added
+
+- **`domain` input on all three tools** (#2): `cdc_discover_datasets`, `cdc_get_dataset_schema`, and `cdc_query_dataset` accept a `domain` enum (`data.cdc.gov` default, `chronicdata.cdc.gov`) selecting the CDC Socrata portal per call. `chronicdata.cdc.gov` reaches PLACES, the Heart Disease & Stroke Atlas, and Environmental Public Health Tracking through the same discover → schema → query flow. The enum is single-sourced as `CDC_SOCRATA_DOMAINS` in `src/services/socrata/types.ts` and threaded through `SocrataService` (`discover`/`getMetadata`/`query`) via a `baseUrlFor` helper; any other host is rejected at input validation (the SSRF guard). The two `cdc://datasets…` resources stay on the default host. `CDC_BASE_URL` still applies when no `domain` is passed.
+
+### Changed
+
+- **`cdc_discover_datasets` trimmed output** (#12): the per-dataset `columnNames`/`columnTypes` arrays are replaced by `columnCount` and an 8-name `columnSample`; descriptions are truncated to 300 characters. The full column list with data types remains available via `cdc_get_dataset_schema`. `format()` renders the count with the sample inline, preserving structuredContent/content[] parity.
 
 Framework maintenance: `@cyanheads/mcp-ts-core` ^0.10.6 → ^0.10.9, re-synced skills and devcheck scripts.
 

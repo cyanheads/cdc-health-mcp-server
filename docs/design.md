@@ -23,17 +23,18 @@ The core challenge: 1,487 datasets with heterogeneous schemas. The server provid
 
 ### `cdc_discover_datasets`
 
-Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, descriptions, column lists, and update timestamps. This is the entry point -- use before querying to find the right dataset for a question.
+Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, truncated descriptions, a column count with a short column sample, and update timestamps. This is the entry point -- use before querying to find the right dataset for a question. Full column detail comes from `cdc_get_dataset_schema`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `domain` | enum | No | CDC Socrata portal to search: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Allowlisted -- any other host is rejected at input validation. |
 | `query` | string | No | Full-text search across dataset names and descriptions (e.g., "diabetes mortality", "lead exposure children"). |
 | `category` | string | No | Filter by domain category. Common values: "National Center for Health Statistics", "NNDSS", "Vaccinations", "Public Health Surveillance", "Behavioral Risk Factors", "Motor Vehicle", "Maternal & Child Health". |
 | `tags` | string[] | No | Filter by domain tags (e.g., ["covid19", "surveillance"]). |
 | `limit` | number | No | Results to return (default 10, max 100). |
 | `offset` | number | No | Pagination offset for browsing beyond first page. |
 
-**Returns:** Array of `{ id, name, description, category, tags, columnNames, columnTypes, updatedAt, pageViews }`. Includes `totalCount` for pagination.
+**Returns:** Array of `{ id, name, description, category, tags, columnCount, columnSample, updatedAt, pageViews }`. `description` is truncated to 300 characters; `columnSample` lists the first 8 column field names (the full list lives in `cdc_get_dataset_schema`). Includes `totalCount` for pagination.
 
 **Error modes:**
 
@@ -43,7 +44,7 @@ Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs
 | Rate limited (429) | Too many requests to Socrata Discovery API | Retry after brief delay. Consider using an app token for higher limits |
 | Catalog API timeout | Discovery API occasionally slow under load | Retry once. Reduce `limit` if fetching large pages |
 
-**Catalog API:** `GET https://api.us.socrata.com/api/catalog/v1?domains=data.cdc.gov`
+**Catalog API:** `GET https://api.us.socrata.com/api/catalog/v1?domains={domain}` where `{domain}` is `data.cdc.gov` (default) or `chronicdata.cdc.gov`.
 
 ---
 
@@ -53,6 +54,7 @@ Fetch the full column schema for a dataset -- names, data types, descriptions. E
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `domain` | enum | No | CDC Socrata portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Must match the portal the dataset was found on. |
 | `datasetId` | string | Yes | Four-by-four dataset identifier matching `[a-z0-9]{4}-[a-z0-9]{4}` (e.g., "bi63-dtpu"). Obtain from `cdc_discover_datasets`. |
 
 **Returns:** `{ name, description, rowCount, updatedAt, columns: [{ fieldName, dataType, description }] }`.
@@ -65,7 +67,7 @@ Fetch the full column schema for a dataset -- names, data types, descriptions. E
 | Dataset not found (404) | Valid format but ID doesn't exist or was deleted | Search again with `cdc_discover_datasets` -- the dataset may have been replaced or retired |
 | Rate limited (429) | Too many requests | Retry after brief delay |
 
-**Metadata API:** `GET https://data.cdc.gov/api/views/{datasetId}.json`
+**Metadata API:** `GET https://{domain}/api/views/{datasetId}.json` where `{domain}` is `data.cdc.gov` (default) or `chronicdata.cdc.gov`.
 
 ---
 
@@ -77,6 +79,7 @@ Accepts either a convenience `search` parameter for simple full-text queries, or
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `domain` | enum | No | CDC Socrata portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Must match the portal the dataset lives on. |
 | `datasetId` | string | Yes | Four-by-four dataset identifier matching `[a-z0-9]{4}-[a-z0-9]{4}`. |
 | `search` | string | No | Convenience full-text search across all text columns. Use for exploratory queries. For precise filtering, use `where` instead. |
 | `select` | string | No | SoQL SELECT clause. Column names, aliases, aggregates: `"state, sum(deaths) as total_deaths"`. Omit for all columns. |
@@ -111,7 +114,7 @@ Accepts either a convenience `search` parameter for simple full-text queries, or
 | Rate limited (429) | Too many requests without app token | Retry after brief delay. Use `CDC_APP_TOKEN` for higher limits |
 | Response timeout | Query too broad or dataset too large without filters | Add a `where` clause to narrow scope, reduce `limit`, or add `select` to reduce payload size |
 
-**Query API:** `GET https://data.cdc.gov/resource/{datasetId}.json?$select=...&$where=...`
+**Query API:** `GET https://{domain}/resource/{datasetId}.json?$select=...&$where=...` where `{domain}` is `data.cdc.gov` (default) or `chronicdata.cdc.gov`.
 
 ---
 
