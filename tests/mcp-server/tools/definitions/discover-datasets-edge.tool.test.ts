@@ -106,6 +106,57 @@ describe('cdc_discover_datasets — edge cases', () => {
     });
   });
 
+  describe('payload trimming — edge cases', () => {
+    it('leaves a short description untruncated (no ellipsis)', async () => {
+      const shortDescription = 'Brief dataset summary.';
+      mockDiscover.mockResolvedValue({
+        datasets: [{ id: 'ab12-cd34', name: 'Short', description: shortDescription }],
+        totalCount: 1,
+      });
+      const ctx = createMockContext();
+      const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+
+      const description = (result.datasets[0] as { description: string }).description;
+      expect(description).toBe(shortDescription);
+      expect(description).not.toContain('…');
+    });
+
+    it('reports a zero-column dataset honestly as columnCount 0', async () => {
+      mockDiscover.mockResolvedValue({
+        datasets: [{ id: 'ab12-cd34', name: 'Empty', columnNames: [], columnTypes: [] }],
+        totalCount: 1,
+      });
+      const ctx = createMockContext();
+      const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+
+      const ds = result.datasets[0] as { columnCount: number; columnSample: string[] };
+      // A genuinely empty dataset surfaces 0 rather than an omitted (=unknown) count.
+      expect(ds.columnCount).toBe(0);
+      expect(ds.columnSample).toEqual([]);
+      expect(result).toEqual(expect.schemaMatching(discoverDatasets.output));
+
+      // format() renders the count and does not crash.
+      const blocks = discoverDatasets.format!({ datasets: result.datasets });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('Empty');
+      expect(text).toContain('**Columns:** 0');
+    });
+
+    it('caps columnSample at 8 even when more columns exist', async () => {
+      const wide = Array.from({ length: 20 }, (_, i) => `c${i}`);
+      mockDiscover.mockResolvedValue({
+        datasets: [{ id: 'ab12-cd34', name: 'Wide', columnNames: wide, columnTypes: wide }],
+        totalCount: 1,
+      });
+      const ctx = createMockContext();
+      const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+
+      const ds = result.datasets[0] as { columnCount: number; columnSample: string[] };
+      expect(ds.columnCount).toBe(20);
+      expect(ds.columnSample).toHaveLength(8);
+    });
+  });
+
   describe('format — edge cases with optional fields', () => {
     it('renders dataset without tags without crashing', () => {
       const blocks = discoverDatasets.format!({

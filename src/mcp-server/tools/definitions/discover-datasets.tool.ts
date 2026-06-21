@@ -6,7 +6,19 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import type { DiscoverResult } from '@/services/socrata/types.js';
+import { CDC_SOCRATA_DOMAINS, type DiscoverResult } from '@/services/socrata/types.js';
+
+/** Max characters of a dataset description carried in discovery output before truncation. */
+const DESCRIPTION_MAX = 300;
+/** Max column field names listed in the discovery sample. */
+const COLUMN_SAMPLE_MAX = 8;
+
+/** Truncate a description to DESCRIPTION_MAX chars, appending an ellipsis when cut. */
+function truncateDescription(description: string): string {
+  return description.length > DESCRIPTION_MAX
+    ? `${description.slice(0, DESCRIPTION_MAX)}…`
+    : description;
+}
 
 const AppliedFiltersSchema = z.object({
   query: z.string().optional().describe('Search query used.'),
@@ -16,7 +28,7 @@ const AppliedFiltersSchema = z.object({
 
 export const discoverDatasets = tool('cdc_discover_datasets', {
   description:
-    'Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, descriptions, column lists, and update timestamps.',
+    'Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs, names, truncated descriptions, column counts, and update timestamps. Use cdc_get_dataset_schema for the full column list of a chosen dataset.',
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -44,6 +56,12 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
   ],
 
   input: z.object({
+    domain: z
+      .enum(CDC_SOCRATA_DOMAINS)
+      .default('data.cdc.gov')
+      .describe(
+        'CDC Socrata portal to search. "data.cdc.gov" (default) is the main CDC catalog; "chronicdata.cdc.gov" hosts chronic-disease and small-area datasets (PLACES, the Heart Disease & Stroke Atlas, Environmental Public Health Tracking).',
+      ),
     query: z
       .string()
       .optional()
@@ -90,17 +108,21 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
             description: z
               .string()
               .optional()
-              .describe('Dataset description when provided by the catalog.'),
+              .describe(
+                `Dataset description when provided by the catalog, truncated to ${DESCRIPTION_MAX} characters. Fetch the full text via cdc_get_dataset_schema.`,
+              ),
             category: z.string().optional().describe('Domain category when provided.'),
             tags: z.array(z.string()).optional().describe('Domain tags when provided.'),
-            columnNames: z
+            columnCount: z
+              .number()
+              .optional()
+              .describe('Number of columns in the dataset when reported by the catalog.'),
+            columnSample: z
               .array(z.string())
               .optional()
-              .describe('Available column field names when provided.'),
-            columnTypes: z
-              .array(z.string())
-              .optional()
-              .describe('Column data types (parallel to columnNames) when provided.'),
+              .describe(
+                `First ${COLUMN_SAMPLE_MAX} column field names as a preview. Call cdc_get_dataset_schema for the full column list with data types.`,
+              ),
             updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
             pageViews: z.number().optional().describe('Total page views when provided.'),
           })
@@ -173,13 +195,30 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     }
 
     ctx.log.info('Dataset discovery completed', {
+      domain: input.domain,
       query: input.query,
       category: input.category,
       resultCount: result.datasets.length,
       totalCount: result.totalCount,
     });
 
-    return { datasets: result.datasets };
+    const datasets = result.datasets.map((d) => ({
+      id: d.id,
+      name: d.name,
+      ...(d.description ? { description: truncateDescription(d.description) } : {}),
+      ...(d.category ? { category: d.category } : {}),
+      ...(d.tags ? { tags: d.tags } : {}),
+      ...(d.columnNames
+        ? {
+            columnCount: d.columnNames.length,
+            columnSample: d.columnNames.slice(0, COLUMN_SAMPLE_MAX),
+          }
+        : {}),
+      ...(d.updatedAt ? { updatedAt: d.updatedAt } : {}),
+      ...(typeof d.pageViews === 'number' ? { pageViews: d.pageViews } : {}),
+    }));
+
+    return { datasets };
   },
 
   format: (result) => {
@@ -201,11 +240,15 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       );
       if (d.description) lines.push(d.description);
       if (d.tags && d.tags.length > 0) lines.push(`**Tags:** ${d.tags.join(', ')}`);
-      if (d.columnNames && d.columnNames.length > 0) {
-        const columns = d.columnNames
-          .map((name, i) => `\`${name}\` (${d.columnTypes?.[i] ?? 'unknown'})`)
-          .join(', ');
-        lines.push(`**Columns:** ${columns}`);
+      if (typeof d.columnCount === 'number') {
+        const sample = d.columnSample?.map((name) => `\`${name}\``).join(', ');
+        const preview =
+          sample && d.columnCount > (d.columnSample?.length ?? 0)
+            ? ` (e.g. ${sample}, …)`
+            : sample
+              ? ` (${sample})`
+              : '';
+        lines.push(`**Columns:** ${d.columnCount}${preview}`);
       }
       lines.push('');
     }

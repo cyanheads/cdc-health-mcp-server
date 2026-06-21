@@ -47,6 +47,67 @@ describe('cdc_discover_datasets', () => {
     expect(result.datasets[0].id).toBe('bi63-dtpu');
   });
 
+  it('trims discovery output: columnCount + capped columnSample, no full column arrays', async () => {
+    const wideColumns = Array.from({ length: 30 }, (_, i) => `col_${i}`);
+    mockDiscover.mockResolvedValue({
+      datasets: [
+        {
+          ...sampleServiceResult.datasets[0],
+          columnNames: wideColumns,
+          columnTypes: wideColumns.map(() => 'text'),
+        },
+      ],
+      totalCount: 1,
+    });
+    const ctx = createMockContext();
+    const result = await discoverDatasets.handler(
+      discoverDatasets.input.parse({ query: 'wide' }),
+      ctx,
+    );
+
+    const ds = result.datasets[0] as Record<string, unknown>;
+    expect(ds.columnCount).toBe(30);
+    expect(ds.columnSample).toHaveLength(8);
+    expect(ds.columnSample).toEqual(wideColumns.slice(0, 8));
+    // The full parallel arrays must not survive into output.
+    expect(ds).not.toHaveProperty('columnNames');
+    expect(ds).not.toHaveProperty('columnTypes');
+    expect(result).toEqual(expect.schemaMatching(discoverDatasets.output));
+  });
+
+  it('truncates long descriptions to ~300 chars with an ellipsis', async () => {
+    const longDescription = 'D'.repeat(500);
+    mockDiscover.mockResolvedValue({
+      datasets: [{ id: 'ab12-cd34', name: 'Verbose', description: longDescription }],
+      totalCount: 1,
+    });
+    const ctx = createMockContext();
+    const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+
+    const description = (result.datasets[0] as { description: string }).description;
+    expect(description.endsWith('…')).toBe(true);
+    expect(description.length).toBe(301); // 300 chars + ellipsis
+  });
+
+  it('threads the domain through to the service', async () => {
+    mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+    const ctx = createMockContext();
+    const input = discoverDatasets.input.parse({
+      query: 'places',
+      domain: 'chronicdata.cdc.gov',
+    });
+    await discoverDatasets.handler(input, ctx);
+
+    expect(mockDiscover).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: 'chronicdata.cdc.gov', query: 'places' }),
+      ctx.signal,
+    );
+  });
+
+  it('defaults domain to data.cdc.gov', () => {
+    expect(discoverDatasets.input.parse({}).domain).toBe('data.cdc.gov');
+  });
+
   it('enriches with totalCount and appliedFilters', async () => {
     mockDiscover.mockResolvedValue(sampleServiceResult);
     const ctx = createMockContext();
@@ -118,14 +179,29 @@ describe('cdc_discover_datasets', () => {
 
   describe('format', () => {
     it('renders dataset details in markdown', () => {
-      const blocks = discoverDatasets.format!({ datasets: sampleServiceResult.datasets });
+      const blocks = discoverDatasets.format!({
+        datasets: [
+          {
+            id: 'bi63-dtpu',
+            name: 'Diabetes Mortality',
+            description: 'State-level diabetes death rates',
+            category: 'NCHS',
+            tags: ['diabetes', 'mortality'],
+            columnCount: 3,
+            columnSample: ['state', 'year', 'deaths'],
+            updatedAt: '2024-01-15T00:00:00.000Z',
+            pageViews: 5000,
+          },
+        ],
+      });
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('text');
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('bi63-dtpu');
       expect(text).toContain('Diabetes Mortality');
       expect(text).toContain('NCHS');
-      expect(text).toContain('`state` (text), `year` (number), `deaths` (number)');
+      // Full column count with the sample preview inline (not an exhaustive list).
+      expect(text).toContain('**Columns:** 3 (`state`, `year`, `deaths`)');
     });
 
     it('renders empty-state message when no datasets', () => {
@@ -134,14 +210,17 @@ describe('cdc_discover_datasets', () => {
       expect(text).toContain('No datasets matched');
     });
 
-    it('renders all columns without truncation', () => {
-      const cols = Array.from({ length: 15 }, (_, i) => `col_${i}`);
+    it('renders the column count with a capped sample for wide datasets', () => {
+      const sample = Array.from({ length: 8 }, (_, i) => `col_${i}`);
       const blocks = discoverDatasets.format!({
-        datasets: [{ ...sampleServiceResult.datasets[0], columnNames: cols }],
+        datasets: [{ id: 'ab12-cd34', name: 'Wide', columnCount: 110, columnSample: sample }],
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('`col_0` (text)');
-      expect(text).toContain('`col_14` (unknown)');
+      expect(text).toContain('**Columns:** 110 (e.g. `col_0`');
+      expect(text).toContain('…)');
+      // The full inventory is gone — no 100+ column names dumped into the text.
+      expect(text).not.toContain('col_14');
+      expect(text).not.toContain('col_9');
     });
   });
 
