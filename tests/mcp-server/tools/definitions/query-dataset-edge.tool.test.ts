@@ -31,6 +31,24 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(input.offset).toBe(500);
     });
 
+    it('accepts offset at the ceiling (1,000,000)', () => {
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', offset: 1_000_000 });
+      expect(input.offset).toBe(1_000_000);
+    });
+
+    it('rejects offset above the ceiling (1,000,001)', () => {
+      const result = queryDataset.input.safeParse({ datasetId: 'bi63-dtpu', offset: 1_000_001 });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a pathological max-safe-integer offset', () => {
+      const result = queryDataset.input.safeParse({
+        datasetId: 'bi63-dtpu',
+        offset: Number.MAX_SAFE_INTEGER,
+      });
+      expect(result.success).toBe(false);
+    });
+
     it('accepts all optional SoQL fields as undefined', () => {
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34' });
       expect(input.search).toBeUndefined();
@@ -195,6 +213,30 @@ describe('cdc_query_dataset — edge cases', () => {
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('cdc_get_dataset_schema');
+    });
+
+    it('renders columns that first appear in a later row (sparse rows)', () => {
+      // row 0 lacks the footnote field; it appears only in row 1. The union-of-keys
+      // column derivation must keep it in the header so content[] does not drop data.
+      const blocks = queryDataset.format!({
+        rows: [
+          { stateabbr: 'CA', data_value: '1.2' },
+          { stateabbr: 'TX', data_value: '3.4', data_value_footnote: 'suppressed' },
+        ],
+        rowCount: 2,
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      const lines = text.split('\n');
+      const headerLine = lines.find((l) => l.startsWith('| stateabbr'))!;
+      const caRow = lines.find((l) => l.startsWith('| CA'))!;
+      const pipeCount = (s: string) => (s.match(/\|/g) ?? []).length;
+
+      // Late-appearing column present in the header...
+      expect(headerLine).toContain('data_value_footnote');
+      // ...the earlier row renders a cell for every column (trailing empty cell)...
+      expect(pipeCount(caRow)).toBe(pipeCount(headerLine));
+      // ...and the later row's value is still rendered.
+      expect(text).toContain('suppressed');
     });
   });
 

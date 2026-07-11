@@ -107,7 +107,13 @@ export const queryDataset = tool('cdc_query_dataset', {
       .max(MAX_LIMIT)
       .default(100)
       .describe(`Max rows to return (default 100, max ${MAX_LIMIT}).`),
-    offset: z.number().int().min(0).default(0).describe('Row offset for pagination.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_000_000)
+      .default(0)
+      .describe('Row offset for pagination (max 1,000,000).'),
   }),
 
   output: z.object({
@@ -192,7 +198,10 @@ export const queryDataset = tool('cdc_query_dataset', {
       ];
     }
 
-    const columns = Object.keys(result.rows[0]);
+    // Socrata rows are sparse: fields selected by the caller can be omitted on early
+    // rows and appear only later. Build the column set from the union of keys across
+    // all rows (first-seen order) so late-appearing fields still render in content[].
+    const columns = [...new Set(result.rows.flatMap((r) => Object.keys(r)))];
     const lines = [
       `**${result.rowCount} rows returned**`,
       '',
