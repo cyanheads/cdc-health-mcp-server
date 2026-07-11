@@ -92,6 +92,12 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .max(9999)
       .default(0)
       .describe('Pagination offset for browsing beyond first page (max 9999).'),
+    order: z
+      .enum(['dataset_id', 'relevance'])
+      .default('dataset_id')
+      .describe(
+        'Result ordering. "dataset_id" (default) sorts deterministically by each dataset\'s unique catalog ID — required for stable offset pagination, since consecutive pages form a gap-free, duplicate-free traversal. "relevance" returns best-match ranking for keyword search but is not stably paginable across pages, so walking offsets can skip or repeat datasets.',
+      ),
   }),
 
   output: z.object({

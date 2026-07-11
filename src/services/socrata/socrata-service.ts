@@ -29,6 +29,7 @@ export interface DiscoverOptions {
   domain?: SocrataDomain | undefined;
   limit?: number | undefined;
   offset?: number | undefined;
+  order?: string | undefined;
   query?: string | undefined;
   tags?: string[] | undefined;
 }
@@ -85,6 +86,7 @@ export class SocrataService {
     }
     params.set('limit', String(options.limit ?? 10));
     params.set('offset', String(options.offset ?? 0));
+    if (options.order) params.set('order', options.order);
 
     const url = `${config.catalogUrl}?${params}`;
     const data = await this.fetchJson(url, signal);

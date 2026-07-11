@@ -126,6 +126,30 @@ describe('SocrataService', () => {
       const url = spy.mock.calls[0][0] as string;
       expect(url).toContain('limit=10');
     });
+
+    it('forwards a requested order to the catalog URL for stable pagination', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({ order: 'dataset_id' });
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toContain('order=dataset_id');
+    });
+
+    it('forwards an explicit order override (relevance)', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({ order: 'relevance' });
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toContain('order=relevance');
+    });
+
+    it('omits the order param when no ordering is requested', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({ limit: 50 });
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).not.toContain('order=');
+    });
   });
 
   describe('getMetadata', () => {

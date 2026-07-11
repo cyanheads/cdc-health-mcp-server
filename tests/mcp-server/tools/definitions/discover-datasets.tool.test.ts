@@ -173,6 +173,35 @@ describe('cdc_discover_datasets', () => {
     expect(input.offset).toBe(0);
   });
 
+  it('defaults order to dataset_id and threads it to the service', async () => {
+    mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+    const ctx = createMockContext();
+    const input = discoverDatasets.input.parse({ query: 'diabetes mortality' });
+    expect(input.order).toBe('dataset_id');
+    await discoverDatasets.handler(input, ctx);
+
+    expect(mockDiscover).toHaveBeenCalledWith(
+      expect.objectContaining({ order: 'dataset_id' }),
+      ctx.signal,
+    );
+  });
+
+  it('forwards an explicit order override to the service', async () => {
+    mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+    const ctx = createMockContext();
+    const input = discoverDatasets.input.parse({ query: 'diabetes', order: 'relevance' });
+    await discoverDatasets.handler(input, ctx);
+
+    expect(mockDiscover).toHaveBeenCalledWith(
+      expect.objectContaining({ order: 'relevance' }),
+      ctx.signal,
+    );
+  });
+
+  it('rejects an unsupported order value', () => {
+    expect(() => discoverDatasets.input.parse({ order: 'last_modified' })).toThrow();
+  });
+
   it('rejects limit above 100', () => {
     expect(() => discoverDatasets.input.parse({ limit: 101 })).toThrow();
   });
