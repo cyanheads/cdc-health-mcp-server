@@ -3,6 +3,7 @@
  * @module tests/mcp-server/resources/definitions/datasets-edge
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { datasetsResource } from '@/mcp-server/resources/definitions/datasets.resource.js';
@@ -87,5 +88,53 @@ describe('cdc://datasets — edge cases', () => {
     const listing = await datasetsResource.list!();
     expect(listing.resources).toHaveLength(1);
     expect(listing.resources[0].uri).toBe('cdc://datasets');
+  });
+
+  describe('handler — service error re-throw with recovery', () => {
+    it('surfaces recovery.hint and strips raw url/status/body on a reason-tagged McpError', async () => {
+      const serviceErr = new McpError(
+        JsonRpcErrorCode.ServiceUnavailable,
+        'Socrata returned HTTP 503 Service Unavailable.',
+        {
+          reason: 'upstream_error',
+          url: 'http://127.0.0.1:39991/api/catalog/v1?domains=data.cdc.gov&limit=50&offset=0',
+          status: 503,
+          statusText: 'Service Unavailable',
+          body: 'catalog unavailable from test stub',
+        },
+      );
+      mockDiscover.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: datasetsResource.errors });
+
+      const err = (await datasetsResource.handler({}, ctx).catch((e) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({
+        reason: 'upstream_error',
+        recovery: { hint: expect.stringContaining('catalog may be temporarily unavailable') },
+      });
+      // Raw upstream/debug fields must not leak through the resource error payload.
+      expect(err.data?.url).toBeUndefined();
+      expect(err.data?.status).toBeUndefined();
+      expect(err.data?.statusText).toBeUndefined();
+      expect(err.data?.body).toBeUndefined();
+    });
+
+    it('preserves a declared rate_limited reason with its recovery hint', async () => {
+      const serviceErr = new McpError(
+        JsonRpcErrorCode.RateLimited,
+        'Rate limited by Socrata API (429).',
+        { reason: 'rate_limited', url: 'http://127.0.0.1:39991/api/catalog/v1' },
+      );
+      mockDiscover.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: datasetsResource.errors });
+
+      await expect(datasetsResource.handler({}, ctx)).rejects.toMatchObject({
+        data: expect.objectContaining({
+          reason: 'rate_limited',
+          recovery: { hint: expect.stringContaining('rate-limited') },
+        }),
+      });
+    });
   });
 });

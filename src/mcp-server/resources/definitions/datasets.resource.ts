@@ -4,8 +4,9 @@
  */
 
 import { resource } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
+import type { DiscoverResult } from '@/services/socrata/types.js';
 
 export const datasetsResource = resource('cdc://datasets', {
   name: 'CDC Dataset Catalog',
@@ -28,6 +29,13 @@ export const datasetsResource = resource('cdc://datasets', {
       retryable: true,
       recovery: 'Retry after a brief delay; the catalog may be temporarily unavailable.',
     },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Socrata catalog API returned HTTP 400 (unexpected for this fixed orientation request, which takes no caller input).',
+      recovery:
+        'Retry shortly; if it persists, browse the catalog with cdc_discover_datasets instead.',
+    },
   ],
 
   list: async () => ({
@@ -42,7 +50,16 @@ export const datasetsResource = resource('cdc://datasets', {
 
   async handler(_params, ctx) {
     const service = getSocrataService();
-    const result = await service.discover({ limit: 50 }, ctx.signal);
+    let result: DiscoverResult;
+    try {
+      result = await service.discover({ limit: 50 }, ctx.signal);
+    } catch (err) {
+      if (err instanceof McpError && typeof err.data?.reason === 'string') {
+        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
+        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+      }
+      throw err;
+    }
 
     ctx.log.info('Datasets resource accessed', { totalCount: result.totalCount });
 
