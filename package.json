@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/cdc-health-mcp-server",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.",
   "type": "module",
   "main": "dist/index.js",
@@ -87,10 +87,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.2",
+    "@biomejs/biome": "2.5.3",
     "@opentelemetry/api": "^1.9.1",
     "@socketsecurity/bun-security-scanner": "^1.1.2",
-    "@types/node": "26.1.0",
+    "@types/node": "26.1.1",
     "@vitest/coverage-istanbul": "^4.1.9",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.5",

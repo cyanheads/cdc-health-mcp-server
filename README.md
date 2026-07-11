@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/cdc-health-mcp-server</h1>
   <p><b>Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.</b>
-  <div>3 Tools • 2 Resources • 1 Prompt</div>
+  <div>4 Tools • 2 Resources • 1 Prompt</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,13 +29,14 @@
 
 ## Tools
 
-Three tools for discovering and querying CDC public health data:
+Four tools for discovering and querying CDC public health data. Three query the CDC Open Data portal (Socrata); one queries CDC WONDER mortality statistics:
 
 | Tool | Description |
 |:---|:---|
 | `cdc_discover_datasets` | Search the catalog by keyword, category, or tag. Entry point for all queries. |
 | `cdc_get_dataset_schema` | Fetch column schema, row count, and metadata for a dataset. Essential before writing SoQL queries. |
 | `cdc_query_dataset` | Execute SoQL queries — filter, aggregate, sort, full-text search, and field selection. |
+| `cdc_query_wonder` | Query CDC WONDER for national mortality statistics (deaths, population, crude/age-adjusted rates) by year, age, sex, and race, filtered by ICD-10 cause. |
 
 ### `cdc_discover_datasets`
 
@@ -73,6 +74,19 @@ Execute SoQL queries against any CDC dataset.
 - All response values are strings (per SODA v2.1) — parse based on column type metadata
 - `domain` selects the portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
 
+---
+
+### `cdc_query_wonder`
+
+Query CDC WONDER for national US mortality statistics from the Underlying Cause of Death database (D76, 1999–2020) — a separate CDC system from the Socrata datasets the other tools query.
+
+- Group results by any of `year`, `age_group`, `sex`, `race` (1–4 dimensions)
+- Filter by ICD-10 underlying cause, sex, ten-year age groups, and year range
+- Returns deaths, population, and crude death rate, plus age-adjusted rate when not grouping by age
+- National totals only — sub-national (state/county) breakdowns are not available through the WONDER API (CDC vital-statistics policy)
+- CDC suppresses any cell with fewer than 10 deaths (returned as `null`)
+- Rate-limited to one request per ~15 seconds; requests are spaced automatically
+
 ## Resources and prompt
 
 | Type | Name | Description |
@@ -95,6 +109,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
 CDC-specific:
 
 - Wraps the [Socrata SODA API v2.1](https://dev.socrata.com/) — no auth required, optional app token for higher rate limits
+- Adds CDC WONDER mortality access (`cdc_query_wonder`) — national deaths, population, and crude/age-adjusted rates from the Underlying Cause of Death database (1999–2020), a separate XML-over-HTTP CDC system
 - Discovery-first approach for a heterogeneous catalog (~1,487 datasets across many health domains)
 - Two CDC Socrata portals via the `domain` input — [`data.cdc.gov`](https://data.cdc.gov/) (default) and [`chronicdata.cdc.gov`](https://chronicdata.cdc.gov/) (PLACES small-area estimates, the Heart Disease & Stroke Atlas, Environmental Public Health Tracking); restricted to this allowlist
 - Conservative request spacing for rate limit compliance (no rate-limit headers returned by Socrata)

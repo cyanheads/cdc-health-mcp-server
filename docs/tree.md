@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-07-11 01:31:10
+Generated on: 2026-07-11 08:40:25
 
 ```text
 cdc-health-mcp-server/
@@ -141,11 +141,17 @@ cdc-health-mcp-server/
 │   │       └── definitions/
 │   │           ├── discover-datasets.tool.ts
 │   │           ├── get-dataset-schema.tool.ts
-│   │           └── query-dataset.tool.ts
+│   │           ├── query-dataset.tool.ts
+│   │           └── query-wonder.tool.ts
 │   ├── services/
-│   │   └── socrata/
-│   │       ├── socrata-service.ts
-│   │       └── types.ts
+│   │   ├── socrata/
+│   │   │   ├── socrata-service.ts
+│   │   │   └── types.ts
+│   │   └── wonder/
+│   │       ├── types.ts
+│   │       ├── wonder-service.ts
+│   │       ├── xml-builder.ts
+│   │       └── xml-parser.ts
 │   └── index.ts
 ├── tests/
 │   ├── config/
@@ -168,16 +174,21 @@ cdc-health-mcp-server/
 │   │           ├── get-dataset-schema-edge.tool.test.ts
 │   │           ├── get-dataset-schema.tool.test.ts
 │   │           ├── query-dataset-edge.tool.test.ts
-│   │           └── query-dataset.tool.test.ts
+│   │           ├── query-dataset.tool.test.ts
+│   │           └── query-wonder.tool.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── security/
 │   │   └── tools-security.test.ts
 │   ├── services/
-│   │   └── socrata/
-│   │       ├── socrata-service-errors.test.ts
-│   │       ├── socrata-service-token.test.ts
-│   │       └── socrata-service.test.ts
+│   │   ├── socrata/
+│   │   │   ├── socrata-service-errors.test.ts
+│   │   │   ├── socrata-service-token.test.ts
+│   │   │   └── socrata-service.test.ts
+│   │   └── wonder/
+│   │       ├── wonder-service.test.ts
+│   │       ├── xml-builder.test.ts
+│   │       └── xml-parser.test.ts
 │   └── tools/
 ├── .dockerignore
 ├── .env.example

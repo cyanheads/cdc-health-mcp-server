@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0] - 2026-07-11
+
+Adds `cdc_query_wonder`, a fourth tool covering CDC WONDER national mortality statistics.
+
+### Added
+
+- **`cdc_query_wonder`**: queries the CDC WONDER Underlying Cause of Death database (D76, 1999–2020) for national US mortality — deaths, population, crude death rate, and (unless grouped by age) age-adjusted rate. Results group by 1–4 of `year`/`age_group`/`sex`/`race` and filter by ICD-10 underlying cause, sex, ten-year age groups, and year range. National totals only — WONDER does not expose sub-national breakdowns through the API. Cells representing fewer than 10 deaths are suppressed by CDC and returned as `null`. WONDER is a separate XML-over-HTTP CDC system from the Socrata-backed tools and rate-limits to one request per ~15 seconds; requests are spaced automatically. New service layer under `src/services/wonder/` (types, XML request builder, XML response parser, service client).
+
+### Dependencies
+
+- `@biomejs/biome` 2.5.2 → 2.5.3
+- `@types/node` 26.1.0 → 26.1.1
+
 ## [0.7.1] - 2026-07-10
 
 Four query/discovery/catalog bug fixes, plus `@cyanheads/mcp-ts-core` ^0.10.14 adoption and supply-chain hardening.
