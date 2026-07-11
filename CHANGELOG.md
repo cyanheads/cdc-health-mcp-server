@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.7.1] - 2026-07-10
+
+Four query/discovery/catalog bug fixes, plus `@cyanheads/mcp-ts-core` ^0.10.14 adoption and supply-chain hardening.
+
+### Fixed
+
+- **`cdc://datasets` recovery hints on catalog failures** (#14): the resource handler called `service.discover()` bare, so a service-thrown `McpError` bypassed the typed contract — `data.recovery.hint` never reached the wire and raw `url`/`status`/`body` fields could leak. The handler now catches the reason-tagged `McpError` and re-throws via `ctx.fail(reason, …, { ...ctx.recoveryFor(reason) })`, matching the pattern already used by `cdc_get_dataset_schema` and `cdc://datasets/{datasetId}`. Adds an `invalid_query` (HTTP 400) entry to the error contract.
+- **`cdc_query_dataset` offset bounded** (#15): the `offset` input is now capped at `.max(1_000_000)`. It was previously only floored at 0, so a pathological value (e.g. `Number.MAX_SAFE_INTEGER`) passed validation.
+- **`cdc_query_dataset` sparse-row rendering** (#16): `format()` derives its table columns from the union of keys across all rows (first-seen order) instead of only `rows[0]`. Fields Socrata omits on early rows and returns only later now render in the `content[]` markdown table.
+- **`cdc_discover_datasets` stable offset pagination** (#17): a new `order` enum input (`dataset_id` default, `relevance`) threads through `SocrataService.discover` to the catalog `order` parameter. Default `dataset_id` sorts deterministically by catalog ID for a gap-free, duplicate-free traversal across pages; `relevance` keeps best-match ranking for keyword search.
+
+### Changed
+
+- **Supply-chain hardening**: `bunfig.toml` adds an `[install.security]` block wiring the Socket scanner (`@socketsecurity/bun-security-scanner`) to scan every package before install, plus `minimumReleaseAge` (3-day quarantine on freshly published versions; `@cyanheads/mcp-ts-core` excluded as first-party). The `Dockerfile` build stage now installs with `--ignore-scripts`, mounts a BuildKit cache for Bun's package cache, and pins base images to `oven/bun:1.3.14`.
+- **Attribution**: `LICENSE` copyright and `package.json` `author` updated to `Casey Hand @cyanheads`.
+- **Engines**: Bun floor relaxed `>=1.3.2` → `>=1.3.0`; `packageManager` `bun@1.3.11` → `bun@1.3.14`.
+- **Framework-managed skills and devcheck scripts re-synced** to the `@cyanheads/mcp-ts-core` ^0.10.14 baseline. Added `.gitattributes`, `.github/FUNDING.yml`, and `.github/SECURITY.md`.
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.10.9 → ^0.10.14
+- `@socketsecurity/bun-security-scanner` (new dev-dep) ^1.1.2
+- `@biomejs/biome` ^2.5.0 → 2.5.2 (pinned)
+- `@types/node` ^26.0.0 → 26.1.0 (pinned)
+- `tsc-alias` ^1.8.17 → ^1.9.0
+- `@vitest/coverage-istanbul` 4.1.9 → 4.1.10 (lockfile)
+- `vitest` 4.1.9 → 4.1.10 (lockfile)
+
 ## [0.7.0] - 2026-06-21
 
 Multi-portal access via an allowlisted `domain` input, plus a leaner discovery payload.
