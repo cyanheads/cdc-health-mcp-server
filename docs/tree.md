@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-08-09 14:37:48
+Generated on: 2026-08-09 16:02:49
 
 ```text
 cdc-health-mcp-server/
@@ -185,6 +185,7 @@ cdc-health-mcp-server/
 │   ├── services/
 │   │   ├── socrata/
 │   │   │   ├── socrata-contract-parity.test.ts
+│   │   │   ├── socrata-domain-semantics.test.ts
 │   │   │   ├── socrata-service-errors.test.ts
 │   │   │   ├── socrata-service-token.test.ts
 │   │   │   └── socrata-service.test.ts

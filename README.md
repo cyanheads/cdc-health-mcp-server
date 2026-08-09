@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -48,7 +48,7 @@ Search the CDC dataset catalog to find relevant datasets.
 - Returns dataset IDs, names, truncated descriptions, a column count with a short column sample, and update timestamps — use `cdc_get_dataset_schema` for the full column list
 - Each result carries its catalog `assetType` (`dataset`, `filter`, `chart`, `map`, `story`, `file`, `href`); a `columnCount` of 0 marks an entry that is not tabular and yields no data from the other tools
 - Pagination via offset for browsing large result sets — `offset` plus `limit` must not exceed 10,000, the ceiling the catalog enforces
-- `domain` selects the portal: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
+- `domain` selects the host contacted, `data.cdc.gov` (default) or `chronicdata.cdc.gov` — both front the same catalog and return the same entries, so switching hosts neither widens nor narrows a search
 
 ---
 
@@ -61,7 +61,7 @@ Fetch the full column schema for a specific dataset.
 - Essential for understanding column types before writing `$where` clauses
 - Accepts four-by-four dataset identifiers (e.g., `bi63-dtpu`)
 - Fails with `not_queryable` when the ID names a non-tabular catalog asset, rather than returning an empty column list
-- `domain` selects the portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
+- `domain` selects the host contacted, `data.cdc.gov` (default) or `chronicdata.cdc.gov` — a four-by-four ID resolves on either
 
 ---
 
@@ -74,7 +74,7 @@ Execute SoQL queries against any CDC dataset.
 - Up to 5,000 rows per request with pagination
 - Returns the SoQL clauses it sent as `effectiveQuery`, values in their original text rather than URL-encoded, so a clause can be copied back into the parameter it came from
 - All response values are strings (per SODA v2.1) — parse based on column type metadata
-- `domain` selects the portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`
+- `domain` selects the host contacted, `data.cdc.gov` (default) or `chronicdata.cdc.gov` — a four-by-four ID returns the same rows from either
 
 ---
 
@@ -131,7 +131,7 @@ CDC-specific:
 - Wraps the [Socrata SODA API v2.1](https://dev.socrata.com/) — no auth required, optional app token for higher rate limits
 - Adds CDC WONDER mortality access (`cdc_query_wonder`) — national deaths, population, and crude/age-adjusted rates across five mortality databases spanning 1999 through the current year, final and provisional, underlying-cause and multiple-cause; a separate XML-over-HTTP CDC system
 - Discovery-first approach for a heterogeneous catalog (~1,080 datasets across many health domains)
-- Two CDC Socrata portals via the `domain` input — [`data.cdc.gov`](https://data.cdc.gov/) (default) and [`chronicdata.cdc.gov`](https://chronicdata.cdc.gov/) (PLACES small-area estimates, the Heart Disease & Stroke Atlas, Environmental Public Health Tracking); restricted to this allowlist
+- Two CDC Socrata hosts via the `domain` input — [`data.cdc.gov`](https://data.cdc.gov/) (default) and [`chronicdata.cdc.gov`](https://chronicdata.cdc.gov/), restricted to this allowlist. Both front one Socrata tenant: a single catalog whose assets — PLACES small-area estimates, the Heart Disease & Stroke Atlas and Environmental Public Health Tracking among them — are discoverable and queryable from either host
 - Conservative request spacing for rate limit compliance (no rate-limit headers returned by Socrata)
 - Handles SODA string-typed responses — all values returned as strings, parsed via column type metadata
 

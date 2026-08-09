@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.4] - 2026-08-09
+
+Corrects the `domain` input's description on the three Socrata tools, which implied `chronicdata.cdc.gov` scoped access to datasets it does not, and closes a token-leak test that could never fail.
+
+### Changed
+
+- **`domain` input description across `cdc_discover_datasets`, `cdc_get_dataset_schema`, `cdc_query_dataset`** (#33): rewritten to state that `data.cdc.gov` and `chronicdata.cdc.gov` front the same Socrata catalog and resolve the same four-by-four IDs, rather than implying `chronicdata.cdc.gov` is required to reach PLACES, the Heart Disease & Stroke Atlas, or Environmental Public Health Tracking — all reachable from either host. `README.md`, `docs/design.md`, `CLAUDE.md`, and the `CDC_SOCRATA_DOMAINS` JSDoc in `src/services/socrata/types.ts` are updated to match. `tests/services/socrata/socrata-domain-semantics.test.ts` pins both halves — the request differs only in the host selector, and no `domain` description carries exclusivity phrasing — so the claim can't drift back.
+
+### Fixed
+
+- **`tests/services/socrata/socrata-service-token.test.ts` made falsifiable** (#34): the app-token tests now hand a `vi.hoisted` sentinel to the real `SocrataService` and assert on every surface a caller actually receives — the request URL, the `QueryResult`/`DiscoverResult` payloads, and the `data.url` the framework forwards on error — instead of the error message alone. `src/services/socrata/socrata-service.ts` is unchanged; the rewritten tests now catch a token leak the old ones couldn't.
+
 ## [0.8.3] - 2026-08-09
 
 `cdc_query_wonder` now spans five CDC WONDER mortality databases instead of one, with a corrected request-spacing gate and disclosure of rows CDC hides from the response.

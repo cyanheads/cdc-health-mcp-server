@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-mcp-server
-**Version:** 0.8.3
+**Version:** 0.8.4
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.1`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 
@@ -33,7 +33,7 @@ The three Socrata tools take an allowlisted `domain` input (`data.cdc.gov` defau
 
 ### Socrata API Endpoints
 
-`{domain}` is allowlisted to `data.cdc.gov` (default) or `chronicdata.cdc.gov` (PLACES, Heart Disease & Stroke Atlas, Environmental Public Health Tracking) — selected per call via the `domain` tool input. The app token works unchanged across both hosts.
+`{domain}` is allowlisted to `data.cdc.gov` (default) or `chronicdata.cdc.gov`, selected per call via the `domain` tool input. The two are front doors onto one Socrata tenant — a single catalog labelled `data.cdc.gov`, whose assets all resolve by four-by-four ID on either host — so `domain` picks which host answers, never which assets are reachable. No surface may name PLACES, the Heart Disease & Stroke Atlas, or Environmental Public Health Tracking as though `chronicdata.cdc.gov` were the way to reach them; `tests/services/socrata/socrata-domain-semantics.test.ts` pins that. The app token works unchanged across both hosts.
 
 | Endpoint | Purpose |
 |:---------|:--------|
