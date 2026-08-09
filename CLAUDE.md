@@ -1,8 +1,8 @@
 # Agent Protocol
 
 **Server:** cdc-health-mcp-server
-**Version:** 0.8.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.14`
+**Version:** 0.8.1
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.1`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -19,13 +19,14 @@ Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,487 datasets) via th
 
 **Design doc:** `docs/design.md` — full parameter tables, error modes, API endpoints, and implementation notes.
 
-All three tools take an allowlisted `domain` input (`data.cdc.gov` default, `chronicdata.cdc.gov`) — Zod `z.enum` rejects any other host before the handler runs (the SSRF guard). The two `cdc://datasets…` resources stay on the default host.
+The three Socrata tools take an allowlisted `domain` input (`data.cdc.gov` default, `chronicdata.cdc.gov`) — Zod `z.enum` rejects any other host before the handler runs (the SSRF guard). The two `cdc://datasets…` resources stay on the default host. `cdc_query_wonder` hits a different CDC system and takes no `domain`.
 
 | Definition | Type | Purpose |
 |:-----------|:-----|:--------|
 | `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point. Trimmed payload — `columnCount` + an 8-name `columnSample` and a 300-char description; full column detail comes from `cdc_get_dataset_schema`. |
 | `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. Full-detail surface. |
 | `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. |
+| `cdc_query_wonder` | tool | Query CDC WONDER database D76 (Underlying Cause of Death, 1999–2020) — national deaths, population, crude/age-adjusted rates. Grouped by year/age/sex/race, filtered by ICD-10 cause. |
 | `cdc://datasets` | resource | Top 50 datasets by popularity for orientation. |
 | `cdc://datasets/{datasetId}` | resource | Dataset metadata + schema (equivalent to schema tool). |
 | `analyze_health_trend` | prompt | Guided workflow: discover → inspect → query → compare → synthesize. |
@@ -39,6 +40,18 @@ All three tools take an allowlisted `domain` input (`data.cdc.gov` default, `chr
 | `GET https://api.us.socrata.com/api/catalog/v1?domains={domain}` | Discovery/catalog search |
 | `GET https://{domain}/api/views/{datasetId}.json` | Dataset metadata + schema |
 | `GET https://{domain}/resource/{datasetId}.json?$select=...&$where=...` | SoQL data queries |
+
+### CDC WONDER API
+
+Separate system, separate service (`src/services/wonder/`). `POST https://wonder.cdc.gov/controller/datarequest/D76` with a form-urlencoded `request_xml` document; the response is an XML `<data-table>`.
+
+- Send bare headers — a browser-looking User-Agent/Origin trips an upstream Akamai 403.
+- Hard 15-second gap between requests, enforced by the service (429 otherwise).
+- National only; sub-national grouping and filtering are blocked by CDC policy.
+- Every request must carry a rate measure — a deaths-only measure set is rejected.
+- Cause of death is a filter, never a grouping.
+- Age-adjusted rate is rejected unless age can be standardized — omit it when `age_group` is a grouping dimension or the age-group filter selects exactly one group.
+- A measure cell may carry a status token instead of a number: `Suppressed`, `Unreliable`, `Not Applicable`. The parser nulls the value and records the token per cell.
 
 ### Quirks
 
@@ -82,7 +95,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 - **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
-- **Check `ctx.elicit` / `ctx.sample`** for presence before calling.
+- **Check `ctx.elicit`** for presence before calling.
 - **Secrets in env vars only** — never hardcoded.
 - **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed and close it. Do both — a comment without a close leaves stale issues open; a close without a comment leaves no record of what shipped. The comment is for future readers — state the concrete changes, not the conversation that produced them.
 
@@ -206,9 +219,9 @@ Handlers receive a unified `ctx` object. Key properties:
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input. **Check for presence first:** `if (ctx.elicit) { ... }` |
-| `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
+| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.getMany(keys)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
+| `ctx.elicit` | Ask user for structured input — form call `(message, schema)` or `.url(message, url)` for an external link. **Check for presence first:** `if (ctx.elicit) { ... }` |
+| `ctx.content` | Non-text content blocks — `.image(data, mimeType)`, `.audio(data, mimeType)`, or `ctx.content(block)` for a raw block. Prepended to `content[]` after `format()`; never enters `structuredContent`. |
 | `ctx.signal` | `AbortSignal` for cancellation. |
 | `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
 | `ctx.enrich` | Success-path enrichment — accumulates agent-facing context (notices, totals, query echo) onto the request. Reaches `structuredContent` + `content[]` automatically. Kind-tagged helpers: `.notice(text)`, `.total(n)`, `.echo(query)`, `.delta({ field, before, after })`. Always present; typed on `HandlerContext<R, E>` when an `enrichment` block is declared. |
@@ -319,6 +332,7 @@ Available skills:
 | `orchestrations` | Chain task skills into a gated multi-phase pipeline — build-out, QA-fix, update-ship — when you can spawn sub-agents |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
+| `techniques` | Catalog of response/data-shaping techniques — overflow handling, payload shaping, retrieval patterns |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
 | `api-canvas` | DataCanvas: register tabular data, run SQL, export, plus the `spillover()` helper for big result sets — Tier 3 opt-in |
 | `api-mirror` | MirrorService: persistent self-refreshing local SQLite mirror of a bulk upstream dataset — Tier 3, Node/Bun only |
@@ -345,6 +359,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run clean` | Remove build artifacts |
 | `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
 | `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-run `bun audit`. Use when `devcheck` flags a transitive advisory — Bun's `update` is sticky on transitive resolutions, so the advisory may be a stale-lockfile false positive. If it survives the refresh, it's real. |
+| `bun run lint:mcp` | Run the MCP definition linter standalone (rule catalog: `api-linter` skill) |
+| `bun run lint:packaging` | Packaging surface checks — `server.json`/`manifest.json` env-var parity (run by devcheck) |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting (safe rules only) |
 | `bun run format:unsafe` | Auto-fix formatting including unsafe rules (review diff before committing) |

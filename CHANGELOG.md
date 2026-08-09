@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.1] - 2026-08-09
+
+`cdc_query_wonder` fixes: CDC status tokens no longer read as suppression, every caveat renders, unresolved template placeholders are filtered out, and single-age-group filters no longer fail upstream.
+
+### Fixed
+
+- **Status tokens distinguished from suppression** (#22): `parseMeasure` previously collapsed every non-numeric WONDER cell — `Suppressed`, `Unreliable`, `Not Applicable` — to the same `null` with `suppressed: false`, so a published-but-statistically-unstable rate (`Unreliable`, computed from fewer than 20 deaths) read identically to a genuinely absent value and never incremented `suppressedCount`. `rows` output is unchanged (`crude_rate` etc. stay `number | null`); output gains an additive `cellNotes: { row, column, token }[]` array recording the exact token per flagged cell, and `suppressedCount` now derives from the `cellNotes` entries whose token is `Suppressed`. `format()` renders the token in the table cell instead of a blank and itemizes the non-suppression notes below the table; the enrichment notice separates withheld cells from flagged-but-published ones. The tool description, the `rows`/`suppressedCount` output descriptions, `WonderRow`'s doc comment, and the README bullet — all of which claimed "fewer than 10 deaths" was the only reason a measure cell reads `null` — are corrected to name all three tokens.
+- **Unresolved WONDER template placeholders dropped from caveats** (#20): `parseDataTable` now filters any caveat/footnote matching `^wonder:[\w-]+\(.*\)$` (e.g. `wonder:cmf-3('footnote')`) before returning the array — these are unexpanded upstream template expressions, not CDC footnote prose. The filter is shape-anchored against the whole string, not a name allowlist or substring test, so legitimate prose mentioning `wonder.cdc.gov` still survives.
+- **Every caveat renders, on both result paths** (#19): `format()` no longer caps `content[]` caveats at 8 entries — `structuredContent.caveats` and the rendered markdown now always match. The empty-result early return no longer skips the caveats/status-token block, so a zero-row result with caveats renders them alongside the no-match notice instead of dropping them.
+- **Age-adjusted rate no longer requested for a single-entry `age_groups` filter** (#23): `measuresFor()` in `xml-builder.ts` now also takes the `age_groups` filter and omits age-adjusted rate (and `O_aar`) whenever `group_by` includes `age_group` **or** `age_groups` selects exactly one group — previously only the grouping case was checked, so e.g. `age_groups: ["1"]` (infant mortality) rejected every call upstream with code `-32007` ("Please select more than one age group when calculating age-adjusted rates").
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.10.14 → ^0.11.1
+- `typescript` ^6.0.3 → ^7.0.2
+- `@biomejs/biome` 2.5.3 → 2.5.6
+- `@types/node` 26.1.1 → 26.1.2
+- `ignore` ^7.0.5 → ^7.0.6
+- `tsc-alias` ^1.9.0 → ^1.9.1
+
 ## [0.8.0] - 2026-07-11
 
 Adds `cdc_query_wonder`, a fourth tool covering CDC WONDER national mortality statistics.
