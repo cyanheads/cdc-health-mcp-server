@@ -55,6 +55,35 @@ describe('cdc://datasets', () => {
     expect(result.datasets[0]).not.toHaveProperty('tags');
   });
 
+  it('labels non-tabular entries so an orientation read does not pick one', async () => {
+    /**
+     * The orientation page is drawn from the same catalog as cdc_discover_datasets and
+     * carries charts and stories among the datasets — 3 of the live top 50. Without the
+     * type and the column count they are indistinguishable here, and the ID only fails
+     * one call later, at cdc_get_dataset_schema.
+     */
+    mockDiscover.mockResolvedValue({
+      datasets: [
+        { id: 'bi63-dtpu', name: 'Leading Causes', assetType: 'dataset', columnNames: ['state'] },
+        { id: 'sxbq-3sid', name: 'Pfizer Allocations', assetType: 'chart', columnNames: [] },
+        { id: 's2qv-b27b', name: 'DHDS', assetType: 'filter', columnNames: ['year', 'state'] },
+      ],
+      totalCount: 3,
+    });
+
+    const ctx = createMockContext();
+    const result = (await datasetsResource.handler({}, ctx)) as {
+      datasets: { id: string; assetType?: string; columnCount?: number }[];
+    };
+
+    expect(result.datasets.map((d) => [d.id, d.assetType, d.columnCount])).toEqual([
+      ['bi63-dtpu', 'dataset', 1],
+      ['sxbq-3sid', 'chart', 0],
+      // A `filter` entry has real columns and queries normally — the type alone would hide it.
+      ['s2qv-b27b', 'filter', 2],
+    ]);
+  });
+
   it('calls discover with limit 50', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
     const ctx = createMockContext();

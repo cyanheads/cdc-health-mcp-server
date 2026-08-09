@@ -200,6 +200,15 @@ describe('cdc_query_wonder', () => {
     it('rejects an unknown age group', () => {
       expect(() => queryWonder.input.parse({ age_groups: ['30-40'] })).toThrow();
     });
+
+    it('states that age_groups matches any of the listed groups', () => {
+      /**
+       * Every multi-value filter on this surface unions its values. Leaving that implied
+       * lets a reader take a second age group as a narrowing conjunction, which selects
+       * nothing — a death falls in exactly one age group.
+       */
+      expect(queryWonder.input.shape.age_groups.description).toContain('any of the listed');
+    });
   });
 
   describe('format', () => {
@@ -246,6 +255,22 @@ describe('cdc_query_wonder', () => {
       expect(text).toContain('row 0, `crude_rate` — `Unreliable`');
       expect(text).toContain('fewer than 20 deaths');
       expect(text).not.toContain('withheld by CDC for confidentiality');
+    });
+
+    it('keeps a cell containing a newline or pipe inside its own row', () => {
+      /**
+       * The escaping here guarded pipes but not line breaks, so a multi-line measure label
+       * would terminate its row and spill the rest of the table into loose text.
+       */
+      const blocks = queryWonder.format!({
+        ...sampleResult,
+        rows: [{ year: '2019\n', sex: 'Female | Male', deaths: 1, population: 2 }],
+        rowCount: 1,
+        columns: ['year', 'sex', 'deaths', 'population'],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      const dataRow = text.split('\n').find((l) => l.includes('Female'));
+      expect(dataRow).toBe('| 2019 | Female \\| Male | 1 | 2 |');
     });
 
     it('renders every caveat, not a leading slice', () => {

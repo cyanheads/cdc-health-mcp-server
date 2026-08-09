@@ -23,6 +23,27 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
         'Search again with cdc_discover_datasets to find a current ID for the topic of interest.',
     },
     {
+      reason: 'not_queryable',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The ID names a catalog asset with no columns — a chart, map, story, file, or external link rather than a tabular dataset.',
+      recovery:
+        'Pick an ID from cdc_discover_datasets whose columnCount is above zero; those are the entries cdc_query_dataset can read.',
+    },
+    {
+      reason: 'access_denied',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Socrata returned 403 — the asset is not readable through this endpoint or access is restricted.',
+      recovery:
+        'Choose a different dataset ID from cdc_discover_datasets; repeating this request returns the same refusal.',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Socrata rejected the metadata request with a 400.',
+      recovery:
+        'Read the returned message for the rejected part, then re-fetch the ID from cdc_discover_datasets and retry.',
+    },
+    {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
@@ -32,7 +53,7 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata metadata API returned a non-success status outside of 404/429.',
+      when: 'Socrata metadata API returned a 5xx server error.',
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -71,6 +92,19 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
         throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
       }
       throw err;
+    }
+
+    /**
+     * The metadata endpoint answers 200 for every catalog asset, so an empty `columns`
+     * array is what separates a tabular dataset from a chart, map, story, file, or link.
+     * Returning that bare is a failed lookup dressed as a result.
+     */
+    if (metadata.columns.length === 0) {
+      throw ctx.fail(
+        'not_queryable',
+        `Dataset ${params.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.`,
+        { ...ctx.recoveryFor('not_queryable') },
+      );
     }
 
     ctx.log.info('Dataset detail resource accessed', {

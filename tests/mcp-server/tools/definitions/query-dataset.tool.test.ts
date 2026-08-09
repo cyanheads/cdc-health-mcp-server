@@ -54,6 +54,19 @@ describe('cdc_query_dataset', () => {
     expect(enrichment.notice).toBeUndefined();
   });
 
+  it('says in the effectiveQuery description that the clauses are replayable as written', () => {
+    /**
+     * The echo carries each clause in the caller's own text, so it can be pasted back into
+     * the parameter it came from. Nothing about the value itself shows that, and a reader
+     * who assumes it is URL-encoded will decode it and reintroduce the bug the echo was
+     * fixed to avoid.
+     */
+    const description = queryDataset.enrichment.effectiveQuery.description ?? '';
+
+    expect(description).toContain('not URL-encoded');
+    expect(description).toContain('copied back into the matching parameter');
+  });
+
   it('emits a notice when no rows matched', async () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$where=x' });
     const ctx = createMockContext();

@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/query-dataset-edge
  */
 
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
@@ -164,6 +164,30 @@ describe('cdc_query_dataset — edge cases', () => {
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34' });
 
       await expect(queryDataset.handler(input, ctx)).rejects.toThrow('network failure');
+    });
+
+    it('surfaces a service 403 as Forbidden with a recovery that does not promise a retry', async () => {
+      /**
+       * Querying a non-tabular asset ID answers 403. Reported as upstream_error it came
+       * back as a retryable ServiceUnavailable claiming data.cdc.gov might be down, so a
+       * caller burned retries against a decision that never changes.
+       */
+      const serviceErr = new McpError(
+        JsonRpcErrorCode.Forbidden,
+        'Socrata denied access to this resource (403): no row or column access to non-tabular tables.',
+        { reason: 'access_denied' },
+      );
+      mockQuery.mockRejectedValue(serviceErr);
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: '235m-gsry', limit: 2 });
+
+      const err = (await queryDataset.handler(input, ctx).catch((e) => e)) as McpError;
+      expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
+      const data = err.data as { reason: string; retryable?: boolean; recovery: { hint: string } };
+      expect(data.reason).toBe('access_denied');
+      expect(data.retryable).toBeUndefined();
+      expect(data.recovery.hint).toContain('cdc_get_dataset_schema');
+      expect(data.recovery.hint).not.toMatch(/temporarily unavailable|retry after/i);
     });
   });
 

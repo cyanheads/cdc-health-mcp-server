@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/discover-datasets
  */
 
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
@@ -45,6 +45,52 @@ describe('cdc_discover_datasets', () => {
 
     expect(result.datasets).toHaveLength(1);
     expect(result.datasets[0].id).toBe('bi63-dtpu');
+  });
+
+  it('surfaces assetType alongside columnCount so a caller can skip non-tabular entries', async () => {
+    /**
+     * A file and an href arrive with a four-by-four ID and a name just like a dataset.
+     * Without the type label and a zero column count, picking one costs two more calls
+     * before anything says why nothing came back.
+     */
+    mockDiscover.mockResolvedValue({
+      datasets: [
+        { id: 'bi63-dtpu', name: 'Leading Causes', assetType: 'dataset', columnNames: ['state'] },
+        { id: '235m-gsry', name: 'Pulmonary evaluation', assetType: 'file', columnNames: [] },
+        { id: 's2qv-b27b', name: 'DHDS', assetType: 'filter', columnNames: ['year', 'state'] },
+      ],
+      totalCount: 3,
+    });
+    const ctx = createMockContext();
+    const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+
+    /**
+     * Read through the output schema, not off the raw handler return: the framework parses
+     * the result against `output` before it reaches structuredContent, so an undeclared
+     * field is stripped on the way out no matter what the handler built.
+     */
+    const wire = discoverDatasets.output.parse(result);
+    expect(wire.datasets.map((d) => [d.id, d.assetType, d.columnCount])).toEqual([
+      ['bi63-dtpu', 'dataset', 1],
+      ['235m-gsry', 'file', 0],
+      // A `filter` asset carries real columns and queries normally — type alone would hide it.
+      ['s2qv-b27b', 'filter', 2],
+    ]);
+  });
+
+  it('tells the caller in the field descriptions which of the two fields decides queryability', () => {
+    /**
+     * The two fields are read together and mean different things: `assetType` is the
+     * catalog's label and `columnCount` is the test. A model that reads `assetType` as the
+     * test drops every queryable `filter` entry, so the descriptions have to say which is
+     * which — nothing else on the wire does.
+     */
+    const fields = discoverDatasets.output.shape.datasets.element.shape;
+
+    expect(fields.assetType.description).toContain('Descriptive only');
+    expect(fields.assetType.description).toContain('Read columnCount, not this field');
+    expect(fields.columnCount.description).toContain('A count of 0 means the entry is not tabular');
+    expect(fields.columnCount.description).toContain('cdc_get_dataset_schema');
   });
 
   it('trims discovery output: columnCount + capped columnSample, no full column arrays', async () => {
@@ -130,6 +176,66 @@ describe('cdc_discover_datasets', () => {
     expect(enrichment.notice).toContain('No datasets found');
     expect(enrichment.notice).toContain('nonexistent');
     expect(enrichment.totalCount).toBe(0);
+  });
+
+  describe('tag semantics', () => {
+    /**
+     * The Discovery API sends one `tags` parameter per value and unions them: on
+     * data.cdc.gov `covid19` alone matches 19 entries, `vaccination` alone 41, and the two
+     * together 59. Every surface that names tags has to say so, or adding one reads as
+     * narrowing and does the opposite.
+     */
+    it('renders applied tag filters as a union, not a conjunction', () => {
+      const rendered = discoverDatasets.enrichmentTrailer.appliedFilters.render({
+        query: 'flu',
+        tags: ['covid19', 'vaccination'],
+      });
+
+      expect(rendered).toContain('**Tags (any of):** covid19, vaccination');
+    });
+
+    it('states in the tags description that each added tag widens the result set', () => {
+      const description = discoverDatasets.input.shape.tags.description ?? '';
+
+      expect(description).toContain('any one of them');
+      expect(description).toContain('widen');
+      expect(description).toContain('unrecognized tag matches nothing');
+    });
+
+    it('carries the union semantics on the echo surfaces too, not just the input', () => {
+      /**
+       * The input description is read once, before the call; the enrichment travels back
+       * with every result. Both have to say the same thing, or the echo quietly restates
+       * tags as a conjunction after the input said otherwise.
+       */
+      const trailer = discoverDatasets.enrichment.appliedFilters.description ?? '';
+      expect(trailer).toContain('multiple tags union');
+
+      const tagsField = discoverDatasets.enrichment.appliedFilters.shape.tags.description ?? '';
+      expect(tagsField).toContain('any one of them');
+    });
+
+    it('points a tag-filtered no-match at the catalog vocabulary', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      const ctx = createMockContext();
+      await discoverDatasets.handler(
+        discoverDatasets.input.parse({ tags: ['covid19', 'zzzznotag'] }),
+        ctx,
+      );
+
+      const notice = getEnrichment(ctx).notice as string;
+      // The criteria echo has to read as a union too, or it contradicts the guidance.
+      expect(notice).toContain('any of tags [covid19, zzzznotag]');
+      expect(notice).toContain('check the spelling against the tags field');
+    });
+
+    it('leaves the vocabulary hint out of a no-match that used no tags', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      const ctx = createMockContext();
+      await discoverDatasets.handler(discoverDatasets.input.parse({ query: 'nonexistent' }), ctx);
+
+      expect(getEnrichment(ctx).notice).not.toContain('check the spelling against the tags field');
+    });
   });
 
   it('emits a notice with no criteria when no filters applied', async () => {
@@ -260,9 +366,18 @@ describe('cdc_discover_datasets', () => {
       expect(entry?.recovery).toContain('category names');
     });
 
-    it('upstream_error description excludes 400 from catch-all', () => {
-      const entry = discoverDatasets.errors?.find((e) => e.reason === 'upstream_error');
-      expect(entry?.when).toContain('400/404/429');
+    it('scopes upstream_error to 5xx and keeps it the only retryable non-429 failure', () => {
+      /**
+       * A 403 routed through upstream_error told callers to retry a permanent refusal.
+       * Retryability now tracks the status band: 5xx and rate limiting recover, an access
+       * decision and a caller-side range error do not.
+       */
+      const byReason = new Map(discoverDatasets.errors?.map((e) => [e.reason, e]));
+      expect(byReason.get('upstream_error')?.when).toContain('5xx');
+      expect(byReason.get('upstream_error')?.retryable).toBe(true);
+      expect(byReason.get('access_denied')?.code).toBe(JsonRpcErrorCode.Forbidden);
+      expect(byReason.get('access_denied')?.retryable).toBeUndefined();
+      expect(byReason.get('page_out_of_range')?.retryable).toBeUndefined();
     });
 
     it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {

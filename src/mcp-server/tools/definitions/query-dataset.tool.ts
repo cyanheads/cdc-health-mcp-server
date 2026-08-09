@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import { CDC_SOCRATA_DOMAINS, type QueryResult } from '@/services/socrata/types.js';
+import { escapeTableCell } from '@/utils/markdown.js';
 
 const MAX_LIMIT = 5000;
 
@@ -45,6 +46,13 @@ export const queryDataset = tool('cdc_query_dataset', {
         'Read the error message for the specific clause and consult the dataset schema before retrying.',
     },
     {
+      reason: 'access_denied',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Socrata returned 403 — typically an ID naming a chart, map, story, file, or external link rather than a tabular dataset.',
+      recovery:
+        'Confirm the ID with cdc_get_dataset_schema, then query one whose schema lists columns; retrying this ID returns the same refusal.',
+    },
+    {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
@@ -54,7 +62,7 @@ export const queryDataset = tool('cdc_query_dataset', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata data API returned a non-success status outside of 404, 429, or validation errors.',
+      when: 'Socrata data API returned a 5xx server error.',
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -129,7 +137,11 @@ export const queryDataset = tool('cdc_query_dataset', {
   // debugging and reproducibility), capped-list disclosure, and a recovery notice when
   // nothing matched. Reaches structuredContent AND content[] automatically — no format() entry.
   enrichment: {
-    effectiveQuery: z.string().describe('Assembled SoQL query string sent to the Socrata API.'),
+    effectiveQuery: z
+      .string()
+      .describe(
+        'The SoQL clauses sent to Socrata, as `$clause=value` pairs joined by "&". Values read exactly as they were supplied — not URL-encoded — so a clause can be copied back into the matching parameter of another call.',
+      ),
     truncated: z
       .boolean()
       .optional()
@@ -213,7 +225,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       const cells = columns.map((c) => {
         const v = row[c];
         const s = typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v);
-        return s.replaceAll('|', '\\|').replaceAll('\n', ' ');
+        return escapeTableCell(s);
       });
       lines.push(`| ${cells.join(' | ')} |`);
     }

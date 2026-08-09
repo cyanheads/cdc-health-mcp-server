@@ -3,6 +3,7 @@
  * @module tests/services/socrata/socrata-service-errors
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/config/server-config.js', () => ({
@@ -194,6 +195,79 @@ describe('SocrataService — error handling', () => {
     it('throws on 500 with status code included', async () => {
       mockFetchText('Internal Server Error', 500);
       await expect(service.getMetadata('ab12-cd34')).rejects.toThrow(/500/);
+    });
+
+    it('classifies 403 as a permanent access_denied, not a retryable outage', async () => {
+      /**
+       * Socrata answers 403 for a non-tabular asset ID. Routing that through the
+       * upstream_error reason told callers the portal was down and worth retrying —
+       * wrong in both directions, since the portal is up and the refusal is permanent.
+       */
+      mockFetchText(
+        JSON.stringify({ error: true, message: 'no row or column access to non-tabular tables' }),
+        403,
+      );
+      const err = (await service
+        .query({ datasetId: '235m-gsry', limit: 2 })
+        .catch((e) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
+      expect(err.data).toMatchObject({ reason: 'access_denied' });
+      expect((err.data as Record<string, unknown>).retryable).toBeUndefined();
+      expect(err.message).toContain('no row or column access to non-tabular tables');
+    });
+
+    it('names the catalog endpoint, not a dataset ID, on a 404 from the catalog', async () => {
+      /**
+       * `dataset_not_found` is raised for a 404 from any endpoint, and the two catalog
+       * consumers declare it. "Verify the dataset ID" describes neither their request —
+       * which carries no ID — nor a corrective, and pointing them at cdc_discover_datasets
+       * names the tool that just failed.
+       */
+      mockFetchText('Not Found', 404);
+      const err = (await service.discover({ query: 'x' }).catch((e) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'dataset_not_found' });
+      expect(err.message).toContain('catalog endpoint not found');
+      expect(err.message).not.toContain('dataset ID');
+    });
+
+    it('still names the dataset ID on a 404 from the metadata endpoint', async () => {
+      mockFetchText('Not Found', 404);
+      const err = (await service.getMetadata('ab12-cd34').catch((e) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'dataset_not_found' });
+      expect(err.message).toContain('Verify the dataset ID exists');
+    });
+
+    it.each([500, 501, 502, 503, 504, 599])(
+      'reasons the whole 5xx band as upstream_error (%i)',
+      async (status) => {
+        /**
+         * 500 is the boundary the band opens on, so it is what a `> 500` slip drops —
+         * turning a retryable outage into an unreasoned rethrow. The framework's own
+         * status mapping splits 5xx across InternalError, ServiceUnavailable, and Timeout;
+         * the reason is what unifies them, and each handler rebuilds the caller-visible
+         * code from its contract entry rather than from the status.
+         */
+        mockFetchText('Server error', status);
+        const err = (await service.getMetadata('ab12-cd34').catch((e) => e)) as McpError;
+        expect(err.data).toMatchObject({ reason: 'upstream_error' });
+      },
+    );
+
+    it('leaves an unexpected 4xx unreasoned so its own status classification survives', async () => {
+      /**
+       * A reason string the callers' contracts don't declare would be re-dispatched into
+       * an InternalError carrying a "not declared in errors[]" message. Omitting the
+       * reason makes the callers rethrow this error with the framework's 401 →
+       * Unauthorized classification intact.
+       */
+      mockFetchText('Unauthorized', 401);
+      const err = (await service.discover({ query: 'x' }).catch((e) => e)) as McpError;
+      expect(err.code).toBe(JsonRpcErrorCode.Unauthorized);
+      expect((err.data as Record<string, unknown> | undefined)?.reason).toBeUndefined();
     });
   });
 

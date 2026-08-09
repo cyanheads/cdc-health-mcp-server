@@ -1,10 +1,13 @@
 /**
  * @fileoverview Socrata SODA API client for CDC Open Data portal.
  * Handles discovery, metadata, and SoQL queries with rate-limit-aware request spacing.
+ * Failed responses are classified by status into distinct contract reasons so callers can
+ * tell a permanent access decision (403) from a transient upstream outage (5xx).
  * @module services/socrata/socrata-service
  */
 
 import {
+  forbidden,
   notFound,
   rateLimited,
   serviceUnavailable,
@@ -56,6 +59,32 @@ function stripPositionTail(message: string): string {
   return message.replace(/;\s*position:\s*Map\([\s\S]*$/, '').trimEnd();
 }
 
+/**
+ * Render the SoQL parameters as `key=value` pairs carrying each clause in the exact text the
+ * caller supplied, so a clause can be lifted out of the echo and fed straight back into the
+ * matching tool parameter. Reading the values back off `URLSearchParams` sidesteps the trap
+ * in decoding its output: it writes a space as `+` and a caller's literal `+` as `%2B`, so
+ * `decodeURIComponent` alone leaves every space as a plus sign, and swapping plus for space
+ * after decoding erases the arithmetic `+` in an expression like `deaths + births`.
+ */
+function decodedQueryString(params: URLSearchParams): string {
+  return [...params].map(([key, value]) => `${key}=${value}`).join('&');
+}
+
+/**
+ * Pull Socrata's own `message` out of a JSON error body. Returns undefined when the body
+ * isn't JSON or carries no message, so callers can fall back to a status-only description.
+ */
+function socrataMessage(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const message = parsed.message;
+    return typeof message === 'string' && message.length > 0 ? message.slice(0, 200) : undefined;
+  } catch {
+    return;
+  }
+}
+
 export class SocrataService {
   private lastRequestTime = 0;
 
@@ -101,11 +130,13 @@ export class SocrataService {
       const columnNames = resource.columns_field_name as string[] | undefined;
       const columnTypes = resource.columns_datatype as string[] | undefined;
       const updatedAt = resource.data_updated_at as string | undefined;
+      const assetType = resource.type as string | undefined;
       const pageViews = (resource.page_views as Record<string, number> | undefined)
         ?.page_views_total;
       return {
         id: resource.id as string,
         name: resource.name as string,
+        ...(assetType ? { assetType } : {}),
         ...(description ? { description } : {}),
         ...(category ? { category } : {}),
         ...(tags ? { tags } : {}),
@@ -181,7 +212,7 @@ export class SocrataService {
     return {
       rows,
       rowCount: rows.length,
-      query: decodeURIComponent(queryString),
+      query: decodedQueryString(params),
     };
   }
 
@@ -262,8 +293,18 @@ export class SocrataService {
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       if (response.status === 404) {
+        /**
+         * `dataset_not_found` covers a 404 from any of the three endpoints, and the two
+         * catalog consumers reach it too. Telling them to verify a dataset ID and search
+         * again with cdc_discover_datasets describes neither their failure nor a corrective
+         * they can take, so the message names the endpoint that answered and leaves the
+         * per-consumer advice to the contract recovery.
+         */
+        const catalog = url.startsWith(config.catalogUrl);
         throw notFound(
-          'Dataset not found (404). Verify the dataset ID exists — it may have been retired or replaced. Search again with cdc_discover_datasets.',
+          catalog
+            ? 'Socrata catalog endpoint not found (404). The Discovery API address did not resolve to a catalog.'
+            : 'Dataset not found (404). Verify the dataset ID exists — it may have been retired or replaced.',
           { reason: 'dataset_not_found', url },
         );
       }
@@ -276,10 +317,30 @@ export class SocrataService {
       if (response.status === 400) {
         this.throwBadRequest(body, url);
       }
+      if (response.status === 403) {
+        const detail = socrataMessage(body);
+        throw forbidden(
+          `Socrata denied access to this resource (403)${detail ? `: ${detail}` : ''}. This is an access decision, not an outage — the same request will keep failing.`,
+          { reason: 'access_denied', url },
+        );
+      }
+      /**
+       * 5xx is the only band left that maps to a reason — `upstream_error` is the one
+       * retryable reason, and a server error is the one thing worth retrying. Every other
+       * status (401, 410, 451, …) is thrown without a reason on purpose: the framework's
+       * status-to-code classification is more accurate than any single reason string, and
+       * a reason no contract declares would be re-dispatched by the callers' catch blocks
+       * into an InternalError whose data carries their declared-reason list to the client.
+       * With no reason the callers rethrow this error unchanged.
+       */
       throw await httpErrorFromResponse(response, {
         service: 'Socrata',
         captureBody: false,
-        data: { reason: 'upstream_error', url, body: body.slice(0, 500) },
+        data: {
+          ...(response.status >= 500 ? { reason: 'upstream_error' } : {}),
+          url,
+          body: body.slice(0, 500),
+        },
       });
     }
 

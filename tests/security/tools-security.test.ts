@@ -4,16 +4,43 @@
  * @module tests/security/tools-security
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
-import type { DatasetMetadata, DiscoverResult, QueryResult } from '@/services/socrata/types.js';
+import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
+import type { DiscoverOptions, QueryOptions } from '@/services/socrata/socrata-service.js';
+import type {
+  DatasetMetadata,
+  DiscoverResult,
+  QueryResult,
+  SocrataDomain,
+} from '@/services/socrata/types.js';
 
-const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
-const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
-const mockQuery = vi.fn<() => Promise<QueryResult>>();
+/**
+ * A token shaped like a real Socrata credential. Every "no secrets" assertion below is
+ * only meaningful if this value is actually in play on the code path under test, so the
+ * config mock hands it to the real service rather than leaving `appToken` undefined.
+ */
+const { APP_TOKEN } = vi.hoisted(() => ({ APP_TOKEN: 'cdc-app-tok-S3NT1NEL-never-ship' }));
+
+vi.mock('@/config/server-config.js', () => ({
+  getServerConfig: () => ({
+    appToken: APP_TOKEN,
+    baseUrl: 'https://data.cdc.gov',
+    catalogUrl: 'https://api.us.socrata.com/api/catalog/v1',
+  }),
+}));
+
+const mockDiscover =
+  vi.fn<(options: DiscoverOptions, signal?: AbortSignal) => Promise<DiscoverResult>>();
+const mockGetMetadata =
+  vi.fn<
+    (datasetId: string, signal?: AbortSignal, domain?: SocrataDomain) => Promise<DatasetMetadata>
+  >();
+const mockQuery = vi.fn<(options: QueryOptions, signal?: AbortSignal) => Promise<QueryResult>>();
 
 vi.mock('@/services/socrata/socrata-service.js', () => ({
   getSocrataService: () => ({
@@ -25,7 +52,6 @@ vi.mock('@/services/socrata/socrata-service.js', () => ({
 
 const emptyDiscover: DiscoverResult = { datasets: [], totalCount: 0 };
 const emptyQuery: QueryResult = { rows: [], rowCount: 0, query: '' };
-const basicMetadata: DatasetMetadata = { name: 'Test', columns: [] };
 
 describe('Security — input validation', () => {
   afterEach(() => {
@@ -169,48 +195,211 @@ describe('Security — input validation', () => {
   });
 
   describe('no secrets in tool output', () => {
-    it('discover result does not include env var names or values', async () => {
-      mockDiscover.mockResolvedValue({
-        datasets: [
-          {
-            id: 'ab12-cd34',
-            name: 'Test Dataset',
-            description: 'A dataset',
-          },
-        ],
-        totalCount: 1,
+    /**
+     * Asserting a token is absent proves nothing unless the token is on the code path and
+     * could plausibly reach the caller. These tests therefore run the REAL SocrataService
+     * under the sentinel `appToken` above and hand its output to the tools, so the whole
+     * chain from credential to client payload is exercised. The token enters in exactly
+     * one place — the `X-App-Token` request header — and Socrata also accepts it as a
+     * `$$app_token` query parameter, which is the mistake these tests exist to catch: that
+     * form reaches the caller through `effectiveQuery` and through the `url` on every
+     * error the service throws.
+     */
+    async function withRealService(response: Response) {
+      const actual = await vi.importActual<typeof import('@/services/socrata/socrata-service.js')>(
+        '@/services/socrata/socrata-service.js',
+      );
+      const real = new actual.SocrataService();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+      mockDiscover.mockImplementation((options, signal) => real.discover(options, signal));
+      mockGetMetadata.mockImplementation((id, signal, domain) =>
+        real.getMetadata(id, signal, domain),
+      );
+      mockQuery.mockImplementation((options, signal) => real.query(options, signal));
+      return fetchSpy;
+    }
+
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
       });
-      const ctx = createMockContext();
-      const input = discoverDatasets.input.parse({ query: 'test' });
-      const result = await discoverDatasets.handler(input, ctx);
-      const serialized = JSON.stringify(result);
-      expect(serialized).not.toContain('CDC_APP_TOKEN');
-      expect(serialized).not.toContain('CDC_BASE_URL');
-      expect(serialized).not.toContain('CDC_CATALOG_URL');
+
+    afterEach(() => {
+      vi.restoreAllMocks();
     });
 
-    it('schema result does not include env var names', async () => {
-      mockGetMetadata.mockResolvedValue(basicMetadata);
+    it('carries the app token in the request header and nowhere in the request URL', async () => {
+      const fetchSpy = await withRealService(json([{ state: 'Texas', deaths: '100' }]));
       const ctx = createMockContext();
-      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
-      const result = await getDatasetSchema.handler(input, ctx);
-      const serialized = JSON.stringify(result);
-      expect(serialized).not.toContain('CDC_APP_TOKEN');
-      expect(serialized).not.toContain('process.env');
+      await queryDataset.handler(
+        queryDataset.input.parse({ datasetId: 'ab12-cd34', where: 'year=2020' }),
+        ctx,
+      );
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      const headers = init.headers as Record<string, string>;
+      expect(headers['X-App-Token']).toBe(APP_TOKEN);
+      expect(url).not.toContain(APP_TOKEN);
+      expect(url).not.toContain('app_token');
     });
 
-    it('query result does not include env var names', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{ state: 'Texas', deaths: '100' }],
-        rowCount: 1,
-        query: '$where=year=2020',
-      });
+    it('keeps the app token out of every payload cdc_query_dataset returns', async () => {
+      await withRealService(json([{ state: 'Texas', deaths: '100' }]));
       const ctx = createMockContext();
-      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', where: 'year=2020' });
-      const result = await queryDataset.handler(input, ctx);
-      const serialized = JSON.stringify(result);
-      expect(serialized).not.toContain('CDC_APP_TOKEN');
-      expect(serialized).not.toContain('process.env');
+      const result = await queryDataset.handler(
+        queryDataset.input.parse({ datasetId: 'ab12-cd34', where: 'year=2020' }),
+        ctx,
+      );
+
+      const enrichment = getEnrichment(ctx);
+      // effectiveQuery echoes the assembled clauses verbatim — a token added as a SoQL
+      // parameter would ride straight out with them.
+      expect(enrichment.effectiveQuery).toBeDefined();
+      const surfaces = [
+        JSON.stringify(result),
+        JSON.stringify(enrichment),
+        (queryDataset.format!(result)[0] as { type: 'text'; text: string }).text,
+      ];
+      for (const surface of surfaces) {
+        expect(surface).not.toContain(APP_TOKEN);
+        expect(surface).not.toContain('CDC_APP_TOKEN');
+      }
+    });
+
+    it('keeps the app token out of the payloads cdc_discover_datasets returns', async () => {
+      await withRealService(
+        json({
+          results: [{ resource: { id: 'ab12-cd34', name: 'Test', type: 'dataset' } }],
+          resultSetSize: 1,
+        }),
+      );
+      const ctx = createMockContext();
+      const result = await discoverDatasets.handler(
+        discoverDatasets.input.parse({ query: 'test' }),
+        ctx,
+      );
+
+      for (const surface of [JSON.stringify(result), JSON.stringify(getEnrichment(ctx))]) {
+        expect(surface).not.toContain(APP_TOKEN);
+        expect(surface).not.toContain('CDC_APP_TOKEN');
+      }
+    });
+
+    it('keeps the app token out of the payloads cdc_get_dataset_schema returns', async () => {
+      await withRealService(
+        json({
+          name: 'Test',
+          columns: [{ fieldName: 'state', dataTypeName: 'text' }],
+        }),
+      );
+      const ctx = createMockContext();
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }),
+        ctx,
+      );
+
+      const surfaces = [
+        JSON.stringify(result),
+        (getDatasetSchema.format!(result)[0] as { type: 'text'; text: string }).text,
+      ];
+      for (const surface of surfaces) {
+        expect(surface).not.toContain(APP_TOKEN);
+        expect(surface).not.toContain('CDC_APP_TOKEN');
+      }
+    });
+
+    it('keeps the app token out of a reasoned failure, which reaches the caller as a message', async () => {
+      /**
+       * A reasoned failure is rebuilt by the handler from the contract, so only
+       * `err.message` — Socrata's own text plus whatever the service interpolates —
+       * crosses to the client.
+       */
+      await withRealService(
+        json({ error: true, message: 'no row or column access to non-tabular tables' }, 403),
+      );
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const err = (await queryDataset
+        .handler(queryDataset.input.parse({ datasetId: '235m-gsry', limit: 2 }), ctx)
+        .catch((e) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(APP_TOKEN);
+    });
+
+    it('keeps the app token out of an unreasoned failure, which reaches the caller with its data', async () => {
+      /**
+       * A status outside the reason ladder is rethrown untouched, so the service's own
+       * `data` — including the request `url` and a slice of the response body — travels
+       * to the client verbatim. This is the one path where a token placed in the URL
+       * would ship, and the only reason the reasoned case above is not the whole test.
+       */
+      await withRealService(new Response('Unauthorized', { status: 401 }));
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const err = (await queryDataset
+        .handler(queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 2 }), ctx)
+        .catch((e) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      // The rethrow-unchanged path is what makes `data.url` reachable — pin it.
+      expect((err.data as { url?: string }).url).toContain('/resource/ab12-cd34.json');
+      expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(APP_TOKEN);
+    });
+  });
+
+  describe('cdc_query_wonder — input bounds', () => {
+    /**
+     * WONDER's request body is an XML document the builder assembles from these inputs, and
+     * `cause_icd10` is the only free-text field that reaches it. The regex is the guard —
+     * no markup character can pass input validation, so escaping downstream is a second
+     * line rather than the only one.
+     */
+    const icd10Injections = [
+      '</value></parameter><parameter><name>B_1</name><value>D76.V9',
+      'I21<script>',
+      'I21&amp;',
+      "I21' or '1'='1",
+      'i21', // lowercase — the code vocabulary is uppercase
+      'I2', // too short
+      '*All*',
+      'I00-',
+    ];
+
+    it.each(icd10Injections)('rejects cause_icd10 %j', (cause) => {
+      expect(() => queryWonder.input.parse({ cause_icd10: cause })).toThrow();
+    });
+
+    it('accepts a well-formed code and chapter range', () => {
+      expect(queryWonder.input.parse({ cause_icd10: 'I21' }).cause_icd10).toBe('I21');
+      expect(queryWonder.input.parse({ cause_icd10: 'C00-C97' }).cause_icd10).toBe('C00-C97');
+      expect(queryWonder.input.parse({ cause_icd10: '' }).cause_icd10).toBe('');
+    });
+
+    it.each(['country', 'state', 'location', 'YEAR'])('rejects group_by value %j', (dim) => {
+      expect(() => queryWonder.input.parse({ group_by: [dim] })).toThrow();
+    });
+
+    it('rejects an empty or oversized group_by list', () => {
+      expect(() => queryWonder.input.parse({ group_by: [] })).toThrow();
+      expect(() =>
+        queryWonder.input.parse({ group_by: ['year', 'age_group', 'sex', 'race', 'year'] }),
+      ).toThrow();
+    });
+
+    it.each([
+      { from: 1998, to: 2000 },
+      { from: 1999, to: 2021 },
+      { from: 2010, to: 2005 },
+    ])('rejects year_range %j', (range) => {
+      expect(() => queryWonder.input.parse({ year_range: range })).toThrow();
+    });
+
+    it('exposes no host input, so there is no SSRF surface to allowlist', () => {
+      /**
+       * The Socrata tools guard a `domain` enum; WONDER reaches a single fixed host with no
+       * caller-supplied component, and adding one would need the same allowlist treatment.
+       */
+      expect(Object.keys(queryWonder.input.shape)).not.toContain('domain');
     });
   });
 
@@ -246,26 +435,33 @@ describe('Security — input validation', () => {
       expect(text).toContain('日本語テスト');
     });
 
-    it('queryDataset format handles non-string cell values (e.g., GeoJSON)', () => {
+    it('queryDataset format serializes a GeoJSON cell into its own column', () => {
       const geoValue = { type: 'Point', coordinates: [-73.93, 40.73] };
       const blocks = queryDataset.format!({
         rows: [{ location: geoValue, name: 'NYC' }],
         rowCount: 1,
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Point');
-      expect(text).toContain('NYC');
+      const dataRow = text.split('\n').find((l) => l.includes('NYC'));
+      // The whole object renders in one cell, and the row keeps its two columns.
+      expect(dataRow).toBe('| {"type":"Point","coordinates":[-73.93,40.73]} | NYC |');
     });
 
-    it('queryDataset format handles null/undefined cell values', () => {
+    it('queryDataset format renders null and undefined cells as blanks, not literals', () => {
       const blocks = queryDataset.format!({
         rows: [{ state: null, year: undefined, deaths: '100' }],
         rowCount: 1,
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      // null and undefined render as empty strings — no crash
-      expect(text).toContain('100');
-      expect(text).toContain('deaths');
+      const dataRow = text.split('\n').find((l) => l.includes('100'));
+      /**
+       * Pin the whole rendered row: a nullish cell must occupy its column as an empty
+       * cell so the value under `deaths` stays aligned with its header, and the words
+       * "null"/"undefined" must never reach the caller as if they were data.
+       */
+      expect(dataRow).toBe('|  |  | 100 |');
+      expect(dataRow).not.toContain('null');
+      expect(dataRow).not.toContain('undefined');
     });
   });
 });

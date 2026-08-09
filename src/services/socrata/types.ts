@@ -13,8 +13,16 @@ export const CDC_SOCRATA_DOMAINS = ['data.cdc.gov', 'chronicdata.cdc.gov'] as co
 /** A CDC Socrata host the service may address. */
 export type SocrataDomain = (typeof CDC_SOCRATA_DOMAINS)[number];
 
-/** Dataset metadata from the Discovery/Catalog API. Optional fields reflect upstream sparsity. */
+/**
+ * Dataset metadata from the Discovery/Catalog API. Optional fields reflect upstream sparsity.
+ *
+ * `assetType` is the catalog's own `resource.type`. It is descriptive, not a queryability
+ * test: `filter` assets carry real columns and return rows from `/resource/{id}.json`,
+ * while `chart` and `map` assets report `viewType: "tabular"` yet have no columns at all.
+ * The reliable signal is an empty `columnNames`.
+ */
 export interface CatalogDataset {
+  assetType?: string;
   category?: string;
   columnNames?: string[];
   columnTypes?: string[];
@@ -50,6 +58,10 @@ export interface DiscoverResult {
 
 /** Result from a SoQL query. */
 export interface QueryResult {
+  /**
+   * The SoQL parameters as `$clause=value` pairs, values in the caller's own text rather
+   * than URL-encoded, so each clause can be copied back into the parameter it came from.
+   */
   query: string;
   rowCount: number;
   rows: Record<string, unknown>[];

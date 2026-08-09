@@ -81,6 +81,42 @@ describe('SocrataService', () => {
       expect(url).toContain('q=diabetes');
     });
 
+    it('carries resource.type through as assetType for every catalog asset kind', async () => {
+      /**
+       * The catalog returns charts, maps, stories, files, and external links alongside
+       * datasets, each with a four-by-four ID. Dropping resource.type left every one of
+       * them looking identical to a queryable dataset.
+       */
+      mockFetch({
+        results: [
+          { resource: { id: 'bi63-dtpu', name: 'Leading Causes', type: 'dataset' } },
+          { resource: { id: 's2qv-b27b', name: 'DHDS', type: 'filter' } },
+          { resource: { id: 'sxbq-3sid', name: 'Pfizer Allocations', type: 'chart' } },
+          { resource: { id: '235m-gsry', name: 'Pulmonary evaluation', type: 'file' } },
+          { resource: { id: '2g2d-yfx9', name: 'trailheads', type: 'href' } },
+        ],
+        resultSetSize: 5,
+      });
+      const result = await service.discover({});
+
+      expect(result.datasets.map((d) => [d.id, d.assetType])).toEqual([
+        ['bi63-dtpu', 'dataset'],
+        ['s2qv-b27b', 'filter'],
+        ['sxbq-3sid', 'chart'],
+        ['235m-gsry', 'file'],
+        ['2g2d-yfx9', 'href'],
+      ]);
+    });
+
+    it('omits assetType when the catalog entry carries no type', async () => {
+      mockFetch({
+        results: [{ resource: { id: 'ab12-cd34', name: 'Untyped' } }],
+        resultSetSize: 1,
+      });
+      const result = await service.discover({});
+      expect(result.datasets[0].assetType).toBeUndefined();
+    });
+
     it('defaults the catalog domain to data.cdc.gov when none is given', async () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({});
@@ -236,6 +272,51 @@ describe('SocrataService', () => {
 
       const url = spy.mock.calls[0][0] as string;
       expect(url).toContain('https://data.cdc.gov/resource/bi63-dtpu.json');
+    });
+
+    it('echoes each clause with its spaces intact so it can be replayed verbatim', async () => {
+      /**
+       * The echo exists to be lifted back into another call. `URLSearchParams` writes a
+       * space as `+`, and `decodeURIComponent` leaves `+` alone, so echoing the decoded
+       * wire string handed callers SoQL that Socrata rejects.
+       */
+      mockFetch(queryResponse);
+      const result = await service.query({
+        datasetId: 'bi63-dtpu',
+        select: 'state, sum(deaths) as total_deaths',
+        group: 'state',
+        order: 'total_deaths DESC',
+        limit: 3,
+      });
+
+      expect(result.query).toBe(
+        '$select=state, sum(deaths) as total_deaths&$group=state&$order=total_deaths DESC&$limit=3&$offset=0',
+      );
+    });
+
+    it('keeps a literal + a caller typed inside a clause', async () => {
+      /**
+       * Swapping every `+` for a space would fix the spaces and destroy the arithmetic:
+       * `URLSearchParams` writes a caller's `+` as `%2B` and a space as `+`, so only
+       * reading the values back off the params tells the two apart.
+       */
+      mockFetch(queryResponse);
+      const result = await service.query({
+        datasetId: 'bi63-dtpu',
+        select: 'deaths + births as total',
+        where: "year='2020'",
+      });
+
+      expect(result.query).toContain('$select=deaths + births as total');
+      expect(result.query).toContain("$where=year='2020'");
+    });
+
+    it('still sends the encoded query on the wire', async () => {
+      const spy = mockFetch(queryResponse);
+      await service.query({ datasetId: 'bi63-dtpu', select: 'deaths + births as total' });
+
+      const url = spy.mock.calls[0][0] as string;
+      expect(url).toContain('%24select=deaths+%2B+births+as+total');
     });
 
     it('routes queries to chronicdata.cdc.gov when domain is set', async () => {

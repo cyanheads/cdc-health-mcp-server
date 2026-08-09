@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import { CDC_SOCRATA_DOMAINS, type DatasetMetadata } from '@/services/socrata/types.js';
+import { escapeTableCell } from '@/utils/markdown.js';
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description:
@@ -22,6 +23,27 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
         'Search again with cdc_discover_datasets to find a current ID for the topic of interest.',
     },
     {
+      reason: 'not_queryable',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The ID names a catalog asset with no columns — a chart, map, story, file, or external link rather than a tabular dataset.',
+      recovery:
+        'Pick an ID from cdc_discover_datasets whose columnCount is above zero; those are the entries cdc_query_dataset can read.',
+    },
+    {
+      reason: 'access_denied',
+      code: JsonRpcErrorCode.Forbidden,
+      when: 'Socrata returned 403 — the asset is not readable through this endpoint or access is restricted.',
+      recovery:
+        'Choose a different dataset ID from cdc_discover_datasets; repeating this request returns the same refusal.',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Socrata rejected the metadata request with a 400.',
+      recovery:
+        'Read the returned message for the rejected part, then re-fetch the ID from cdc_discover_datasets and retry.',
+    },
+    {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'Socrata API returns 429 Too Many Requests.',
@@ -31,7 +53,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata metadata API returned a non-success status outside of 404/429.',
+      when: 'Socrata metadata API returned a 5xx server error.',
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -90,6 +112,20 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       throw err;
     }
 
+    /**
+     * The metadata endpoint answers 200 for every catalog asset, including charts, maps,
+     * stories, files, and external links. Those come back with an empty `columns` array —
+     * the one signal that lines up with what `/resource/{id}.json` will actually serve.
+     * `resource.type` does not: `filter` assets carry real columns and query successfully.
+     */
+    if (metadata.columns.length === 0) {
+      throw ctx.fail(
+        'not_queryable',
+        `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.`,
+        { ...ctx.recoveryFor('not_queryable') },
+      );
+    }
+
     ctx.log.info('Schema retrieved', {
       domain: input.domain,
       datasetId: input.datasetId,
@@ -113,7 +149,10 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     );
 
     for (const col of result.columns) {
-      lines.push(`| \`${col.fieldName}\` | ${col.dataType} | ${col.description || '—'} |`);
+      const description = escapeTableCell(col.description ?? '') || '—';
+      lines.push(
+        `| \`${escapeTableCell(col.fieldName)}\` | ${escapeTableCell(col.dataType)} | ${description} |`,
+      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

@@ -61,12 +61,30 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
     });
 
     it('passes dataset ID to service correctly', async () => {
-      const meta: DatasetMetadata = { name: 'Test', columns: [] };
+      const meta: DatasetMetadata = {
+        name: 'Test',
+        columns: [{ fieldName: 'state', dataType: 'text' }],
+      };
       mockGetMetadata.mockResolvedValue(meta);
       const ctx = createMockContext();
       const params = datasetDetailResource.params!.parse({ datasetId: 'zz99-ww88' });
       await datasetDetailResource.handler(params, ctx);
       expect(mockGetMetadata).toHaveBeenCalledWith('zz99-ww88', ctx.signal);
+    });
+
+    it('fails as not_queryable rather than returning an empty columns array', async () => {
+      mockGetMetadata.mockResolvedValue({ name: 'trailheads', columns: [] });
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
+      const params = datasetDetailResource.params!.parse({ datasetId: '2g2d-yfx9' });
+
+      const err = (await datasetDetailResource.handler(params, ctx).catch((e) => e)) as McpError;
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(err.data).toMatchObject({
+        reason: 'not_queryable',
+        recovery: { hint: expect.stringContaining('columnCount') },
+      });
+      expect(err.message).toContain('2g2d-yfx9');
     });
   });
 

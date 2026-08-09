@@ -15,6 +15,7 @@ import {
   type WonderResult,
 } from '@/services/wonder/types.js';
 import { getWonderService } from '@/services/wonder/wonder-service.js';
+import { escapeTableCell } from '@/utils/markdown.js';
 
 /**
  * What each non-suppression CDC status token means, keyed by the lowercased token.
@@ -107,7 +108,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .array(z.enum(WONDER_AGE_GROUPS))
       .optional()
       .describe(
-        'Restrict to specific ten-year age groups — e.g. ["25-34","35-44"]. "1" is the under-1-year group. Omit for all ages.',
+        'Restrict to deaths in any of the listed ten-year age groups — e.g. ["25-34","35-44"] covers both. "1" is the under-1-year group. Omit for all ages.',
       ),
     year_range: z
       .object({
@@ -257,7 +258,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       result.rows.forEach((row, index) => {
         const cells = columns.map((c) => {
           const v = tokenAt.get(`${index}:${c}`) ?? row[c];
-          return (v == null ? '' : String(v)).replaceAll('|', '\\|');
+          return escapeTableCell(v == null ? '' : String(v));
         });
         lines.push(`| ${cells.join(' | ')} |`);
       });
