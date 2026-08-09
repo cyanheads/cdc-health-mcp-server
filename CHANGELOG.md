@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.8.2] - 2026-08-09
+
+Error contract corrections across the Socrata endpoints, a catalog `assetType`/`not_queryable` distinction for non-tabular assets, and CDC WONDER routing added to the `analyze_health_trend` prompt.
+
+### Added
+
+- **`assetType` on catalog results** (#25): `cdc_discover_datasets` and the `cdc://datasets` resource carry the catalog's own `resource.type` (`dataset`, `filter`, `chart`, `map`, `story`, `file`, `href`) on every entry. It's descriptive only — `filter` assets have real columns and query normally, while `chart`/`map` report `viewType: "tabular"` with none — so `columnCount` remains the actual queryability signal; a page whose entry has `columnCount: 0` now renders `**Columns:** none — not a tabular asset`.
+- **`not_queryable` failure for non-tabular assets** (#25): `cdc_get_dataset_schema` and `cdc://datasets/{datasetId}` now fail with `not_queryable` when the metadata endpoint answers with zero columns, instead of returning a bare empty schema for a chart/map/story/file/href ID.
+- **`access_denied` (403) contract entry** (#26): all five Socrata-backed definitions (`cdc_discover_datasets`, `cdc_get_dataset_schema`, `cdc_query_dataset`, both `cdc://datasets…` resources) declare a non-retryable `access_denied` reason for a 403, naming the real cause instead of the generic retryable `upstream_error`.
+- **`page_out_of_range` validation on `cdc_discover_datasets`** (#27): `offset + limit` is checked against Socrata's 10,000-entry catalog ceiling in the handler before the request goes out — no pair of independent per-field maxima can express that joint bound.
+- **CDC WONDER routing in `analyze_health_trend`** (#21): the prompt opens with a source-selection block choosing between `cdc_query_wonder` (national mortality, 1999–2020, ICD-10-expressible cause) and the Socrata discover → schema → query chain, then branches the five-step workflow's discovery and inspection steps by source. The routing is prose the reading model acts on; the handler never classifies the topic.
+- **`escapeTableCell` markdown utility** (`src/utils/markdown.ts`): shared pipe-escaping and newline-collapsing for every `format()` that writes upstream text into a markdown table cell.
+
+### Fixed
+
+- **Unescaped column descriptions could corrupt the schema table** (#24): `cdc_get_dataset_schema`'s `format()` interpolated `fieldName`/`dataType`/`description` into table cells with no escaping; a Socrata description carrying a raw newline (observed on `hn4x-zwk7`) terminated the row for `content[]`-only clients. Now routed through `escapeTableCell`, along with `cdc_query_wonder` (which escaped `|` but not `\n`) and `cdc_query_dataset` (switched to the shared helper).
+- **403 responses reported as retryable outages** (#26): `SocrataService.fetchJson` folded 403 into the generic `upstream_error` reason, which is declared retryable with a "may be temporarily unavailable" recovery hint — wrong on a permanent access refusal. `upstream_error` is now scoped to the 5xx band; statuses outside the mapped set (400/403/404/429/5xx) carry no reason at all, so the framework's own status classification survives instead of being flattened. Auditing that mapping also surfaced two undeclared-reason gaps: `cdc_discover_datasets`/`cdc://datasets` could receive `dataset_not_found` on a catalog 404 without declaring it (now declared, with the message naming the catalog endpoint rather than a dataset ID, since a catalog request carries no ID to verify), and `cdc_get_dataset_schema`/`cdc://datasets/{datasetId}` could receive `invalid_query` on a metadata-endpoint 400 without declaring it.
+- **`cdc_discover_datasets` offset/limit validation gap** (#27): independent per-field maxima let combinations like `offset: 9999, limit: 5` pass validation and then fail upstream against Socrata's `offset + limit ≤ 10,000` ceiling, with a recovery hint about category/tag filters that didn't apply. A page whose `offset` runs past `totalCount` now gets a distinct notice naming the actual result-set size instead of "try broader search terms."
+- **`effectiveQuery` rendered spaces as `+`** (#29): `cdc_query_dataset`'s echo decoded the `URLSearchParams`-encoded wire string with `decodeURIComponent`, which doesn't touch `+`. The echo now reads each clause back off the `URLSearchParams` instance directly, so a clause can be copied verbatim into another call — including a literal `+` a caller typed, which naive space-for-plus swapping would have erased.
+
+### Changed
+
+- **`tags` semantics documented as a union, not an intersection** (#28): the `cdc_discover_datasets` `tags` input, the `appliedFilters` trailer, `README.md`, and `docs/design.md` all now state that multiple tags widen the result set (a dataset matches on any one of them) rather than narrowing it, and that `query`/`category` are what intersect.
+- **`docs/design.md` gains a `cdc_query_wonder` section and the `CDC_CATALOG_URL` config row** (#31); the `cdc://datasets` resource description is reconciled to what it actually returns.
+- **Socrata contract parity enforced by test** (`tests/services/socrata/socrata-contract-parity.test.ts`): cross-checks every reason `SocrataService` can raise against the `errors[]` contract of all five consumers, in both directions.
+- **Security test suite exercises the real `SocrataService`**: the "no secrets in tool output" tests previously asserted against hand-built mock data that never touched the app-token code path; they now run the real service against a mocked `fetch` with a sentinel token, so an app-token leak into `effectiveQuery`, an error's `url`, or a rendered table would actually fail the suite.
+
 ## [0.8.1] - 2026-08-09
 
 `cdc_query_wonder` fixes: CDC status tokens no longer read as suppression, every caveat renders, unresolved template placeholders are filtered out, and single-age-group filters no longer fail upstream.

@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-07-11 08:40:25
+Generated on: 2026-08-09 12:34:14
 
 ```text
 cdc-health-mcp-server/
@@ -152,6 +152,8 @@ cdc-health-mcp-server/
 │   │       ├── wonder-service.ts
 │   │       ├── xml-builder.ts
 │   │       └── xml-parser.ts
+│   ├── utils/
+│   │   └── markdown.ts
 │   └── index.ts
 ├── tests/
 │   ├── config/
@@ -182,6 +184,7 @@ cdc-health-mcp-server/
 │   │   └── tools-security.test.ts
 │   ├── services/
 │   │   ├── socrata/
+│   │   │   ├── socrata-contract-parity.test.ts
 │   │   │   ├── socrata-service-errors.test.ts
 │   │   │   ├── socrata-service-token.test.ts
 │   │   │   └── socrata-service.test.ts
