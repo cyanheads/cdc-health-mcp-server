@@ -11,7 +11,7 @@ api_docs: https://dev.socrata.com/foundry/data.cdc.gov/
 
 ## Overview
 
-Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,080 datasets among ~1,470 catalog entries) via the [Socrata SODA API](https://dev.socrata.com/) to enable discovery, exploration, and querying of public health data. Covers disease surveillance, mortality, behavioral risk factors, vaccinations, environmental health, injury statistics, and more. No authentication required -- app token optional for higher rate limits.
+Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,080 datasets among ~1,471 catalog entries) via the [Socrata SODA API](https://dev.socrata.com/) to enable discovery, exploration, and querying of public health data. Covers disease surveillance, mortality, behavioral risk factors, vaccinations, environmental health, injury statistics, and more. No authentication required -- app token optional for higher rate limits.
 
 The core challenge: ~1,080 datasets with heterogeneous schemas. The server provides a discovery-first workflow -- find the right dataset, inspect its schema, then query it -- rather than hard-coding knowledge of specific datasets.
 
