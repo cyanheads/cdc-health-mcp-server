@@ -1,10 +1,12 @@
 /**
- * @fileoverview Parses a CDC WONDER `<data-table>` XML response into keyed row objects.
+ * @fileoverview Parses a CDC WONDER XML response — the `<data-table>` into keyed row objects,
+ * and the `<message>` elements into plain text.
  * The table is HTML-table-like: the leading (outer) dimension cell of each group carries a
  * rowspan (`r="N"`) and is omitted on the group's subsequent rows, so dimension values must
  * be carried forward. Measure values arrive with comma thousands separators, or as a status
- * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number. Pure module (no
- * framework imports).
+ * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number. Dimension labels
+ * are CDC's own text with only surrounding whitespace removed (see `dimensionLabel`). Pure
+ * module (no framework imports).
  * @module services/wonder/xml-parser
  */
 
@@ -38,6 +40,36 @@ function cleanText(inner: string): string {
   )
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Extract WONDER's `<message>` elements as plain text, in document order.
+ *
+ * WONDER uses the same element for two unrelated jobs. On a rejected request the first message
+ * states why. On a successful one the messages are notices about the table that came back —
+ * among them the "Rows with … are hidden." pair, which says the row set was filtered before it
+ * was sent. Reading only the first would drop those, so every message comes back.
+ */
+export function parseMessages(body: string): string[] {
+  return [...body.matchAll(/<message[^>]*>([\s\S]*?)<\/message>/g)]
+    .map((m) => cleanText(m[1] ?? ''))
+    .filter((m) => m.length > 0);
+}
+
+/**
+ * A dimension cell's label, as the row will carry it: CDC's own text with surrounding
+ * whitespace removed and nothing inside it touched.
+ *
+ * The trim is not cosmetic. Two databases pad one label — D158 and D157 render their last
+ * year as `2024 ` where every other year on every database, D176's own 2024 included, comes
+ * back bare. Left in place, `"2024 " !== "2024"` splits one year into two keys the moment a
+ * caller lines a row from one database up against the same year from another, and nothing in
+ * the output marks the cell as different from the bare label beside it. Whitespace at the edge
+ * of a label carries no meaning, so it is dropped here rather than left for every consumer to
+ * discover. Composite labels stay verbatim — `2025 (provisional)` keeps its interior space.
+ */
+function dimensionLabel(raw: string | undefined): string {
+  return decodeEntities(raw ?? '').trim();
 }
 
 /**
@@ -113,13 +145,13 @@ export function parseDataTable(
     // Leading cells are the dimension labels present on this row; trailing `measureCount` are measures.
     const dimCells = cells.slice(0, cells.length - measureCount);
     const measureCells = cells.slice(cells.length - measureCount);
-    if (dimCells.length > dimensionCount) continue; // anomalous — never emitted by WONDER for D76
+    if (dimCells.length > dimensionCount) continue; // anomalous — no mortality database emits it
 
     // Rowspan carry: present dimension cells fill the trailing dimension slots; the
     // leading slots (omitted due to rowspan) keep the previous row's value.
     const present = dimCells.length;
     for (let j = 0; j < present; j++) {
-      carried[dimensionCount - present + j] = decodeEntities(attr(dimCells[j] ?? '', 'l') ?? '');
+      carried[dimensionCount - present + j] = dimensionLabel(attr(dimCells[j] ?? '', 'l'));
     }
 
     const row: WonderRow = {};
