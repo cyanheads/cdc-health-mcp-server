@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.8.3] - 2026-08-09
+
+`cdc_query_wonder` now spans five CDC WONDER mortality databases instead of one, with a corrected request-spacing gate and disclosure of rows CDC hides from the response.
+
+### Added
+
+- **`database` input on `cdc_query_wonder`** (#18): selects one of five mortality databases — `underlying_1999_2020` (D76, 1999–2020, default), `provisional` (D176, 2018 → current year), `underlying_2018_2024` (D158, 2018–2024), `multiple_1999_2020` (D77), `multiple_2018_2024` (D157). Each database's fixed-parameter block is transcribed from its own WONDER request form rather than templated from D76 — a prefix swap alone returns HTTP 500. `race` is the only grouping dimension that diverges between databases: bridged race (`.V8`, 4 groups) on the two 1999–2020 databases, single race (`.V42`, 6 groups) on the rest; the two families are not comparable and every surface naming `race` says so. `year_range`'s bounds widen to the union of all five spans (1999 → current year), with the selected database's actual span enforced in the handler rather than a Zod refinement, so a rejection carries the declared `recovery` hint naming that span.
+- **`mcd_icd10` input on `cdc_query_wonder`** (#18): filters to a cause recorded anywhere on the death certificate rather than only the one certified as underlying. Valid only on the three multiple-cause/provisional databases; the handler rejects it elsewhere and names which databases accept it. A multiple-cause database queried without it returns its underlying-cause twin's figures to the digit, so the handler adds a notice naming that twin.
+- **`NS` age group** (#35): `age_groups` now carries the full `.V5` list including `NS`, the group CDC uses for a death whose age was not recorded. Previously the eleven ten-year groups alone undercounted an unfiltered total by the `NS` deaths.
+- **`999--999` withheld-cause marker** (#35): both `cause_icd10` and `mcd_icd10` accept CDC's own marker for causes withheld under the provisional database's six-month reporting lag. Offered only on `provisional`; the handler rejects it elsewhere and names that database rather than letting WONDER's "invalid ICD-10 code" response read as the code not existing.
+- **`messages` output field** (#32): every `<message>` WONDER returns with a successful response, verbatim — previously only the first message from a *failed* response was read. The two that matter are the ones stating rows were hidden before the table was sent (`Rows with zero Deaths are hidden.`, `Rows with suppressed Deaths are hidden.`); a hidden row leaves no trace in `rows`, so `isHiddenRowsMessage` selects them for a `ctx.enrich` notice, `format()` renders them in their own block, and an empty result is reported as possibly-filtered rather than "nothing matched" when they're present.
+- **`databaseTitle` output field**: CDC's own title for the queried database (e.g. "Underlying Cause of Death, 1999-2020"), alongside the existing `database` dataset code. `format()` heads every render with both.
+- **`tests/services/wonder/database-ids.test.ts`**: pins the five dataset IDs against `GET /controller/datarequest/<ID>`, which names the request page an ID belongs to and names none for a retired one, under `WONDER_LIVE_TESTS=1` — no rate-limited POST spent.
+
+### Changed
+
+- **Request-spacing measured from the response, not the request** (#30): the throttle stamp moved from `throttle()` into a `finally` on `query()`, taken after the response body is read. WONDER measures its 15-second gap from the end of the previous response; spacing from the previous request's start fired the next call early by however long that request took and drew a 429. The interval is now 16 seconds for margin. The stamp is written on every exit path — network error, 429, malformed body, and success — since each one consumed a request. The gate remains one instance-level stamp shared across all five databases, matching WONDER's per-source-IP limit.
+- **Dimension labels trimmed at the edges** (#36): `D158` and `D157` pad their last year as `"2024 "` where every other year, on every database, comes back bare; a `dimensionLabel` helper trims surrounding whitespace so the same year keys identically across databases. Nothing inside a label changes — `"2025 (provisional)"` keeps its interior space.
+- **Documentation reconciled to the five-database surface**: `README.md` gains a `database` value table and bullets for `mcd_icd10`, `NS`, `999--999`, and label trimming; `docs/design.md` gains a five-database table and a "Fidelity to CDC's own vocabularies" section recording which WONDER `V_*` option lists the tool exposes completely and which are deliberately absent; `CLAUDE.md`'s WONDER bullets and `analyze_health_trend`'s routing prose (`src/mcp-server/prompts/definitions/analyze-health-trend.prompt.ts`) are updated to name `database` as the era/record-type choice instead of a fixed 1999–2020 span.
+
+### Fixed
+
+- **Age-adjusted rate no longer sent as a nonexistent measure code**: no mortality database defines an `M4`; only `M_1..M_3` (deaths, population, crude rate) are ever sent, and `O_aar=aar_std` alone produces the age-adjusted column.
+
 ## [0.8.2] - 2026-08-09
 
 Error contract corrections across the Socrata endpoints, a catalog `assetType`/`not_queryable` distinction for non-tabular assets, and CDC WONDER routing added to the `analyze_health_trend` prompt.

@@ -1,6 +1,6 @@
 {
   "name": "cdc-health-mcp-server",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "cdc-health-mcp-server",
     "shortDescription": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API).",
-    "longDescription": "Provides access to the CDC Open Data portal (~1,080 datasets) via the Socrata SODA API. Supports catalog discovery, schema inspection, and SoQL queries across mortality, vaccinations, behavioral risk, surveillance, and other public health domains. Also queries CDC WONDER for national mortality statistics from the Underlying Cause of Death database.",
+    "longDescription": "Provides access to the CDC Open Data portal (~1,080 datasets) via the Socrata SODA API. Supports catalog discovery, schema inspection, and SoQL queries across mortality, vaccinations, behavioral risk, surveillance, and other public health domains. Also queries CDC WONDER for national mortality statistics across five mortality databases — final and provisional, underlying-cause and multiple-cause.",
     "developerName": "cyanheads",
     "category": "data",
     "capabilities": ["Read"],

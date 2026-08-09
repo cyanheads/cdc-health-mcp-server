@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-mcp-server
-**Version:** 0.8.2
+**Version:** 0.8.3
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.1`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 
@@ -19,17 +19,17 @@ Wraps the [CDC Open Data portal](https://data.cdc.gov/) (~1,080 datasets) via th
 
 **Design doc:** `docs/design.md` — full parameter tables, error modes, API endpoints, and implementation notes.
 
-The three Socrata tools take an allowlisted `domain` input (`data.cdc.gov` default, `chronicdata.cdc.gov`) — Zod `z.enum` rejects any other host before the handler runs (the SSRF guard). The two `cdc://datasets…` resources stay on the default host. `cdc_query_wonder` hits a different CDC system and takes no `domain`.
+The three Socrata tools take an allowlisted `domain` input (`data.cdc.gov` default, `chronicdata.cdc.gov`) — Zod `z.enum` rejects any other host before the handler runs (the SSRF guard). The two `cdc://datasets…` resources stay on the default host. `cdc_query_wonder` hits a different CDC system and takes no `domain`; its `database` enum picks the dataset code in the upstream path, and is the same kind of guard.
 
 | Definition | Type | Purpose |
 |:-----------|:-----|:--------|
 | `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point. Trimmed payload — `assetType`, `columnCount` + an 8-name `columnSample` and a 300-char description; full column detail comes from `cdc_get_dataset_schema`. |
 | `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. Full-detail surface. Fails `not_queryable` on a non-tabular asset instead of returning empty columns. |
 | `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. |
-| `cdc_query_wonder` | tool | Query CDC WONDER database D76 (Underlying Cause of Death, 1999–2020) — national deaths, population, crude/age-adjusted rates. Grouped by year/age/sex/race, filtered by ICD-10 cause. |
+| `cdc_query_wonder` | tool | Query CDC WONDER for national deaths, population, crude/age-adjusted rates. Grouped by year/age/sex/race, filtered by ICD-10 cause. A `database` enum selects one of five mortality databases — D76 (default), D176 provisional, D158, D77, D157. |
 | `cdc://datasets` | resource | 50 most-viewed catalog entries for orientation — carries `assetType` + `columnCount`, since the page mixes charts/stories/filters in with datasets. |
 | `cdc://datasets/{datasetId}` | resource | Dataset metadata + schema (equivalent to schema tool). |
-| `analyze_health_trend` | prompt | Guided workflow: pick the source (WONDER for national 1999–2020 mortality, Socrata otherwise), then discover → inspect → query → compare → synthesize. Routing is prose the reader acts on — the handler never classifies the topic. |
+| `analyze_health_trend` | prompt | Guided workflow: pick the source (WONDER for national mortality, Socrata otherwise), then discover → inspect → query → compare → synthesize. Routing is prose the reader acts on — the handler never classifies the topic. |
 
 ### Socrata API Endpoints
 
@@ -43,15 +43,24 @@ The three Socrata tools take an allowlisted `domain` input (`data.cdc.gov` defau
 
 ### CDC WONDER API
 
-Separate system, separate service (`src/services/wonder/`). `POST https://wonder.cdc.gov/controller/datarequest/D76` with a form-urlencoded `request_xml` document; the response is an XML `<data-table>`.
+Separate system, separate service (`src/services/wonder/`). `POST https://wonder.cdc.gov/controller/datarequest/<ID>` with a form-urlencoded `request_xml` document; the response is an XML `<data-table>`.
 
+- Five mortality databases behind one tool, keyed by the `database` enum: `D76` (default, 1999–2020), `D176` (provisional, 2018 → current year), `D158` (2018–2024), `D77` and `D157` (multiple-cause). `WONDER_DATABASE_SPECS` in `types.ts` is the source of truth for IDs, titles, spans, race variable, and multiple-cause support.
+- **Build each database's fixed-parameter block from its own request form**, never by templating D76's — a prefix swap returns HTTP 500 (`The second box of the AND combination for '{0}' contains an entry while the first one is empty`). `POST /controller/datarequest/<ID>` with `stage=about&action-I Agree=I Agree` returns the form; `SCAFFOLDS` in `xml-builder.ts` is transcribed from it. Multiple-cause finders need paired `V_*.V13`/`V_*.V13_AND` textareas; `D176` carries occurrence-location, MMWR and 2023-urbanization variables D76 lacks and omits D76's weekday variable.
+- `race` is the only dimension that diverges — `.V8` bridged (4 groups) on the 1999–2020 pair, `.V42` single race (6 groups) on the rest. The two families' series are not comparable, and every surface naming `race` says so.
+- Age-adjusted rate comes from `O_aar=aar_std`, not a measure code — no mortality database has an `M4`. Only `M_1..M_3` are ever sent.
+- IDs are pinned, not resolved per call. `GET /controller/datarequest/<ID>` names the request page an ID belongs to and a retired ID names none — checked by `tests/services/wonder/database-ids.test.ts` under `WONDER_LIVE_TESTS=1`, which costs no rate-limited POST.
+- Per-database year spans and the `mcd_icd10`-needs-a-multiple-cause-database rule are enforced **in the handler**, not a Zod `refine` — a refinement adds nothing to the emitted JSON Schema and fails as a raw `ZodError` at the transport, out of reach of the declared `recovery`. Same pattern #27 established for `cdc_discover_datasets`.
 - Send bare headers — a browser-looking User-Agent/Origin trips an upstream Akamai 403.
-- Hard 15-second gap between requests, enforced by the service (429 otherwise).
+- Hard 16-second gap between requests, enforced by the service (429 otherwise). It is measured from the end of the previous response, not from when its request was issued — WONDER rejects a request sent 15 s after the previous one started. The stamp lives in `query()`'s `finally`, so the network-error, 429, and malformed-body paths space the next call too. The limit is per source IP and shared across databases: one process-wide gap, never a per-database limiter.
 - National only; sub-national grouping and filtering are blocked by CDC policy.
 - Every request must carry a rate measure — a deaths-only measure set is rejected.
 - Cause of death is a filter, never a grouping.
 - Age-adjusted rate is rejected unless age can be standardized — omit it when `age_group` is a grouping dimension or the age-group filter selects exactly one group.
+- Every input that mirrors a `V_*` option list carries the whole list — `age_groups` includes `NS`, and both cause filters accept `999--999` (the provisional database's withheld-cause marker, rejected by the other four in the handler). The variables the tool omits entirely are omitted by decision, not oversight; `docs/design.md` holds the table and the reasoning.
 - A measure cell may carry a status token instead of a number: `Suppressed`, `Unreliable`, `Not Applicable`. The parser nulls the value and records the token per cell.
+- Dimension labels come back as CDC's own text with surrounding whitespace trimmed (`dimensionLabel` in `xml-parser.ts`) — D158 and D157 pad their last year as `2024 `, which splits one year into two keys in a cross-database comparison. Nothing inside a label is touched: `2025 (provisional)` stays intact.
+- Whole rows are hidden by default (zero deaths, suppressed deaths) and leave no trace in the table. WONDER says so in `<message>` elements on the 200, which `messages` carries verbatim. `fixedParams()` deliberately does not send `O_show_zeros`/`O_show_suppressed` — unhiding changes the result set materially and needs its own design pass (rationale in `docs/design.md`).
 
 ### Quirks
 

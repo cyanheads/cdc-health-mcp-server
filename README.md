@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -36,7 +36,7 @@ Four tools for discovering and querying CDC public health data. Three query the 
 | `cdc_discover_datasets` | Search the catalog by keyword, category, or tag. Entry point for all queries. |
 | `cdc_get_dataset_schema` | Fetch column schema, row count, and metadata for a dataset. Essential before writing SoQL queries. |
 | `cdc_query_dataset` | Execute SoQL queries — filter, aggregate, sort, full-text search, and field selection. |
-| `cdc_query_wonder` | Query CDC WONDER for national mortality statistics (deaths, population, crude/age-adjusted rates) by year, age, sex, and race, filtered by ICD-10 cause. |
+| `cdc_query_wonder` | Query CDC WONDER for national mortality statistics (deaths, population, crude/age-adjusted rates) by year, age, sex, and race, filtered by ICD-10 cause. Covers five CDC mortality databases — final and provisional, underlying-cause and multiple-cause. |
 
 ### `cdc_discover_datasets`
 
@@ -80,14 +80,32 @@ Execute SoQL queries against any CDC dataset.
 
 ### `cdc_query_wonder`
 
-Query CDC WONDER for national US mortality statistics from the Underlying Cause of Death database (D76, 1999–2020) — a separate CDC system from the Socrata datasets the other tools query.
+Query CDC WONDER for national US mortality statistics — a separate CDC system from the Socrata datasets the other tools query.
+
+`database` picks which of CDC's five mortality databases answers the query:
+
+| Value | CDC database | Years | Race groups | `mcd_icd10` |
+|:---|:---|:---|:---|:---|
+| `underlying_1999_2020` *(default)* | D76 — Underlying Cause of Death | 1999–2020 | 4 bridged | — |
+| `provisional` | D176 — Provisional Mortality Statistics | 2018 → current year | 6 single-race | yes |
+| `underlying_2018_2024` | D158 — Underlying Cause of Death, Single Race | 2018–2024 | 6 single-race | — |
+| `multiple_1999_2020` | D77 — Multiple Cause of Death | 1999–2020 | 4 bridged | yes |
+| `multiple_2018_2024` | D157 — Multiple Cause of Death, Single Race | 2018–2024 | 6 single-race | yes |
 
 - Group results by any of `year`, `age_group`, `sex`, `race` (1–4 dimensions)
-- Filter by ICD-10 underlying cause, sex, ten-year age groups, and year range
+- Filter by ICD-10 underlying cause, sex, age groups, and year range
+- `age_groups` carries the whole list CDC offers: the eleven ten-year groups plus `NS`, the group for a death whose age was not recorded. Listing the eleven without `NS` returns fewer deaths than the same query unfiltered, so include it to match an all-ages total or select it alone to count those deaths
+- `mcd_icd10` matches a cause recorded anywhere on the death certificate rather than only the one certified as underlying — "died with a respiratory condition listed", which no underlying-cause query can produce. Accepted only by the three databases marked above; the others reject it. A multiple-cause database queried without it returns the same figures as the underlying-cause database for the same years, and says so
+- `year_range` carries the union of every database's span; a range outside the span of the one selected is rejected with that database's actual years named
+- A `race` breakdown does not carry across the two race families — bridged race combines Asian and Pacific Islander into one group, single race splits them and adds a multiracial category, so the two series are not comparable
+- Both cause filters also take `999--999`, CDC's marker for deaths whose cause it is still withholding under the provisional database's six-month reporting lag. Only `provisional` records them; the other databases reject the code, and the tool says which one to select
+- Row dimension values are CDC's own labels with surrounding whitespace removed, so the same year keys identically across databases — CDC pads a few of them, and `"2024 "` and `"2024"` would otherwise read as two different years
+- Provisional rows carry CDC's own year labels, e.g. `2025 (provisional)` and `2026 (provisional and partial)`, rather than a bare year
 - Returns deaths, population, and crude death rate, plus age-adjusted rate when WONDER can standardize by age — omitted when grouping by `age_group` or filtering to a single age group
 - National totals only — sub-national (state/county) breakdowns are not available through the WONDER API (CDC vital-statistics policy)
 - CDC replaces some measure values with a status token — `Suppressed` (withheld for confidentiality), `Unreliable` (a rate from fewer than 20 deaths), `Not Applicable` (no population denominator). Those cells read `null` in `rows`; `cellNotes` names the row, column, and token for each
-- Rate-limited to one request per ~15 seconds; requests are spaced automatically
+- CDC also hides whole rows before sending the table — strata with zero deaths, and strata whose death count is suppressed. Those rows are absent from `rows` with nothing marking the gap, so `messages` carries CDC's own statement whenever it happened
+- CDC rejects requests made less than 15 seconds apart, measured from the end of the previous response and counted across all five databases; the server spaces consecutive requests 16 seconds automatically
 
 ## Resources and prompt
 
@@ -111,7 +129,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
 CDC-specific:
 
 - Wraps the [Socrata SODA API v2.1](https://dev.socrata.com/) — no auth required, optional app token for higher rate limits
-- Adds CDC WONDER mortality access (`cdc_query_wonder`) — national deaths, population, and crude/age-adjusted rates from the Underlying Cause of Death database (1999–2020), a separate XML-over-HTTP CDC system
+- Adds CDC WONDER mortality access (`cdc_query_wonder`) — national deaths, population, and crude/age-adjusted rates across five mortality databases spanning 1999 through the current year, final and provisional, underlying-cause and multiple-cause; a separate XML-over-HTTP CDC system
 - Discovery-first approach for a heterogeneous catalog (~1,080 datasets across many health domains)
 - Two CDC Socrata portals via the `domain` input — [`data.cdc.gov`](https://data.cdc.gov/) (default) and [`chronicdata.cdc.gov`](https://chronicdata.cdc.gov/) (PLACES small-area estimates, the Heart Disease & Stroke Atlas, Environmental Public Health Tracking); restricted to this allowlist
 - Conservative request spacing for rate limit compliance (no rate-limit headers returned by Socrata)
