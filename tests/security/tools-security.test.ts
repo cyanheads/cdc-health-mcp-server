@@ -386,12 +386,42 @@ describe('Security — input validation', () => {
       ).toThrow();
     });
 
+    const CURRENT_YEAR = new Date().getUTCFullYear();
+
     it.each([
       { from: 1998, to: 2000 },
-      { from: 1999, to: 2021 },
+      { from: 1999, to: CURRENT_YEAR + 1 },
       { from: 2010, to: 2005 },
     ])('rejects year_range %j', (range) => {
       expect(() => queryWonder.input.parse({ year_range: range })).toThrow();
+    });
+
+    it('leaves a range inside the schema bounds but outside a database to the handler', () => {
+      /**
+       * The bounds span every database, so 2021–2024 parses even though the default database
+       * stops at 2020 — that rejection belongs in the handler, where it can carry the declared
+       * recovery hint instead of failing as a raw ZodError at the transport. What matters
+       * here is only that widening the bounds did not open a hole: the value is still an
+       * integer inside the union, and nothing outside it gets through.
+       */
+      expect(queryWonder.input.parse({ year_range: { from: 2021, to: 2024 } }).year_range).toEqual({
+        from: 2021,
+        to: 2024,
+      });
+      expect(() => queryWonder.input.parse({ year_range: { from: 2020.5, to: 2021 } })).toThrow();
+    });
+
+    it.each(['J00-J98</value><value>*All*', 'j00-j98', 'J0', 'anything'])(
+      'rejects mcd_icd10 %j',
+      (code) => {
+        /** The second free-text field reaching the request XML gets the same regex guard. */
+        expect(() => queryWonder.input.parse({ mcd_icd10: code })).toThrow();
+      },
+    );
+
+    it.each(['D76', 'D176', 'natality', '*All*'])('rejects database %j', (database) => {
+      /** The database selects the upstream URL path segment; only the enum may reach it. */
+      expect(() => queryWonder.input.parse({ database })).toThrow();
     });
 
     it('exposes no host input, so there is no SSRF surface to allowlist', () => {

@@ -150,9 +150,24 @@ describe('analyze_health_trend', () => {
       expect(wonderGuidance).toContain('national scope');
       // The span the prompt advertises has to be the span the tool accepts.
       expect(wonderGuidance).toContain(`${WONDER_YEARS.first}–${WONDER_YEARS.last}`);
-      // #18 has not shipped: no sub-national breakdown, nothing past the last year.
+      // The sub-national limit is upstream policy and holds on every database — the prompt
+      // must not let a reader take the database selector for a way around it.
       expect(wonderGuidance).toContain('no sub-national breakdown');
-      expect(wonderGuidance).toContain(`nothing after ${WONDER_YEARS.last}`);
+      expect(wonderGuidance).toContain('database');
+    });
+
+    it('tells the reader the era and record type are a database choice, not a tool choice', () => {
+      /**
+       * Recency and multiple-cause both live behind `database`. A reader who reads WONDER as
+       * one fixed span routes current-year mortality to Socrata, which does not hold it in
+       * this shape, and never reaches the multiple-cause filter at all.
+       */
+      const wonderGuidance = generate(analyzeHealthTrend.args.parse({ topic: 'overdose deaths' }))
+        .split('\n')
+        .find((line) => line.startsWith('- `cdc_query_wonder`'));
+
+      expect(wonderGuidance).toContain('provisional');
+      expect(wonderGuidance).toContain('mcd_icd10');
     });
 
     it('routes a sub-national or non-mortality question to the Socrata catalog', () => {
@@ -169,8 +184,10 @@ describe('analyze_health_trend', () => {
       expect(socrataGuidance).toContain('cdc_get_dataset_schema');
       expect(socrataGuidance).toContain('cdc_query_dataset');
       expect(socrataGuidance).toContain('state or county detail');
-      expect(socrataGuidance).toContain(`years after ${WONDER_YEARS.last}`);
       expect(socrataGuidance).toContain('non-mortality');
+      // Years are no longer what separates the two systems — WONDER runs to the current year,
+      // so a routing rule keyed on "after <year>" would send current mortality the wrong way.
+      expect(socrataGuidance).not.toMatch(/years after \d{4}/);
     });
 
     it('keeps the branch as guidance rather than classifying the topic', () => {
