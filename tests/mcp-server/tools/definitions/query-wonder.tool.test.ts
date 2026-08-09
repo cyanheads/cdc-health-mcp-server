@@ -37,8 +37,25 @@ const sampleResult: WonderResult = {
   rowCount: 2,
   database: 'D76',
   caveats: ['A caveat.'],
+  cellNotes: [],
   suppressedCount: 0,
   columns: ['year', 'sex', 'deaths', 'population', 'crude_rate', 'age_adjusted_rate'],
+};
+
+/** One row whose crude rate CDC flagged Unreliable — published, not withheld. */
+const unreliableResult: WonderResult = {
+  ...sampleResult,
+  rows: [
+    {
+      age_group: '15-24 years',
+      deaths: 10,
+      population: 42687510,
+      crude_rate: null,
+    },
+  ],
+  rowCount: 1,
+  cellNotes: [{ row: 0, column: 'crude_rate', token: 'Unreliable' }],
+  columns: ['age_group', 'deaths', 'population', 'crude_rate'],
 };
 
 describe('cdc_query_wonder', () => {
@@ -103,10 +120,39 @@ describe('cdc_query_wonder', () => {
   });
 
   it('notices when cells were suppressed', async () => {
-    mockQuery.mockResolvedValue({ ...sampleResult, suppressedCount: 3 });
+    mockQuery.mockResolvedValue({
+      ...sampleResult,
+      cellNotes: [
+        { row: 0, column: 'deaths', token: 'Suppressed' },
+        { row: 1, column: 'deaths', token: 'Suppressed' },
+        { row: 1, column: 'crude_rate', token: 'Suppressed' },
+      ],
+      suppressedCount: 3,
+    });
     const ctx = createMockContext();
     await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
-    expect(getEnrichment(ctx).notice).toContain('suppressed');
+    const notice = getEnrichment(ctx).notice ?? '';
+    expect(notice).toContain('3 cell(s) were withheld');
+    // Suppression is withholding — it must never be tallied into the "not withheld" phrasing.
+    expect(notice).not.toContain('not withheld');
+    expect(notice).not.toContain('Suppressed (3 cells)');
+  });
+
+  it('returns cellNotes and notices unreliable cells as published, not withheld', async () => {
+    mockQuery.mockResolvedValue(unreliableResult);
+    const ctx = createMockContext();
+    const result = await queryWonder.handler(
+      queryWonder.input.parse({ group_by: ['age_group'], cause_icd10: 'E11' }),
+      ctx,
+    );
+
+    expect(result.cellNotes).toEqual([{ row: 0, column: 'crude_rate', token: 'Unreliable' }]);
+    expect(result.suppressedCount).toBe(0);
+    const notice = getEnrichment(ctx).notice ?? '';
+    expect(notice).toContain('Unreliable (1 cell)');
+    expect(notice).toContain('fewer than 20 deaths');
+    expect(notice).toContain('not withheld');
+    expect(notice).not.toContain('withheld by CDC for confidentiality');
   });
 
   it('forwards a service McpError through ctx.fail with its declared reason', async () => {
@@ -168,7 +214,7 @@ describe('cdc_query_wonder', () => {
       expect(text).toContain('**Caveats:**');
     });
 
-    it('renders suppressed cells as blank and notes the suppression count', () => {
+    it('renders suppressed cells as the Suppressed token and notes the count', () => {
       const blocks = queryWonder.format!({
         ...sampleResult,
         rows: [
@@ -182,17 +228,45 @@ describe('cdc_query_wonder', () => {
           },
         ],
         rowCount: 1,
+        cellNotes: [{ row: 0, column: 'deaths', token: 'Suppressed' }],
         suppressedCount: 1,
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('| 2020 | Female |  | 100 |  |  |');
-      expect(text).toContain('1 cell(s) suppressed');
+      expect(text).toContain('| 2020 | Female | Suppressed | 100 |  |  |');
+      expect(text).toContain('1 cell(s) withheld by CDC for confidentiality');
+      // The itemized block is for cells CDC published-but-flagged; a withheld cell
+      // must not also be listed there, which would contradict the suppression line.
+      expect(text).not.toContain('not withheld');
     });
 
-    it('renders an empty-state message when there are no rows', () => {
-      const blocks = queryWonder.format!({ ...sampleResult, rows: [], rowCount: 0 });
+    it('renders an unreliable cell as its token and itemizes it below the table', () => {
+      const blocks = queryWonder.format!(unreliableResult);
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('| 15-24 years | 10 | 42687510 | Unreliable |');
+      expect(text).toContain('row 0, `crude_rate` — `Unreliable`');
+      expect(text).toContain('fewer than 20 deaths');
+      expect(text).not.toContain('withheld by CDC for confidentiality');
+    });
+
+    it('renders every caveat, not a leading slice', () => {
+      const caveats = Array.from({ length: 18 }, (_, i) => `Caveat number ${i + 1}.`);
+      const blocks = queryWonder.format!({ ...sampleResult, caveats });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      for (const caveat of caveats) expect(text).toContain(caveat);
+    });
+
+    it('renders an empty-state message and still carries the caveats when there are no rows', () => {
+      const blocks = queryWonder.format!({
+        ...sampleResult,
+        rows: [],
+        rowCount: 0,
+        caveats: ['Population figures are bridged-race estimates.', 'Deaths are national totals.'],
+      });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No rows matched');
+      expect(text).toContain('**Caveats:**');
+      expect(text).toContain('Population figures are bridged-race estimates.');
+      expect(text).toContain('Deaths are national totals.');
     });
   });
 });

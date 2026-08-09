@@ -2,12 +2,13 @@
  * @fileoverview Parses a CDC WONDER `<data-table>` XML response into keyed row objects.
  * The table is HTML-table-like: the leading (outer) dimension cell of each group carries a
  * rowspan (`r="N"`) and is omitted on the group's subsequent rows, so dimension values must
- * be carried forward. Measure values arrive with comma thousands separators and, when CDC
- * suppresses a cell (< 10 deaths), the literal "Suppressed". Pure module (no framework imports).
+ * be carried forward. Measure values arrive with comma thousands separators, or as a status
+ * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number. Pure module (no
+ * framework imports).
  * @module services/wonder/xml-parser
  */
 
-import type { WonderRow } from './types.js';
+import { isSuppressedToken, type WonderCellNote, type WonderRow } from './types.js';
 
 /** Read an XML attribute value from a cell's attribute string (anchored to an attr-name start). */
 function attr(attrs: string, name: string): string | undefined {
@@ -39,19 +40,31 @@ function cleanText(inner: string): string {
     .trim();
 }
 
-/** Parse a single measure cell value: comma-stripped number, or null (empty / suppressed / non-numeric). */
-function parseMeasure(raw: string | undefined): { value: number | null; suppressed: boolean } {
+/**
+ * A caveat WONDER emitted as an unresolved template expression — `wonder:<name>()` or
+ * `wonder:<name>('arg')` — rather than expanding it to footnote prose. Matched against the
+ * whole caveat, never as a substring, so legitimate prose mentioning WONDER survives.
+ */
+const UNRESOLVED_TEMPLATE = /^wonder:[\w-]+\(.*\)$/i;
+
+/**
+ * Parse a single measure cell. A numeric value (comma thousands separators stripped) becomes
+ * a number with no token; an empty cell becomes null with no token. Anything else is a WONDER
+ * status token — the value is null and the token comes back verbatim, so callers can tell a
+ * "Suppressed"/"Unreliable"/"Not Applicable" null apart from an absent one.
+ */
+function parseMeasure(raw: string | undefined): { value: number | null; token: string | null } {
   const t = (raw ?? '').trim();
-  if (t === '') return { value: null, suppressed: false };
-  if (/^suppressed$/i.test(t)) return { value: null, suppressed: true };
+  if (t === '') return { value: null, token: null };
   const n = Number(t.replaceAll(',', ''));
-  if (Number.isFinite(n)) return { value: n, suppressed: false };
-  return { value: null, suppressed: false };
+  if (Number.isFinite(n)) return { value: n, token: null };
+  return { value: null, token: t };
 }
 
-/** Extracted caveats/footnotes plus a structural flag. */
+/** Extracted rows, caveats/footnotes, and the status tokens found in measure cells. */
 export interface ParsedTable {
   caveats: string[];
+  cellNotes: WonderCellNote[];
   rows: WonderRow[];
   suppressedCount: number;
 }
@@ -62,7 +75,7 @@ export interface ParsedTable {
  * @param body - Full XML response text.
  * @param columns - Ordered output keys: `dimensionCount` dimensions followed by measures.
  * @param dimensionCount - Number of leading dimension columns (for rowspan reconstruction).
- * @returns Parsed rows, caveats/footnotes, and suppressed-cell count.
+ * @returns Parsed rows, resolved caveats/footnotes, and the status tokens found in measure cells.
  */
 export function parseDataTable(
   body: string,
@@ -76,15 +89,15 @@ export function parseDataTable(
     ...[...body.matchAll(/<footnote\b[^>]*>([\s\S]*?)<\/footnote>/g)].map((m) =>
       cleanText(m[1] ?? ''),
     ),
-  ].filter((c) => c.length > 0);
+  ].filter((c) => c.length > 0 && !UNRESOLVED_TEMPLATE.test(c));
 
   const tableMatch = body.match(/<data-table\b[^>]*>([\s\S]*?)<\/data-table>/);
   const tableInner = tableMatch?.[1];
-  if (!tableInner) return { rows: [], caveats, suppressedCount: 0 };
+  if (!tableInner) return { rows: [], caveats, cellNotes: [], suppressedCount: 0 };
 
   const rows: WonderRow[] = [];
+  const cellNotes: WonderCellNote[] = [];
   const carried: string[] = new Array<string>(dimensionCount).fill('');
-  let suppressedCount = 0;
 
   for (const rowMatch of tableInner.matchAll(/<r>([\s\S]*?)<\/r>/g)) {
     const cells = [...(rowMatch[1] ?? '').matchAll(/<c\b([^>]*?)\/?>/g)].map((m) => m[1] ?? '');
@@ -116,12 +129,18 @@ export function parseDataTable(
     }
     for (let m = 0; m < measureCount; m++) {
       const key = columns[dimensionCount + m];
-      const { value, suppressed } = parseMeasure(attr(measureCells[m] ?? '', 'v'));
-      if (suppressed) suppressedCount++;
-      if (key !== undefined) row[key] = value;
+      if (key === undefined) continue;
+      const { value, token } = parseMeasure(attr(measureCells[m] ?? '', 'v'));
+      row[key] = value;
+      if (token !== null) cellNotes.push({ row: rows.length, column: key, token });
     }
     rows.push(row);
   }
 
-  return { rows, caveats, suppressedCount };
+  return {
+    rows,
+    caveats,
+    cellNotes,
+    suppressedCount: cellNotes.filter((n) => isSuppressedToken(n.token)).length,
+  };
 }

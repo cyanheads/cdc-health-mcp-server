@@ -95,12 +95,17 @@ export class WonderService {
       );
     }
 
-    const { rows, caveats, suppressedCount } = parseDataTable(body, columns, dimensionCount);
+    const { rows, caveats, cellNotes, suppressedCount } = parseDataTable(
+      body,
+      columns,
+      dimensionCount,
+    );
     return {
       rows,
       rowCount: rows.length,
       database: WONDER_DATABASE_ID,
       caveats,
+      cellNotes,
       suppressedCount,
       columns,
     };

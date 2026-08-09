@@ -14,6 +14,10 @@ const OK_TABLE = `<results><data-table>
   <r><c l="1999"/><c v="2,391,399"/><c v="279,040,168"/><c v="857.0"/><c v="875.6"/></r>
 </data-table><caveats><caveat>A caveat.</caveat></caveats></results>`;
 
+const FLAGGED_TABLE = `<results><data-table>
+  <r><c l="1999"/><c v="10"/><c v="42,687,510"/><c v="Unreliable"/><c v="Suppressed"/></r>
+</data-table><caveats><caveat>A caveat.</caveat><caveat>wonder:cmf-1('footnote')</caveat></caveats></results>`;
+
 describe('WonderService', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -39,6 +43,20 @@ describe('WonderService', () => {
     const body = (init.body as URLSearchParams).toString();
     expect(body).toContain('request_xml=');
     expect(body).toContain('accept_datause_restrictions=true');
+  });
+
+  it('carries per-cell status tokens and filtered caveats through to the result', async () => {
+    mockFetch(FLAGGED_TABLE);
+    const service = new WonderService();
+    const result = await service.query({ groupBy: ['year'] });
+
+    expect(result.cellNotes).toEqual([
+      { row: 0, column: 'crude_rate', token: 'Unreliable' },
+      { row: 0, column: 'age_adjusted_rate', token: 'Suppressed' },
+    ]);
+    expect(result.suppressedCount).toBe(1);
+    expect(result.rows[0]).toMatchObject({ crude_rate: null, age_adjusted_rate: null });
+    expect(result.caveats).toEqual(['A caveat.']);
   });
 
   it('classifies a 429 as a retryable rate-limit error', async () => {

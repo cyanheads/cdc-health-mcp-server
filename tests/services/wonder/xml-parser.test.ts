@@ -46,18 +46,55 @@ describe('parseDataTable', () => {
       <r><c l="&lt; 1 year"/><c v="Suppressed"/></r>
       <r><c l="1-4"/><c v="5,432"/></r>
     </data-table>`;
-    const { rows, suppressedCount } = parseDataTable(xml, ['age_group', 'deaths'], 1);
+    const { rows, cellNotes, suppressedCount } = parseDataTable(xml, ['age_group', 'deaths'], 1);
     expect(suppressedCount).toBe(1);
+    expect(cellNotes).toEqual([{ row: 0, column: 'deaths', token: 'Suppressed' }]);
     expect(rows).toEqual([
       { age_group: '< 1 year', deaths: null },
       { age_group: '1-4', deaths: 5432 },
     ]);
   });
 
-  it('renders an empty measure cell as null without counting it as suppressed', () => {
+  it('renders an empty measure cell as null with no cell note', () => {
     const xml = `<data-table><r><c l="2020"/><c v=""/></r></data-table>`;
-    const { rows, suppressedCount } = parseDataTable(xml, ['year', 'deaths'], 1);
+    const { rows, cellNotes, suppressedCount } = parseDataTable(xml, ['year', 'deaths'], 1);
     expect(rows).toEqual([{ year: '2020', deaths: null }]);
+    expect(cellNotes).toEqual([]);
+    expect(suppressedCount).toBe(0);
+  });
+
+  it('records a non-suppression status token per cell instead of collapsing it to a bare null', () => {
+    // "Unreliable" (rate from < 20 deaths) and "Not Applicable" (no denominator) are published
+    // values CDC flagged, not withheld ones — they must not read as suppression.
+    const xml = `<data-table>
+      <r><c l="15-24 years"/><c v="10"/><c v="42,687,510"/><c v="Unreliable"/></r>
+      <r><c l="25-34 years"/><c v="8"/><c v="1,000"/><c v="Not Applicable"/></r>
+      <r><c l="35-44 years"/><c v="12"/><c v="2,000"/><c v="0.6"/></r>
+    </data-table>`;
+    const { rows, cellNotes, suppressedCount } = parseDataTable(
+      xml,
+      ['age_group', 'deaths', 'population', 'crude_rate'],
+      1,
+    );
+    expect(suppressedCount).toBe(0);
+    expect(cellNotes).toEqual([
+      { row: 0, column: 'crude_rate', token: 'Unreliable' },
+      { row: 1, column: 'crude_rate', token: 'Not Applicable' },
+    ]);
+    expect(rows[0]).toEqual({
+      age_group: '15-24 years',
+      deaths: 10,
+      population: 42687510,
+      crude_rate: null,
+    });
+    expect(rows[2]).toMatchObject({ crude_rate: 0.6 });
+  });
+
+  it('records an unrecognized non-numeric token rather than silently nulling the cell', () => {
+    const xml = `<data-table><r><c l="2020"/><c v="Not Available"/></r></data-table>`;
+    const { rows, cellNotes, suppressedCount } = parseDataTable(xml, ['year', 'deaths'], 1);
+    expect(rows).toEqual([{ year: '2020', deaths: null }]);
+    expect(cellNotes).toEqual([{ row: 0, column: 'deaths', token: 'Not Available' }]);
     expect(suppressedCount).toBe(0);
   });
 
@@ -82,6 +119,24 @@ describe('parseDataTable', () => {
     expect(caveats).toEqual([
       'Population figures documented here .',
       'Suppressed when fewer than ten deaths.',
+    ]);
+  });
+
+  it('drops unresolved wonder: template expressions from caveats, keeping real prose', () => {
+    const xml = `<results>
+      <data-table><r><c l="1999"/><c v="10"/></r></data-table>
+      <caveats>
+        <caveat>wonder:mort-rankable-footnote()</caveat>
+        <caveat>wonder:cmf-3('footnote')</caveat>
+        <caveat>wonder:mort-ak-2014-in('footnote')</caveat>
+        <caveat>Deaths are classified by ICD-10.</caveat>
+        <caveat>See the CDC WONDER online database at wonder.cdc.gov for details.</caveat>
+      </caveats>
+    </results>`;
+    const { caveats } = parseDataTable(xml, ['year', 'deaths'], 1);
+    expect(caveats).toEqual([
+      'Deaths are classified by ICD-10.',
+      'See the CDC WONDER online database at wonder.cdc.gov for details.',
     ]);
   });
 

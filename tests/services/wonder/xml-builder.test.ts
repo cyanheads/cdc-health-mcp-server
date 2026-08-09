@@ -28,6 +28,20 @@ describe('measuresFor', () => {
     expect(measuresFor(['age_group'])).toEqual(['deaths', 'population', 'crude_rate']);
     expect(measuresFor(['year', 'age_group'])).not.toContain('age_adjusted_rate');
   });
+
+  it('omits age-adjusted rate when the age-group filter selects exactly one group', () => {
+    // WONDER rejects the request outright: "Please select more than one age group when
+    // calculating age-adjusted rates." Grouping here is by year, so the existing
+    // groupBy check cannot catch it.
+    expect(measuresFor(['year'], ['1'])).toEqual(['deaths', 'population', 'crude_rate']);
+    expect(measuresFor(['year', 'sex'], ['85+'])).not.toContain('age_adjusted_rate');
+  });
+
+  it('keeps age-adjusted rate for a multi-group, empty, or absent age filter', () => {
+    expect(measuresFor(['year'], ['25-34', '35-44'])).toContain('age_adjusted_rate');
+    expect(measuresFor(['year'], [])).toContain('age_adjusted_rate');
+    expect(measuresFor(['year'], undefined)).toContain('age_adjusted_rate');
+  });
 });
 
 describe('buildRequestXml', () => {
@@ -85,6 +99,16 @@ describe('buildRequestXml', () => {
   it('lists selected age groups as multiple V_D76.V5 values', () => {
     const { xml } = buildRequestXml({ groupBy: ['year'], ageGroups: ['25-34', '35-44'] });
     expect(values(xml, 'V_D76.V5')).toEqual(['25-34', '35-44']);
+    expect(values(xml, 'M_4')).toEqual(['D76.M4']);
+    expect(values(xml, 'O_aar')).toEqual(['aar_std']);
+  });
+
+  it('drops the age-adjusted measure and uses aar_none for a single-group age filter', () => {
+    const { xml, columns } = buildRequestXml({ groupBy: ['year'], ageGroups: ['1'] });
+    expect(values(xml, 'V_D76.V5')).toEqual(['1']);
+    expect(values(xml, 'M_4')).toEqual([]);
+    expect(values(xml, 'O_aar')).toEqual(['aar_none']);
+    expect(columns).toEqual(['year', 'deaths', 'population', 'crude_rate']);
   });
 
   it('expands a year range across both the finder and value parameters', () => {

@@ -6,17 +6,55 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
+  isSuppressedToken,
   WONDER_AGE_GROUPS,
   WONDER_DATABASE_NAME,
   WONDER_GROUP_BY,
+  type WonderCellNote,
   type WonderQueryOptions,
   type WonderResult,
 } from '@/services/wonder/types.js';
 import { getWonderService } from '@/services/wonder/wonder-service.js';
 
+/**
+ * What each non-suppression CDC status token means, keyed by the lowercased token.
+ * Suppression is reported through its own count and wording, so it is not listed here.
+ */
+const TOKEN_MEANING: Record<string, string> = {
+  unreliable:
+    'published but statistically unstable — the rate is computed from fewer than 20 deaths',
+  'not applicable': 'not computable — the population denominator is unavailable',
+};
+
+/** `: <meaning>` suffix for a token CDC documents; empty for one it does not. */
+function gloss(token: string): string {
+  const meaning = TOKEN_MEANING[token.toLowerCase()];
+  return meaning ? `: ${meaning}` : '';
+}
+
+/** Render one cell note as ``row 3, `crude_rate` — `Unreliable`: <meaning>``. */
+function describeCellNote(note: WonderCellNote): string {
+  return `row ${note.row}, \`${note.column}\` — \`${note.token}\`${gloss(note.token)}`;
+}
+
+/**
+ * Tally the status tokens other than "Suppressed" (which has its own count field) by token
+ * text, in first-seen order, as `Unreliable (2 cells): <meaning>` phrases.
+ */
+function tallyOtherTokens(cellNotes: WonderCellNote[]): string[] {
+  const counts = new Map<string, number>();
+  for (const note of cellNotes) {
+    if (isSuppressedToken(note.token)) continue;
+    counts.set(note.token, (counts.get(note.token) ?? 0) + 1);
+  }
+  return [...counts].map(
+    ([token, n]) => `${token} (${n} cell${n === 1 ? '' : 's'})${gloss(token)}`,
+  );
+}
+
 export const queryWonder = tool('cdc_query_wonder', {
   description:
-    'Query CDC WONDER for national US mortality statistics — deaths, population, and crude/age-adjusted death rates — from the Underlying Cause of Death database (D76, 1999–2020). Break results out by year, age group, sex, and/or race, and filter by ICD-10 cause of death, sex, age group, or year range. WONDER is a separate CDC system from the Socrata datasets the other cdc_* tools query. Data is national only — sub-national (state/county) breakdowns are not available through the API (CDC vital-statistics policy). Cause of death is a filter, not a grouping. CDC suppresses any cell with fewer than 10 deaths (returned as null). The API is rate-limited to one request every ~15 seconds, so requests may be briefly spaced.',
+    'Query CDC WONDER for national US mortality statistics — deaths, population, and crude/age-adjusted death rates — from the Underlying Cause of Death database (D76, 1999–2020). Break results out by year, age group, sex, and/or race, and filter by ICD-10 cause of death, sex, age group, or year range. WONDER is a separate CDC system from the Socrata datasets the other cdc_* tools query. Data is national only — sub-national (state/county) breakdowns are not available through the API (CDC vital-statistics policy). Cause of death is a filter, not a grouping. Some measure cells come back as a CDC status token rather than a number — "Suppressed" (withheld for confidentiality), "Unreliable" (a rate from fewer than 20 deaths), or "Not Applicable" (no population denominator); those cells read null in rows and each one is listed in cellNotes with its token. The API is rate-limited to one request every ~15 seconds, so requests may be briefly spaced.',
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -85,7 +123,7 @@ export const queryWonder = tool('cdc_query_wonder', {
     rows: z
       .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
       .describe(
-        'Result rows. Each carries the requested group-by dimensions plus deaths, population, crude_rate, and — unless grouped by age_group — age_adjusted_rate (per 100,000). Suppressed measure cells (< 10 deaths) are null.',
+        'Result rows. Each carries the requested group-by dimensions plus deaths, population, crude_rate, and age_adjusted_rate (per 100,000) when age standardization is possible — it is omitted when age_group is a grouping dimension or age_groups selects a single group. A measure cell CDC returned as a status token instead of a number is null here; cellNotes names the cell and the token.',
       ),
     rowCount: z.number().describe('Number of rows returned.'),
     database: z
@@ -96,13 +134,32 @@ export const queryWonder = tool('cdc_query_wonder', {
       .describe(
         'CDC-provided caveats and footnotes: data revisions, population-estimate sources, suppression and rate-reliability rules.',
       ),
+    cellNotes: z
+      .array(
+        z
+          .object({
+            row: z.number().describe('Zero-based index into rows.'),
+            column: z.string().describe('Measure column whose numeric value the token replaced.'),
+            token: z
+              .string()
+              .describe(
+                'Token CDC returned in place of a number: "Suppressed" (withheld for confidentiality, fewer than 10 persons), "Unreliable" (rate from fewer than 20 deaths — published, not withheld), or "Not Applicable" (no population denominator).',
+              ),
+          })
+          .describe('One flagged measure cell: where it is and what CDC put there.'),
+      )
+      .describe(
+        'One entry per measure cell CDC returned as a status token rather than a number. Those cells read null in rows, so this is what tells a withheld value apart from an unreliable one or a genuinely absent one.',
+      ),
     suppressedCount: z
       .number()
-      .describe('Number of measure cells CDC suppressed (< 10 deaths), returned as null.'),
+      .describe(
+        'How many cellNotes carry the "Suppressed" token — cells CDC withheld for confidentiality.',
+      ),
   }),
 
   // Agent-facing result context: a summary of the grouping and filters applied (for
-  // reproducibility) and a notice when nothing matched or cells were suppressed.
+  // reproducibility) and a notice when nothing matched or CDC replaced values with a token.
   enrichment: {
     effectiveQuery: z
       .string()
@@ -110,7 +167,9 @@ export const queryWonder = tool('cdc_query_wonder', {
     notice: z
       .string()
       .optional()
-      .describe('Guidance when no rows matched, or a note that CDC suppressed some cells.'),
+      .describe(
+        'Guidance when no rows matched, and a note when CDC returned a status token in place of a measure value.',
+      ),
   },
 
   async handler(input, ctx) {
@@ -144,19 +203,29 @@ export const queryWonder = tool('cdc_query_wonder', {
     }`;
     ctx.enrich({ effectiveQuery });
 
+    const notices: string[] = [];
     if (result.rowCount === 0) {
-      ctx.enrich.notice(
+      notices.push(
         'No rows matched. Broaden the filters (cause_icd10, sex, age_groups, year_range) or confirm the ICD-10 code covers the years selected.',
       );
-    } else if (result.suppressedCount > 0) {
-      ctx.enrich.notice(
-        `${result.suppressedCount} cell(s) were suppressed by CDC (fewer than 10 deaths) and returned as null. Aggregate over more years or a broader cause/age range to reduce suppression.`,
+    }
+    if (result.suppressedCount > 0) {
+      notices.push(
+        `${result.suppressedCount} cell(s) were withheld by CDC for confidentiality (Suppressed) and are null. Aggregate over more years or a broader cause/age range to reduce suppression.`,
       );
     }
+    const otherTokens = tallyOtherTokens(result.cellNotes);
+    if (otherTokens.length > 0) {
+      notices.push(
+        `CDC returned a status token instead of a number for some cells — ${otherTokens.join('; ')}. Those cells are null but were not withheld; cellNotes gives the row index and column of each.`,
+      );
+    }
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('WONDER query executed', {
       groupBy: input.group_by,
       rowCount: result.rowCount,
+      cellNoteCount: result.cellNotes.length,
       suppressedCount: result.suppressedCount,
     });
 
@@ -165,43 +234,56 @@ export const queryWonder = tool('cdc_query_wonder', {
       rowCount: result.rowCount,
       database: result.database,
       caveats: result.caveats,
+      cellNotes: result.cellNotes,
       suppressedCount: result.suppressedCount,
     };
   },
 
   format: (result) => {
-    if (!result.rows[0]) {
-      return [
-        {
-          type: 'text',
-          text: 'No rows matched. Broaden the filters (cause_icd10, sex, age_groups, year_range) or confirm the ICD-10 code covers the years selected.',
-        },
-      ];
-    }
+    const lines: string[] = [];
+    const firstRow = result.rows[0];
 
-    const columns = Object.keys(result.rows[0]);
-    const lines = [
-      `**${result.database} — ${result.rowCount} rows**`,
-      '',
-      `| ${columns.join(' | ')} |`,
-      `| ${columns.map(() => '---').join(' | ')} |`,
-    ];
-    for (const row of result.rows) {
-      const cells = columns.map((c) => {
-        const v = row[c];
-        return (v == null ? '' : String(v)).replaceAll('|', '\\|');
-      });
-      lines.push(`| ${cells.join(' | ')} |`);
-    }
-
-    if (result.suppressedCount > 0) {
+    if (firstRow) {
+      const columns = Object.keys(firstRow);
+      // A cell CDC replaced with a status token is null in `rows`; render the token in its
+      // place so a content[]-only client can tell it apart from a blank cell.
+      const tokenAt = new Map(result.cellNotes.map((n) => [`${n.row}:${n.column}`, n.token]));
       lines.push(
+        `**${result.database} — ${result.rowCount} rows**`,
         '',
-        `_${result.suppressedCount} cell(s) suppressed by CDC (< 10 deaths), shown as blank._`,
+        `| ${columns.join(' | ')} |`,
+        `| ${columns.map(() => '---').join(' | ')} |`,
+      );
+      result.rows.forEach((row, index) => {
+        const cells = columns.map((c) => {
+          const v = tokenAt.get(`${index}:${c}`) ?? row[c];
+          return (v == null ? '' : String(v)).replaceAll('|', '\\|');
+        });
+        lines.push(`| ${cells.join(' | ')} |`);
+      });
+
+      if (result.suppressedCount > 0) {
+        lines.push(
+          '',
+          `_${result.suppressedCount} cell(s) withheld by CDC for confidentiality — shown as \`Suppressed\`, null in the data._`,
+        );
+      }
+      const flagged = result.cellNotes.filter((n) => !isSuppressedToken(n.token));
+      if (flagged.length > 0) {
+        lines.push(
+          '',
+          '**Cells CDC returned as a status token (null in the data, not withheld):**',
+          ...flagged.map((n) => `- ${describeCellNote(n)}`),
+        );
+      }
+    } else {
+      lines.push(
+        'No rows matched. Broaden the filters (cause_icd10, sex, age_groups, year_range) or confirm the ICD-10 code covers the years selected.',
       );
     }
+
     if (result.caveats.length > 0) {
-      lines.push('', '**Caveats:**', ...result.caveats.slice(0, 8).map((c) => `- ${c}`));
+      lines.push('', '**Caveats:**', ...result.caveats.map((c) => `- ${c}`));
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

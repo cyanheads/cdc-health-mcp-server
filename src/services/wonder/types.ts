@@ -24,8 +24,9 @@ export type WonderGroupBy = (typeof WONDER_GROUP_BY)[number];
 
 /**
  * Measures returned per row, in fixed column order. Deaths, population, and crude rate are
- * always present; age-adjusted rate is added when the grouping does not include age (age
- * cannot be both a grouping dimension and the standardization axis).
+ * always present; age-adjusted rate is added only when WONDER can standardize by age — it
+ * is dropped when age is a grouping dimension (age cannot be both a grouping dimension and
+ * the standardization axis) and when the age-group filter selects exactly one group.
  */
 export const WONDER_MEASURES = ['deaths', 'population', 'crude_rate', 'age_adjusted_rate'] as const;
 /** A measure key. */
@@ -76,14 +77,39 @@ export interface WonderQueryOptions {
 
 /**
  * One result row: dimension values (strings) and measure values keyed by friendly names.
- * Suppressed measure cells (< 10 deaths) are null.
+ * A measure cell WONDER returned as a status token rather than a number is null here — the
+ * matching `WonderCellNote` says which token it was.
  */
 export type WonderRow = Record<string, string | number | null>;
+
+/**
+ * A measure cell WONDER returned as a status token instead of a number. WONDER writes
+ * "Suppressed" (confidentiality — figures representing fewer than 10 persons), "Unreliable"
+ * (a rate computed from fewer than 20 deaths, published but statistically unstable), or
+ * "Not Applicable" (no population denominator) in place of the value. The cell reads null in
+ * `rows`, so this record is the only thing that distinguishes those cases from each other and
+ * from a genuinely absent value.
+ */
+export interface WonderCellNote {
+  /** Measure column key whose numeric value the token replaced. */
+  column: string;
+  /** Zero-based index into `rows`. */
+  row: number;
+  /** The token exactly as WONDER returned it. */
+  token: string;
+}
+
+/** True when a cell note's token is WONDER's confidentiality-suppression marker. */
+export function isSuppressedToken(token: string): boolean {
+  return /^suppressed$/i.test(token);
+}
 
 /** Result of a WONDER query. */
 export interface WonderResult {
   /** CDC-provided caveats and footnotes for this result set. */
   caveats: string[];
+  /** Measure cells WONDER returned as a status token instead of a number. */
+  cellNotes: WonderCellNote[];
   /** Ordered column keys: dimensions then measures. */
   columns: string[];
   /** Database identifier the data came from (e.g. "D76"). */
@@ -92,6 +118,6 @@ export interface WonderResult {
   rowCount: number;
   /** Result rows. Keys are the requested group-by dimensions followed by the measures. */
   rows: WonderRow[];
-  /** Number of measure cells CDC suppressed (< 10 deaths), rendered as null. */
+  /** How many of `cellNotes` carry the "Suppressed" token. */
   suppressedCount: number;
 }

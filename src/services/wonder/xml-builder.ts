@@ -8,7 +8,7 @@
  * Two upstream-engine constraints are encoded here, discovered against the live API:
  *  - A request must carry a rate measure; a deaths-only measure set is rejected. Deaths,
  *    population, and crude rate are therefore always requested, plus age-adjusted rate when
- *    the grouping does not include age (age cannot be both grouped and the standardization axis).
+ *    age standardization is possible (see `measuresFor`).
  *  - A specific year filter requires the year FINDER (F_) to list the years too — leaving it
  *    at *All* while V_ lists specific years is rejected as a conflicting selection.
  * @module services/wonder/xml-builder
@@ -16,6 +16,7 @@
 
 import {
   WONDER_MEASURES,
+  type WonderAgeGroup,
   type WonderGroupBy,
   type WonderMeasure,
   type WonderQueryOptions,
@@ -133,12 +134,19 @@ export interface BuiltRequest {
 }
 
 /**
- * Resolve which measures to request for a grouping. Deaths, population, and crude rate are
- * always included; age-adjusted rate is added only when age is not a grouping dimension.
+ * Resolve which measures to request. Deaths, population, and crude rate are always included.
+ * Age-adjusted rate is added only when WONDER can standardize across age, which rules out two
+ * shapes it rejects outright: age used as a grouping dimension (it is then the output axis,
+ * not the standardization axis), and an age-group filter narrowed to exactly one group
+ * ("Please select more than one age group when calculating age-adjusted rates").
  */
-export function measuresFor(groupBy: WonderGroupBy[]): WonderMeasure[] {
+export function measuresFor(
+  groupBy: WonderGroupBy[],
+  ageGroups?: readonly WonderAgeGroup[] | undefined,
+): WonderMeasure[] {
   const base: WonderMeasure[] = ['deaths', 'population', 'crude_rate'];
-  return groupBy.includes('age_group') ? base : [...base, 'age_adjusted_rate'];
+  const canAgeStandardize = !groupBy.includes('age_group') && ageGroups?.length !== 1;
+  return canAgeStandardize ? [...base, 'age_adjusted_rate'] : base;
 }
 
 /**
@@ -155,7 +163,8 @@ export function buildRequestXml(options: WonderQueryOptions): BuiltRequest {
   }
 
   // Measures (canonical order) → M_1..M_n
-  const measures = WONDER_MEASURES.filter((m) => measuresFor(options.groupBy).includes(m));
+  const selected = measuresFor(options.groupBy, options.ageGroups);
+  const measures = WONDER_MEASURES.filter((m) => selected.includes(m));
   measures.forEach((m, i) => {
     params[`M_${i + 1}`] = MEASURE_CODE[m];
   });
