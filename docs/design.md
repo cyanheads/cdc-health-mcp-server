@@ -29,7 +29,7 @@ Search the CDC dataset catalog by keyword, category, or tag. Returns dataset IDs
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `domain` | enum | No | CDC Socrata portal to search: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Allowlisted -- any other host is rejected at input validation. |
+| `domain` | enum | No | CDC Socrata host to search: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Allowlisted -- any other host is rejected at input validation. Both values search the same catalog (see *The two hosts are one catalog* below). |
 | `query` | string | No | Full-text search across dataset names and descriptions (e.g., "diabetes mortality", "lead exposure children"). |
 | `category` | string | No | Filter by domain category. Common values: "National Center for Health Statistics", "NNDSS", "Vaccinations", "Public Health Surveillance", "Behavioral Risk Factors", "Motor Vehicle", "Maternal & Child Health". |
 | `tags` | string[] | No | Filter by domain tags (e.g., ["covid19", "surveillance"]) — see the tag semantics note below; multiple tags widen the result set rather than narrowing it. |
@@ -65,7 +65,7 @@ Fetch the full column schema for a dataset -- names, data types, descriptions. E
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `domain` | enum | No | CDC Socrata portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Must match the portal the dataset was found on. |
+| `domain` | enum | No | CDC Socrata host to fetch metadata from: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Either resolves any four-by-four ID (see *The two hosts are one catalog* below). |
 | `datasetId` | string | Yes | Four-by-four dataset identifier matching `[a-z0-9]{4}-[a-z0-9]{4}` (e.g., "bi63-dtpu"). Obtain from `cdc_discover_datasets`. |
 
 **Returns:** `{ name, description, rowCount, updatedAt, columns: [{ fieldName, dataType, description }] }`.
@@ -92,7 +92,7 @@ Accepts either a convenience `search` parameter for simple full-text queries, or
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `domain` | enum | No | CDC Socrata portal hosting the dataset: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Must match the portal the dataset lives on. |
+| `domain` | enum | No | CDC Socrata host to query: `data.cdc.gov` (default) or `chronicdata.cdc.gov`. Either returns the same rows for a given ID (see *The two hosts are one catalog* below). |
 | `datasetId` | string | Yes | Four-by-four dataset identifier matching `[a-z0-9]{4}-[a-z0-9]{4}`. |
 | `search` | string | No | Convenience full-text search across all text columns. Use for exploratory queries. For precise filtering, use `where` instead. |
 | `select` | string | No | SoQL SELECT clause. Column names, aliases, aggregates: `"state, sum(deaths) as total_deaths"`. Omit for all columns. |
@@ -264,6 +264,10 @@ The routing is prose the reading model acts on, not a classification the handler
 ---
 
 ## Implementation Notes
+
+- **The two hosts are one catalog** -- `data.cdc.gov` and `chronicdata.cdc.gov` are two front doors onto a single Socrata tenant, so `domain` chooses which host answers, not which assets are reachable. Measured against the live API: `?domains=chronicdata.cdc.gov` and `?domains=data.cdc.gov` both return 1,471 entries, same IDs in the same order, every result labelled `metadata.domain: data.cdc.gov`; `swc5-untb` (PLACES county) and `bi63-dtpu` (a `data.cdc.gov`-native dataset) each answer 200 on both hosts; `q=PLACES` against the default host returns 109 results including the 2025 place, county, and GIS-friendly releases. The `domains=` parameter is honored in general -- `domains=data.cityofnewyork.us` returns a distinct 3,014-entry catalog -- it is only this pair of CDC hosts that shares a tenant.
+
+  **Decision:** keep the input, describe it accurately. It is load-bearing for the SSRF allowlist and for callers that pin a host, and dropping it would break them for no gain; but no surface may name PLACES, the Heart Disease & Stroke Atlas, or Environmental Public Health Tracking as though selecting `chronicdata.cdc.gov` were the way to reach them. `tests/services/socrata/socrata-domain-semantics.test.ts` pins the described behavior so the claim cannot drift back.
 
 - **Authentication** -- No API key required. Optional app token via `X-App-Token` header increases rate limits. Without a token, requests are throttled by source IP (undocumented exact limits, but functional for moderate use).
 - **Rate limits** -- Unauthenticated requests are throttled (no published rate). With an app token, limits are higher. The SODA API returns no rate-limit headers -- implement conservative request spacing (200-500ms between requests).

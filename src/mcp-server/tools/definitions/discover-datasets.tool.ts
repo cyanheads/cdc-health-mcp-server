@@ -90,7 +90,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .enum(CDC_SOCRATA_DOMAINS)
       .default('data.cdc.gov')
       .describe(
-        'CDC Socrata portal to search. "data.cdc.gov" (default) is the main CDC catalog; "chronicdata.cdc.gov" hosts chronic-disease and small-area datasets (PLACES, the Heart Disease & Stroke Atlas, Environmental Public Health Tracking).',
+        'CDC Socrata host to search. "data.cdc.gov" (default) and "chronicdata.cdc.gov" front the same catalog and return the same entries, so switching hosts neither widens nor narrows a search — chronic-disease and small-area collections such as PLACES, the Heart Disease & Stroke Atlas, and Environmental Public Health Tracking are found from either.',
       ),
     query: z
       .string()

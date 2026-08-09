@@ -4,9 +4,11 @@
  */
 
 /**
- * Allowlisted CDC Socrata hosts. The discovery, metadata, and query paths can target
- * either portal; both speak SODA 2.1 and accept the same app token. Restricting to this
- * set keeps host selection from becoming an arbitrary-URL (SSRF) surface.
+ * Allowlisted CDC Socrata hosts. Both front the same Socrata tenant: one catalog, labelled
+ * `data.cdc.gov`, whose assets resolve by four-by-four ID on either host. The discovery,
+ * metadata, and query paths can therefore target either, and both speak SODA 2.1 and accept
+ * the same app token. Restricting to this set keeps host selection from becoming an
+ * arbitrary-URL (SSRF) surface.
  */
 export const CDC_SOCRATA_DOMAINS = ['data.cdc.gov', 'chronicdata.cdc.gov'] as const;
 

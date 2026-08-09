@@ -64,7 +64,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .enum(CDC_SOCRATA_DOMAINS)
       .default('data.cdc.gov')
       .describe(
-        'CDC Socrata portal hosting the dataset. Use the same portal you found the dataset on via cdc_discover_datasets: "data.cdc.gov" (default) or "chronicdata.cdc.gov".',
+        'CDC Socrata host to fetch the dataset from. "data.cdc.gov" (default) and "chronicdata.cdc.gov" front the same catalog, so a four-by-four ID resolves on either and the default works whichever host the dataset was found on.',
       ),
     datasetId: z
       .string()

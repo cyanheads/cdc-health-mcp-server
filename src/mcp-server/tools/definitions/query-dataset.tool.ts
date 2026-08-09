@@ -73,7 +73,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .enum(CDC_SOCRATA_DOMAINS)
       .default('data.cdc.gov')
       .describe(
-        'CDC Socrata portal hosting the dataset. Must match the portal the dataset lives on: "data.cdc.gov" (default) or "chronicdata.cdc.gov" (PLACES and other chronic-disease/small-area datasets).',
+        'CDC Socrata host to query. "data.cdc.gov" (default) and "chronicdata.cdc.gov" front the same catalog, so a four-by-four ID returns the same rows from either and the default works whichever host the dataset was found on.',
       ),
     datasetId: z
       .string()
