@@ -22,13 +22,13 @@ describe('cdc://datasets — edge cases', () => {
 
   it('propagates service errors', async () => {
     mockDiscover.mockRejectedValue(new Error('Catalog unavailable (503)'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     await expect(datasetsResource.handler({}, ctx)).rejects.toThrow(/Catalog unavailable/);
   });
 
   it('returns empty datasets when service returns none', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     const result = (await datasetsResource.handler({}, ctx)) as {
       datasets: unknown[];
       totalCount: number;
@@ -54,7 +54,7 @@ describe('cdc://datasets — edge cases', () => {
       ],
       totalCount: 1,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     const result = (await datasetsResource.handler({}, ctx)) as {
       datasets: Record<string, unknown>[];
     };
@@ -77,17 +77,25 @@ describe('cdc://datasets — edge cases', () => {
       ],
       totalCount: 1,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     const result = (await datasetsResource.handler({}, ctx)) as {
       datasets: Record<string, unknown>[];
     };
-    expect(result.datasets[0].category).toBeUndefined();
+    expect(result.datasets[0]?.category).toBeUndefined();
   });
 
   it('list() returns the static listing entry', async () => {
-    const listing = await datasetsResource.list!();
+    // `list` receives the SDK's request-handler extra, not a Context — a minimal
+    // literal is enough for a listing that ignores it.
+    const extra = {
+      signal: new AbortController().signal,
+      requestId: 'test',
+      sendNotification: () => Promise.resolve(),
+      sendRequest: () => Promise.resolve({} as never),
+    };
+    const listing = await datasetsResource.list!(extra);
     expect(listing.resources).toHaveLength(1);
-    expect(listing.resources[0].uri).toBe('cdc://datasets');
+    expect(listing.resources[0]?.uri).toBe('cdc://datasets');
   });
 
   describe('handler — service error re-throw with recovery', () => {
@@ -106,7 +114,9 @@ describe('cdc://datasets — edge cases', () => {
       mockDiscover.mockRejectedValue(serviceErr);
       const ctx = createMockContext({ errors: datasetsResource.errors });
 
-      const err = (await datasetsResource.handler({}, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(datasetsResource.handler({}, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.data).toMatchObject({

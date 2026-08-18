@@ -5,7 +5,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { type ErrorContract, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { describe, expect, it } from 'vitest';
 import { datasetDetailResource } from '@/mcp-server/resources/definitions/dataset-detail.resource.js';
 import { datasetsResource } from '@/mcp-server/resources/definitions/datasets.resource.js';
@@ -21,7 +21,7 @@ import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.
 const DATA_ENDPOINT_ONLY = new Set(['no_such_column', 'type_mismatch']);
 
 /** Definitions whose handlers route service failures through `ctx.fail(err.data.reason)`. */
-const CONSUMERS = [
+const CONSUMERS: { name: string; errors: readonly ErrorContract[] | undefined }[] = [
   { name: 'cdc_discover_datasets', errors: discoverDatasets.errors },
   { name: 'cdc_get_dataset_schema', errors: getDatasetSchema.errors },
   { name: 'cdc_query_dataset', errors: queryDataset.errors },
@@ -34,7 +34,7 @@ function serviceReasons(): string[] {
     new URL('../../../src/services/socrata/socrata-service.ts', import.meta.url),
     'utf8',
   );
-  return [...new Set([...source.matchAll(/reason: '([a-z_]+)'/g)].map((m) => m[1]))];
+  return [...new Set([...source.matchAll(/reason: '([a-z_]+)'/g)].flatMap((m) => m[1] ?? []))];
 }
 
 describe('SocrataService ↔ definition error contracts', () => {

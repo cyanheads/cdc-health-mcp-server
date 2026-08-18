@@ -321,12 +321,13 @@ describe('SocrataService — error handling', () => {
         resultSetSize: 1,
       });
       const result = await service.discover({ query: 'minimal' });
-      expect(result.datasets[0].id).toBe('ab12-cd34');
-      expect(result.datasets[0].description).toBeUndefined();
-      expect(result.datasets[0].category).toBeUndefined();
-      expect(result.datasets[0].tags).toBeUndefined();
-      expect(result.datasets[0].columnNames).toBeUndefined();
-      expect(result.datasets[0].pageViews).toBeUndefined();
+      const [dataset] = result.datasets;
+      expect(dataset?.id).toBe('ab12-cd34');
+      expect(dataset?.description).toBeUndefined();
+      expect(dataset?.category).toBeUndefined();
+      expect(dataset?.tags).toBeUndefined();
+      expect(dataset?.columnNames).toBeUndefined();
+      expect(dataset?.pageViews).toBeUndefined();
     });
 
     it('handles missing rowsUpdatedAt in metadata', async () => {
@@ -368,7 +369,7 @@ describe('SocrataService — error handling', () => {
     it('does NOT send X-App-Token header when appToken is undefined', async () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({});
-      const headers = spy.mock.calls[0][1]?.headers as Record<string, string> | undefined;
+      const headers = spy.mock.calls[0]?.[1]?.headers as Record<string, string> | undefined;
       expect(headers?.['X-App-Token']).toBeUndefined();
     });
   });
@@ -377,7 +378,7 @@ describe('SocrataService — error handling', () => {
     it('defaults offset to 0 when not provided', async () => {
       const spy = mockFetch([]);
       await service.query({ datasetId: 'ab12-cd34', where: "x='y'" });
-      const url = spy.mock.calls[0][0] as string;
+      const url = spy.mock.calls[0]?.[0] as string;
       expect(url).toContain('%24offset=0');
     });
   });

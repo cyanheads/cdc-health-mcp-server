@@ -3,11 +3,11 @@
  * @module tests/mcp-server/tools/definitions/discover-datasets
  */
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { type ErrorContract, JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
-import type { DiscoverResult } from '@/services/socrata/types.js';
+import type { CatalogDataset, DiscoverResult } from '@/services/socrata/types.js';
 
 const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
 
@@ -15,20 +15,20 @@ vi.mock('@/services/socrata/socrata-service.js', () => ({
   getSocrataService: () => ({ discover: mockDiscover }),
 }));
 
+const sampleDataset: CatalogDataset = {
+  id: 'bi63-dtpu',
+  name: 'Diabetes Mortality',
+  description: 'State-level diabetes death rates',
+  category: 'NCHS',
+  tags: ['diabetes', 'mortality'],
+  columnNames: ['state', 'year', 'deaths'],
+  columnTypes: ['text', 'number', 'number'],
+  updatedAt: '2024-01-15T00:00:00.000Z',
+  pageViews: 5000,
+};
+
 const sampleServiceResult: DiscoverResult = {
-  datasets: [
-    {
-      id: 'bi63-dtpu',
-      name: 'Diabetes Mortality',
-      description: 'State-level diabetes death rates',
-      category: 'NCHS',
-      tags: ['diabetes', 'mortality'],
-      columnNames: ['state', 'year', 'deaths'],
-      columnTypes: ['text', 'number', 'number'],
-      updatedAt: '2024-01-15T00:00:00.000Z',
-      pageViews: 5000,
-    },
-  ],
+  datasets: [sampleDataset],
   totalCount: 1,
 };
 
@@ -39,12 +39,12 @@ describe('cdc_discover_datasets', () => {
 
   it('returns datasets for a valid query', async () => {
     mockDiscover.mockResolvedValue(sampleServiceResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({ query: 'diabetes' });
     const result = await discoverDatasets.handler(input, ctx);
 
     expect(result.datasets).toHaveLength(1);
-    expect(result.datasets[0].id).toBe('bi63-dtpu');
+    expect(result.datasets[0]?.id).toBe('bi63-dtpu');
   });
 
   it('surfaces assetType alongside columnCount so a caller can skip non-tabular entries', async () => {
@@ -61,7 +61,7 @@ describe('cdc_discover_datasets', () => {
       ],
       totalCount: 3,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
 
     /**
@@ -98,14 +98,14 @@ describe('cdc_discover_datasets', () => {
     mockDiscover.mockResolvedValue({
       datasets: [
         {
-          ...sampleServiceResult.datasets[0],
+          ...sampleDataset,
           columnNames: wideColumns,
           columnTypes: wideColumns.map(() => 'text'),
         },
       ],
       totalCount: 1,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const result = await discoverDatasets.handler(
       discoverDatasets.input.parse({ query: 'wide' }),
       ctx,
@@ -127,7 +127,7 @@ describe('cdc_discover_datasets', () => {
       datasets: [{ id: 'ab12-cd34', name: 'Verbose', description: longDescription }],
       totalCount: 1,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
 
     const description = (result.datasets[0] as { description: string }).description;
@@ -137,7 +137,7 @@ describe('cdc_discover_datasets', () => {
 
   it('threads the domain through to the service', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({
       query: 'places',
       domain: 'chronicdata.cdc.gov',
@@ -156,7 +156,7 @@ describe('cdc_discover_datasets', () => {
 
   it('enriches with totalCount and appliedFilters', async () => {
     mockDiscover.mockResolvedValue(sampleServiceResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({ query: 'diabetes', category: 'NCHS' });
     await discoverDatasets.handler(input, ctx);
 
@@ -168,7 +168,7 @@ describe('cdc_discover_datasets', () => {
 
   it('emits a notice when no datasets matched', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({ query: 'nonexistent' });
     await discoverDatasets.handler(input, ctx);
 
@@ -186,7 +186,7 @@ describe('cdc_discover_datasets', () => {
      * narrowing and does the opposite.
      */
     it('renders applied tag filters as a union, not a conjunction', () => {
-      const rendered = discoverDatasets.enrichmentTrailer.appliedFilters.render({
+      const rendered = discoverDatasets.enrichmentTrailer?.appliedFilters?.render?.({
         query: 'flu',
         tags: ['covid19', 'vaccination'],
       });
@@ -208,16 +208,16 @@ describe('cdc_discover_datasets', () => {
        * with every result. Both have to say the same thing, or the echo quietly restates
        * tags as a conjunction after the input said otherwise.
        */
-      const trailer = discoverDatasets.enrichment.appliedFilters.description ?? '';
+      const trailer = discoverDatasets.enrichment?.appliedFilters.description ?? '';
       expect(trailer).toContain('multiple tags union');
 
-      const tagsField = discoverDatasets.enrichment.appliedFilters.shape.tags.description ?? '';
+      const tagsField = discoverDatasets.enrichment?.appliedFilters.shape.tags.description ?? '';
       expect(tagsField).toContain('any one of them');
     });
 
     it('points a tag-filtered no-match at the catalog vocabulary', async () => {
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       await discoverDatasets.handler(
         discoverDatasets.input.parse({ tags: ['covid19', 'zzzznotag'] }),
         ctx,
@@ -231,7 +231,7 @@ describe('cdc_discover_datasets', () => {
 
     it('leaves the vocabulary hint out of a no-match that used no tags', async () => {
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       await discoverDatasets.handler(discoverDatasets.input.parse({ query: 'nonexistent' }), ctx);
 
       expect(getEnrichment(ctx).notice).not.toContain('check the spelling against the tags field');
@@ -240,7 +240,7 @@ describe('cdc_discover_datasets', () => {
 
   it('emits a notice with no criteria when no filters applied', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({});
     await discoverDatasets.handler(input, ctx);
 
@@ -251,7 +251,7 @@ describe('cdc_discover_datasets', () => {
 
   it('passes all options to the service', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({
       query: 'covid',
       category: 'NNDSS',
@@ -281,7 +281,7 @@ describe('cdc_discover_datasets', () => {
 
   it('defaults order to dataset_id and threads it to the service', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({ query: 'diabetes mortality' });
     expect(input.order).toBe('dataset_id');
     await discoverDatasets.handler(input, ctx);
@@ -294,7 +294,7 @@ describe('cdc_discover_datasets', () => {
 
   it('forwards an explicit order override to the service', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: discoverDatasets.errors });
     const input = discoverDatasets.input.parse({ query: 'diabetes', order: 'relevance' });
     await discoverDatasets.handler(input, ctx);
 
@@ -330,7 +330,7 @@ describe('cdc_discover_datasets', () => {
         ],
       });
       expect(blocks).toHaveLength(1);
-      expect(blocks[0].type).toBe('text');
+      expect(blocks[0]?.type).toBe('text');
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('bi63-dtpu');
       expect(text).toContain('Diabetes Mortality');
@@ -372,7 +372,9 @@ describe('cdc_discover_datasets', () => {
        * Retryability now tracks the status band: 5xx and rate limiting recover, an access
        * decision and a caller-side range error do not.
        */
-      const byReason = new Map(discoverDatasets.errors?.map((e) => [e.reason, e]));
+      const byReason = new Map<string, ErrorContract>(
+        discoverDatasets.errors?.map((e) => [e.reason, e]),
+      );
       expect(byReason.get('upstream_error')?.when).toContain('5xx');
       expect(byReason.get('upstream_error')?.retryable).toBe(true);
       expect(byReason.get('access_denied')?.code).toBe(JsonRpcErrorCode.Forbidden);

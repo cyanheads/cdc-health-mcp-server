@@ -77,7 +77,9 @@ describe('cdc_discover_datasets — edge cases', () => {
       const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ offset: 9999, limit: 5 });
 
-      const err = (await discoverDatasets.handler(input, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(discoverDatasets.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
       expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(err.data).toMatchObject({ reason: 'page_out_of_range' });
@@ -112,14 +114,14 @@ describe('cdc_discover_datasets — edge cases', () => {
   describe('handler — service propagation', () => {
     it('propagates service errors', async () => {
       mockDiscover.mockRejectedValue(new Error('Catalog unavailable'));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ query: 'test' });
       await expect(discoverDatasets.handler(input, ctx)).rejects.toThrow(/Catalog unavailable/);
     });
 
     it('does not include tags in appliedFilters when tags is empty array', async () => {
       mockDiscover.mockResolvedValue(emptyResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ tags: [] });
       await discoverDatasets.handler(input, ctx);
       // empty tags array should not produce a notice reference to tags
@@ -137,7 +139,7 @@ describe('cdc_discover_datasets — edge cases', () => {
        * problem that does not exist.
        */
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 1471 });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ offset: 2000, limit: 5 });
       await discoverDatasets.handler(input, ctx);
 
@@ -154,7 +156,7 @@ describe('cdc_discover_datasets — edge cases', () => {
        * `>` instead sends the caller at the boundary off to broaden a search that matched.
        */
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 1471 });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ offset: 1471, limit: 5 });
       await discoverDatasets.handler(input, ctx);
 
@@ -165,7 +167,7 @@ describe('cdc_discover_datasets — edge cases', () => {
 
     it('still suggests broadening when the search genuinely matched nothing', async () => {
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ query: 'zzzz', offset: 2000, limit: 5 });
       await discoverDatasets.handler(input, ctx);
 
@@ -177,7 +179,7 @@ describe('cdc_discover_datasets — edge cases', () => {
 
     it('includes notice with all active filters when all three filters yield nothing', async () => {
       mockDiscover.mockResolvedValue(emptyResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({
         query: 'lead',
         category: 'Environmental',
@@ -200,7 +202,7 @@ describe('cdc_discover_datasets — edge cases', () => {
         datasets: [{ id: 'ab12-cd34', name: 'Short', description: shortDescription }],
         totalCount: 1,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
 
       const description = (result.datasets[0] as { description: string }).description;
@@ -215,7 +217,7 @@ describe('cdc_discover_datasets — edge cases', () => {
         ],
         totalCount: 1,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
 
       const ds = result.datasets[0] as { columnCount: number; columnSample: string[] };
@@ -242,7 +244,7 @@ describe('cdc_discover_datasets — edge cases', () => {
         datasets: [{ id: 'ab12-cd34', name: 'Wide', columnNames: wide, columnTypes: wide }],
         totalCount: 1,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
 
       const ds = result.datasets[0] as { columnCount: number; columnSample: string[] };

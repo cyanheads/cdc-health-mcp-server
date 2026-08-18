@@ -13,9 +13,10 @@ import { buildRequestXml, measuresFor } from '@/services/wonder/xml-builder.js';
 
 /** Read a parameter's value(s) out of the built XML. */
 function values(xml: string, name: string): string[] {
-  const block = xml.match(new RegExp(`<parameter><name>${name}</name>(.*?)</parameter>`, 's'));
-  if (!block) return [];
-  return [...block[1].matchAll(/<value>(.*?)<\/value>/g)].map((m) => m[1] ?? '');
+  const [, block] =
+    xml.match(new RegExp(`<parameter><name>${name}</name>(.*?)</parameter>`, 's')) ?? [];
+  if (block === undefined) return [];
+  return [...block.matchAll(/<value>(.*?)<\/value>/g)].map((m) => m[1] ?? '');
 }
 
 /** Every parameter name present in the built XML. */

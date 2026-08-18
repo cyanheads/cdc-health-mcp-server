@@ -13,10 +13,18 @@ import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js
 
 const TOOLS = [discoverDatasets, getDatasetSchema, queryDataset, queryWonder];
 
+type PromptMessages = Awaited<ReturnType<typeof analyzeHealthTrend.generate>>;
+
+/** Text of the single message a generation produced. */
+function textOf(messages: PromptMessages): string {
+  const [message] = messages;
+  if (message?.content.type !== 'text') throw new Error('expected one text message');
+  return message.content.text;
+}
+
 /** Text of the single message the prompt generates for the given args. */
-function generate(args: Parameters<typeof analyzeHealthTrend.generate>[0]): string {
-  const messages = analyzeHealthTrend.generate(args);
-  return (messages[0].content as { type: 'text'; text: string }).text;
+async function generate(args: Parameters<typeof analyzeHealthTrend.generate>[0]): Promise<string> {
+  return textOf(await analyzeHealthTrend.generate(args));
 }
 
 /** Every `properties` key and string `enum` member anywhere in a JSON Schema. */
@@ -50,7 +58,7 @@ const TOOL_VOCABULARY = (() => {
 
 /** WONDER's year bounds as the tool actually enforces them, read off its input schema. */
 const WONDER_YEARS = (() => {
-  const schema = z.toJSONSchema(queryWonder.input) as {
+  const schema = z.toJSONSchema(queryWonder.input) as unknown as {
     properties: {
       year_range: { properties: { from: { minimum: number }; to: { maximum: number } } };
     };
@@ -62,18 +70,18 @@ const WONDER_YEARS = (() => {
 /** Lowercase-initial identifiers the prompt wraps in backticks — i.e. names it borrows. */
 function backtickedIdentifiers(text: string): string[] {
   return [...text.matchAll(/`([^`]+)`/g)]
-    .map((m) => m[1])
+    .flatMap((m) => m[1] ?? [])
     .filter((token) => /^[a-z][A-Za-z0-9_]*$/.test(token));
 }
 
 describe('analyze_health_trend', () => {
-  it('generates a message with the topic', () => {
-    const args = analyzeHealthTrend.args.parse({ topic: 'diabetes mortality trends' });
-    const messages = analyzeHealthTrend.generate(args);
+  it('generates a message with the topic', async () => {
+    const args = analyzeHealthTrend.args!.parse({ topic: 'diabetes mortality trends' });
+    const messages = await analyzeHealthTrend.generate(args);
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe('user');
-    const text = (messages[0].content as { type: 'text'; text: string }).text;
+    expect(messages[0]?.role).toBe('user');
+    const text = textOf(messages);
     expect(text).toContain('diabetes mortality trends');
     expect(text).toContain('Discover');
     expect(text).toContain('Inspect');
@@ -82,35 +90,33 @@ describe('analyze_health_trend', () => {
     expect(text).toContain('Synthesize');
   });
 
-  it('includes time range when provided', () => {
-    const args = analyzeHealthTrend.args.parse({
-      topic: 'opioid overdose deaths',
-      timeRange: '2015-2023',
-    });
-    const messages = analyzeHealthTrend.generate(args);
-    const text = (messages[0].content as { type: 'text'; text: string }).text;
+  it('includes time range when provided', async () => {
+    const text = await generate(
+      analyzeHealthTrend.args!.parse({
+        topic: 'opioid overdose deaths',
+        timeRange: '2015-2023',
+      }),
+    );
     expect(text).toContain('2015-2023');
   });
 
-  it('includes geography when provided', () => {
-    const args = analyzeHealthTrend.args.parse({
-      topic: 'vaccination coverage',
-      geography: 'California',
-    });
-    const messages = analyzeHealthTrend.generate(args);
-    const text = (messages[0].content as { type: 'text'; text: string }).text;
+  it('includes geography when provided', async () => {
+    const text = await generate(
+      analyzeHealthTrend.args!.parse({
+        topic: 'vaccination coverage',
+        geography: 'California',
+      }),
+    );
     expect(text).toContain('California');
   });
 
-  it('defaults to national level when geography omitted', () => {
-    const args = analyzeHealthTrend.args.parse({ topic: 'flu trends' });
-    const messages = analyzeHealthTrend.generate(args);
-    const text = (messages[0].content as { type: 'text'; text: string }).text;
+  it('defaults to national level when geography omitted', async () => {
+    const text = await generate(analyzeHealthTrend.args!.parse({ topic: 'flu trends' }));
     expect(text).toContain('national level');
   });
 
   it('requires topic', () => {
-    expect(() => analyzeHealthTrend.args.parse({})).toThrow();
+    expect(() => analyzeHealthTrend.args!.parse({})).toThrow();
   });
 
   describe('source routing', () => {
@@ -119,30 +125,32 @@ describe('analyze_health_trend', () => {
      * renamed field or a mistyped tool name ships silently. Every backticked identifier
      * has to resolve against the live tool surface.
      */
-    it('borrows only names the tool surface actually exposes', () => {
-      const args = analyzeHealthTrend.args.parse({
+    it('borrows only names the tool surface actually exposes', async () => {
+      const args = analyzeHealthTrend.args!.parse({
         topic: 'national heart disease mortality trends',
         timeRange: '2015-2020',
         geography: 'national',
       });
-      const borrowed = backtickedIdentifiers(generate(args));
+      const borrowed = backtickedIdentifiers(await generate(args));
 
       expect(borrowed.length).toBeGreaterThan(0);
       expect(borrowed.filter((name) => !TOOL_VOCABULARY.has(name))).toEqual([]);
     });
 
-    it('names every tool the workflow prescribes', () => {
-      const text = generate(analyzeHealthTrend.args.parse({ topic: 'heart disease deaths' }));
+    it('names every tool the workflow prescribes', async () => {
+      const text = await generate(
+        analyzeHealthTrend.args!.parse({ topic: 'heart disease deaths' }),
+      );
       for (const t of TOOLS) expect(text).toContain(t.name);
     });
 
-    it('routes a national mortality question to WONDER within the years it holds', () => {
-      const args = analyzeHealthTrend.args.parse({
+    it('routes a national mortality question to WONDER within the years it holds', async () => {
+      const args = analyzeHealthTrend.args!.parse({
         topic: 'national heart disease mortality trends',
         timeRange: '2015-2020',
         geography: 'national',
       });
-      const wonderGuidance = generate(args)
+      const wonderGuidance = (await generate(args))
         .split('\n')
         .find((line) => line.startsWith('- `cdc_query_wonder`'));
 
@@ -156,13 +164,15 @@ describe('analyze_health_trend', () => {
       expect(wonderGuidance).toContain('database');
     });
 
-    it('tells the reader the era and record type are a database choice, not a tool choice', () => {
+    it('tells the reader the era and record type are a database choice, not a tool choice', async () => {
       /**
        * Recency and multiple-cause both live behind `database`. A reader who reads WONDER as
        * one fixed span routes current-year mortality to Socrata, which does not hold it in
        * this shape, and never reaches the multiple-cause filter at all.
        */
-      const wonderGuidance = generate(analyzeHealthTrend.args.parse({ topic: 'overdose deaths' }))
+      const wonderGuidance = (
+        await generate(analyzeHealthTrend.args!.parse({ topic: 'overdose deaths' }))
+      )
         .split('\n')
         .find((line) => line.startsWith('- `cdc_query_wonder`'));
 
@@ -170,13 +180,13 @@ describe('analyze_health_trend', () => {
       expect(wonderGuidance).toContain('mcd_icd10');
     });
 
-    it('routes a sub-national or non-mortality question to the Socrata catalog', () => {
-      const args = analyzeHealthTrend.args.parse({
+    it('routes a sub-national or non-mortality question to the Socrata catalog', async () => {
+      const args = analyzeHealthTrend.args!.parse({
         topic: 'childhood vaccination coverage by state',
         timeRange: '2021-2024',
         geography: 'all states',
       });
-      const socrataGuidance = generate(args)
+      const socrataGuidance = (await generate(args))
         .split('\n')
         .find((line) => line.startsWith('- `cdc_discover_datasets`'));
 
@@ -190,16 +200,16 @@ describe('analyze_health_trend', () => {
       expect(socrataGuidance).not.toMatch(/years after \d{4}/);
     });
 
-    it('keeps the branch as guidance rather than classifying the topic', () => {
+    it('keeps the branch as guidance rather than classifying the topic', async () => {
       /**
        * The handler must not decide the source — a caller reading the prompt does. The
        * same guidance therefore has to reach a mortality topic and a vaccination one.
        */
-      const mortality = generate(
-        analyzeHealthTrend.args.parse({ topic: 'heart disease deaths', geography: 'national' }),
+      const mortality = await generate(
+        analyzeHealthTrend.args!.parse({ topic: 'heart disease deaths', geography: 'national' }),
       );
-      const vaccination = generate(
-        analyzeHealthTrend.args.parse({ topic: 'HPV vaccination coverage', geography: 'Ohio' }),
+      const vaccination = await generate(
+        analyzeHealthTrend.args!.parse({ topic: 'HPV vaccination coverage', geography: 'Ohio' }),
       );
       const guidanceOf = (text: string) => text.split('\n').filter((l) => l.startsWith('- `'));
 

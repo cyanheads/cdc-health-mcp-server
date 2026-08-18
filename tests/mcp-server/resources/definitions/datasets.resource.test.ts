@@ -37,7 +37,7 @@ describe('cdc://datasets', () => {
       totalCount: 1,
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     const result = (await datasetsResource.handler({}, ctx)) as {
       datasets: { id: string; name: string; category: string; updatedAt: string }[];
       totalCount: number;
@@ -71,7 +71,7 @@ describe('cdc://datasets', () => {
       totalCount: 3,
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     const result = (await datasetsResource.handler({}, ctx)) as {
       datasets: { id: string; assetType?: string; columnCount?: number }[];
     };
@@ -86,7 +86,7 @@ describe('cdc://datasets', () => {
 
   it('calls discover with limit 50', async () => {
     mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: datasetsResource.errors });
     await datasetsResource.handler({}, ctx);
 
     expect(mockDiscover).toHaveBeenCalledWith({ limit: 50 }, ctx.signal);
