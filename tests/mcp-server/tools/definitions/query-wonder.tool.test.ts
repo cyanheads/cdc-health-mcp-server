@@ -74,7 +74,7 @@ describe('cdc_query_wonder', () => {
 
   it('returns rows, database, caveats and suppressedCount', async () => {
     mockQuery.mockResolvedValue(sampleResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     const input = queryWonder.input.parse({ group_by: ['year', 'sex'], cause_icd10: 'C00-C97' });
     const result = await queryWonder.handler(input, ctx);
 
@@ -89,7 +89,7 @@ describe('cdc_query_wonder', () => {
 
   it('maps friendly inputs to service options (empty cause coerced away)', async () => {
     mockQuery.mockResolvedValue(sampleResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     const input = queryWonder.input.parse({
       group_by: ['year'],
       cause_icd10: '',
@@ -113,7 +113,7 @@ describe('cdc_query_wonder', () => {
 
   it('passes the selected database and multiple-cause filter through to the service', async () => {
     mockQuery.mockResolvedValue({ ...sampleResult, database: 'D77' });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     const input = queryWonder.input.parse({
       database: 'multiple_1999_2020',
       group_by: ['year'],
@@ -129,7 +129,7 @@ describe('cdc_query_wonder', () => {
 
   it('enriches with a human-readable query summary', async () => {
     mockQuery.mockResolvedValue(sampleResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     const input = queryWonder.input.parse({ group_by: ['year', 'sex'], cause_icd10: 'C00-C97' });
     await queryWonder.handler(input, ctx);
 
@@ -141,7 +141,7 @@ describe('cdc_query_wonder', () => {
 
   it('notices when no rows matched', async () => {
     mockQuery.mockResolvedValue({ ...sampleResult, rows: [], rowCount: 0 });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
     expect(getEnrichment(ctx).notice).toContain('No rows matched');
   });
@@ -152,7 +152,7 @@ describe('cdc_query_wonder', () => {
      * this the caller cannot tell a stratum with no deaths from one that was dropped.
      */
     mockQuery.mockResolvedValue({ ...sampleResult, messages: HIDDEN_ROW_MESSAGES });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     const result = await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
 
     expect(result.messages).toEqual(HIDDEN_ROW_MESSAGES);
@@ -168,7 +168,7 @@ describe('cdc_query_wonder', () => {
       ...sampleResult,
       messages: ['Totals are not available for these results due to suppression constraints.'],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
     expect(getEnrichment(ctx).notice).toBeUndefined();
   });
@@ -181,7 +181,7 @@ describe('cdc_query_wonder', () => {
       rowCount: 0,
       messages: HIDDEN_ROW_MESSAGES,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
     const notice = getEnrichment(ctx).notice ?? '';
     expect(notice).toContain('not evidence that nothing matched');
@@ -198,7 +198,7 @@ describe('cdc_query_wonder', () => {
       ],
       suppressedCount: 3,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
     const notice = getEnrichment(ctx).notice ?? '';
     expect(notice).toContain('3 cell(s) were withheld');
@@ -209,7 +209,7 @@ describe('cdc_query_wonder', () => {
 
   it('returns cellNotes and notices unreliable cells as published, not withheld', async () => {
     mockQuery.mockResolvedValue(unreliableResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryWonder.errors });
     const result = await queryWonder.handler(
       queryWonder.input.parse({ group_by: ['age_group'], cause_icd10: 'E11' }),
       ctx,
@@ -230,10 +230,10 @@ describe('cdc_query_wonder', () => {
     );
     // ctx.fail / ctx.recoveryFor are injected by the tool wrapper from the errors[] contract;
     // stub them to unit-test the handler's reason-extraction-and-forwarding logic.
-    const ctx = Object.assign(createMockContext(), {
+    const ctx = Object.assign(createMockContext({ errors: queryWonder.errors }), {
       recoveryFor: (reason: string) => ({ recovery: `recover ${reason}` }),
-      fail: (reason: string, message: string, data: Record<string, unknown>) =>
-        new McpError(JsonRpcErrorCode.ValidationError, message, { reason, ...data }),
+      fail: (reason: string, message?: string, data?: Record<string, unknown>) =>
+        new McpError(JsonRpcErrorCode.ValidationError, message ?? '', { reason, ...data }),
     });
     await expect(
       queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx),
@@ -249,10 +249,10 @@ describe('cdc_query_wonder', () => {
      * the contract recovery attached, and a message that names the way out.
      */
     function failingContext() {
-      return Object.assign(createMockContext(), {
+      return Object.assign(createMockContext({ errors: queryWonder.errors }), {
         recoveryFor: (reason: string) => ({ recovery: `recover ${reason}` }),
-        fail: (reason: string, message: string, data: Record<string, unknown>) =>
-          new McpError(JsonRpcErrorCode.ValidationError, message, { reason, ...data }),
+        fail: (reason: string, message?: string, data?: Record<string, unknown>) =>
+          new McpError(JsonRpcErrorCode.ValidationError, message ?? '', { reason, ...data }),
       });
     }
 
@@ -262,7 +262,9 @@ describe('cdc_query_wonder', () => {
         group_by: ['year'],
         year_range: { from: 2021, to: 2024 },
       });
-      const err = (await queryWonder.handler(input, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(queryWonder.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.data).toMatchObject({
@@ -295,7 +297,9 @@ describe('cdc_query_wonder', () => {
           group_by: ['year'],
           mcd_icd10: 'J00-J98',
         });
-        const err = (await queryWonder.handler(input, ctx).catch((e) => e)) as McpError;
+        const err = (await Promise.resolve(queryWonder.handler(input, ctx)).catch(
+          (e: unknown) => e,
+        )) as McpError;
 
         expect(err).toBeInstanceOf(McpError);
         expect(err.data).toMatchObject({
@@ -341,7 +345,9 @@ describe('cdc_query_wonder', () => {
           group_by: ['year'],
           [field]: '999--999',
         });
-        const err = (await queryWonder.handler(input, ctx).catch((e) => e)) as McpError;
+        const err = (await Promise.resolve(queryWonder.handler(input, ctx)).catch(
+          (e: unknown) => e,
+        )) as McpError;
 
         expect(err).toBeInstanceOf(McpError);
         expect(err.data).toMatchObject({
@@ -376,7 +382,7 @@ describe('cdc_query_wonder', () => {
 
     it('warns that an unfiltered multiple-cause database repeats its underlying-cause twin', async () => {
       mockQuery.mockResolvedValue({ ...sampleResult, database: 'D77' });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryWonder.errors });
       await queryWonder.handler(
         queryWonder.input.parse({ database: 'multiple_1999_2020', group_by: ['year'] }),
         ctx,
@@ -394,7 +400,7 @@ describe('cdc_query_wonder', () => {
        * question they asked.
        */
       mockQuery.mockResolvedValue({ ...sampleResult, database: 'D77' });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryWonder.errors });
       await queryWonder.handler(
         queryWonder.input.parse({
           database: 'multiple_1999_2020',
@@ -409,12 +415,264 @@ describe('cdc_query_wonder', () => {
     it('stays quiet about a twin on the provisional database, which has none', async () => {
       /** Provisional runs past where the final databases stop, so selecting it is never a no-op. */
       mockQuery.mockResolvedValue({ ...sampleResult, database: 'D176' });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryWonder.errors });
       await queryWonder.handler(
         queryWonder.input.parse({ database: 'provisional', group_by: ['year'] }),
         ctx,
       );
       expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+  });
+
+  describe('row pagination', () => {
+    /**
+     * Six rows of a year × sex breakdown with two flagged cells at known indices — an
+     * Unreliable rate on row 1 and a Suppressed death count on row 4. The distance between
+     * them is what a page has to survive: `format()` looks a token up by render index, so a
+     * page sliced without re-basing `cellNotes` paints the row-1 token onto whichever row
+     * happens to sit at index 1 of that page.
+     */
+    const pagedResult: WonderResult = {
+      ...sampleResult,
+      rows: [
+        { year: '2019', sex: 'Female', deaths: 100, population: 1000, crude_rate: 10 },
+        { year: '2019', sex: 'Male', deaths: 110, population: 1000, crude_rate: null },
+        { year: '2020', sex: 'Female', deaths: 120, population: 1000, crude_rate: 12 },
+        { year: '2020', sex: 'Male', deaths: 130, population: 1000, crude_rate: 13 },
+        { year: '2021', sex: 'Female', deaths: null, population: 1000, crude_rate: null },
+        { year: '2021', sex: 'Male', deaths: 160, population: 1000, crude_rate: 16 },
+      ],
+      rowCount: 6,
+      caveats: ['Population figures are bridged-race estimates.'],
+      cellNotes: [
+        { row: 1, column: 'crude_rate', token: 'Unreliable' },
+        { row: 4, column: 'deaths', token: 'Suppressed' },
+      ],
+      messages: HIDDEN_ROW_MESSAGES,
+      suppressedCount: 1,
+      columns: ['year', 'sex', 'deaths', 'population', 'crude_rate'],
+    };
+
+    /** Run the tool over `pagedResult` with the given page inputs. */
+    async function page(fields: Record<string, unknown>) {
+      mockQuery.mockResolvedValue(pagedResult);
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      const result = await queryWonder.handler(
+        queryWonder.input.parse({ group_by: ['year', 'sex'], ...fields }),
+        ctx,
+      );
+      return { result, enrichment: getEnrichment(ctx) };
+    }
+
+    it('returns the whole table untouched when limit and offset are omitted', async () => {
+      const { result, enrichment } = await page({});
+
+      expect(result.rows).toEqual(pagedResult.rows);
+      expect(result.rowCount).toBe(6);
+      expect(result.cellNotes).toEqual(pagedResult.cellNotes);
+      expect(result.suppressedCount).toBe(1);
+      expect(result.caveats).toEqual(pagedResult.caveats);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.shown).toBeUndefined();
+      expect(enrichment.cap).toBeUndefined();
+      expect(enrichment.nextOffset).toBeUndefined();
+    });
+
+    it('reports the table total whether or not a page was taken', async () => {
+      expect((await page({})).enrichment.totalCount).toBe(6);
+      expect((await page({ limit: 2 })).enrichment.totalCount).toBe(6);
+      expect((await page({ offset: 4 })).enrichment.totalCount).toBe(6);
+    });
+
+    it('bounds the table at limit and points at the next page', async () => {
+      const { result, enrichment } = await page({ limit: 3 });
+
+      expect(result.rows).toEqual(pagedResult.rows.slice(0, 3));
+      expect(result.rowCount).toBe(3);
+      expect(enrichment.totalCount).toBe(6);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.shown).toBe(3);
+      expect(enrichment.cap).toBe(3);
+      expect(enrichment.nextOffset).toBe(3);
+      expect(enrichment.notice).toContain('rows 1–3 of 6');
+      expect(enrichment.notice).toContain('offset=3');
+    });
+
+    it('continues from an explicit offset', async () => {
+      const { result, enrichment } = await page({ limit: 2, offset: 2 });
+
+      expect(result.rows).toEqual(pagedResult.rows.slice(2, 4));
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.nextOffset).toBe(4);
+    });
+
+    it('re-indexes cellNotes to the returned page and recounts suppression from it', async () => {
+      /**
+       * The parser numbers a cell note against the whole parsed table. A page that carries
+       * the table's numbering describes cells it does not contain, and `suppressedCount`
+       * then counts withholding that happened somewhere else.
+       */
+      const { result } = await page({ limit: 3, offset: 3 });
+
+      expect(result.rows).toEqual(pagedResult.rows.slice(3, 6));
+      expect(result.cellNotes).toEqual([{ row: 1, column: 'deaths', token: 'Suppressed' }]);
+      expect(result.suppressedCount).toBe(1);
+    });
+
+    it('leaves a later page carrying only its own notes, with none from an earlier one', async () => {
+      const { result } = await page({ limit: 3, offset: 3 });
+      expect(result.cellNotes.every((n) => n.token === 'Suppressed')).toBe(true);
+      expect(result.cellNotes.map((n) => n.row)).toEqual([1]);
+    });
+
+    it('paints each status token on the row it belongs to on a later page', async () => {
+      /**
+       * The mis-painting this guards: `format()` keys `cellNotes` by render index, so a page
+       * whose notes still carry table indices moves the row-1 `Unreliable` marker onto the
+       * row sitting at index 1 of the page — a withheld figure and a published-but-unstable
+       * one swapped onto healthy rows, with nothing in the output saying so.
+       */
+      const { result } = await page({ limit: 3, offset: 3 });
+      const text = (queryWonder.format!(result)[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('| 2020 | Male | 130 | 1000 | 13 |');
+      expect(text).toContain('| 2021 | Female | Suppressed | 1000 |  |');
+      expect(text).toContain('| 2021 | Male | 160 | 1000 | 16 |');
+      expect(text).not.toContain('Unreliable');
+      expect(text).toContain('1 cell(s) withheld by CDC for confidentiality');
+    });
+
+    it('renders exactly the page in content[] that structuredContent carries', async () => {
+      const { result } = await page({ limit: 2, offset: 1 });
+      const text = (queryWonder.format!(result)[0] as { type: 'text'; text: string }).text;
+      const dataRows = text.split('\n').filter((l) => /^\| 20\d\d \|/.test(l));
+
+      expect(text).toContain('— 2 rows');
+      expect(dataRows).toHaveLength(result.rows.length);
+      expect(dataRows[0]).toBe('| 2019 | Male | 110 | 1000 | Unreliable |');
+      expect(dataRows[1]).toBe('| 2020 | Female | 120 | 1000 | 12 |');
+    });
+
+    it('returns an empty page rather than an error when offset is past the end', async () => {
+      const { result, enrichment } = await page({ offset: 20 });
+
+      expect(result.rows).toEqual([]);
+      expect(result.rowCount).toBe(0);
+      expect(result.cellNotes).toEqual([]);
+      expect(result.suppressedCount).toBe(0);
+      expect(enrichment.totalCount).toBe(6);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.nextOffset).toBeUndefined();
+      expect(enrichment.notice).toContain('past the end');
+      // The query matched — an empty page is not an empty result set.
+      expect(enrichment.notice).not.toContain('No rows matched');
+    });
+
+    it('returns only the remaining rows when offset plus limit runs past the end', async () => {
+      const { result, enrichment } = await page({ limit: 5, offset: 4 });
+
+      expect(result.rows).toEqual(pagedResult.rows.slice(4));
+      expect(result.rowCount).toBe(2);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.nextOffset).toBeUndefined();
+      expect(enrichment.notice).toContain('the end of the table');
+    });
+
+    it('returns every row when limit exceeds the table', async () => {
+      const { result, enrichment } = await page({ limit: 500 });
+
+      expect(result.rows).toEqual(pagedResult.rows);
+      expect(enrichment.totalCount).toBe(6);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.nextOffset).toBeUndefined();
+    });
+
+    it('takes the whole remainder when offset is set and limit is omitted', async () => {
+      const { result, enrichment } = await page({ offset: 2 });
+
+      expect(result.rows).toEqual(pagedResult.rows.slice(2));
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.nextOffset).toBeUndefined();
+    });
+
+    it('reaches every row across a sequence of pages, without gaps or repeats', async () => {
+      const seen: unknown[] = [];
+      let offset: number | undefined = 0;
+      let pages = 0;
+      while (offset !== undefined) {
+        const { result, enrichment } = await page({ limit: 2, offset });
+        seen.push(...result.rows);
+        offset = enrichment.nextOffset as number | undefined;
+        pages += 1;
+      }
+      expect(pages).toBe(3);
+      expect(seen).toEqual(pagedResult.rows);
+    });
+
+    it('keeps caveats and messages whole and identical on every page', async () => {
+      /**
+       * Both describe the table CDC assembled, not the slice handed back. Scoping them to a
+       * page would let a caveat or a hidden-row notice disappear from the page a reader
+       * happens to stop on — the disclosure the whole-table notices exist to prevent.
+       */
+      const first = await page({ limit: 3 });
+      const second = await page({ limit: 3, offset: 3 });
+
+      expect(first.result.caveats).toEqual(pagedResult.caveats);
+      expect(second.result.caveats).toEqual(first.result.caveats);
+      expect(first.result.messages).toEqual(HIDDEN_ROW_MESSAGES);
+      expect(second.result.messages).toEqual(first.result.messages);
+
+      for (const { result } of [first, second]) {
+        const text = (queryWonder.format!(result)[0] as { type: 'text'; text: string }).text;
+        for (const message of HIDDEN_ROW_MESSAGES) expect(text).toContain(message);
+        expect(text).toContain('Population figures are bridged-race estimates.');
+      }
+    });
+
+    it('composes the page guidance with the other notices instead of replacing them', async () => {
+      /**
+       * `ctx.enrich.truncated()` writes `notice` and last-wins over every other notice call,
+       * so the continuation guidance has to arrive carrying the suppression and hidden-row
+       * warnings rather than after them.
+       */
+      const { enrichment } = await page({ limit: 5 });
+
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.notice).toContain('offset=5');
+      expect(enrichment.notice).toContain('withheld by CDC for confidentiality');
+      expect(enrichment.notice).toContain('CDC withheld whole rows');
+    });
+
+    it('still reads an empty table as "no rows matched" rather than a spent offset', async () => {
+      mockQuery.mockResolvedValue({ ...sampleResult, rows: [], rowCount: 0 });
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      const result = await queryWonder.handler(
+        queryWonder.input.parse({ group_by: ['year'], limit: 10 }),
+        ctx,
+      );
+
+      expect(result.rowCount).toBe(0);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(0);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.notice).toContain('No rows matched');
+      expect(enrichment.notice).not.toContain('past the end');
+    });
+
+    it('counts only the page when tallying suppression and other status tokens', async () => {
+      const { result, enrichment } = await page({ limit: 2 });
+
+      expect(result.suppressedCount).toBe(0);
+      expect(result.cellNotes).toEqual([{ row: 1, column: 'crude_rate', token: 'Unreliable' }]);
+      expect(enrichment.notice).toContain('Unreliable (1 cell)');
+      expect(enrichment.notice).not.toContain('withheld by CDC for confidentiality');
+    });
+
+    it('leaves limit unset and offset at zero by default', () => {
+      const input = queryWonder.input.parse({});
+      expect(input.limit).toBeUndefined();
+      expect(input.offset).toBe(0);
     });
   });
 
@@ -439,7 +697,7 @@ describe('cdc_query_wonder', () => {
        * The bounds have to reach the client as a plain numeric range — that is the whole
        * reason the per-database span is enforced in the handler instead.
        */
-      const schema = z.toJSONSchema(queryWonder.input) as {
+      const schema = z.toJSONSchema(queryWonder.input) as unknown as {
         properties: {
           year_range: { properties: { from: { minimum: number }; to: { maximum: number } } };
         };
@@ -496,7 +754,7 @@ describe('cdc_query_wonder', () => {
        * nothing in the result explaining the gap.
        */
       expect(queryWonder.input.parse({ age_groups: ['NS'] }).age_groups).toEqual(['NS']);
-      const schema = z.toJSONSchema(queryWonder.input) as {
+      const schema = z.toJSONSchema(queryWonder.input) as unknown as {
         properties: { age_groups: { items: { enum: string[] } } };
       };
       expect(schema.properties.age_groups.items.enum).toEqual([
@@ -594,7 +852,6 @@ describe('cdc_query_wonder', () => {
         ...sampleResult,
         rows: [{ year: '2019\n', sex: 'Female | Male', deaths: 1, population: 2 }],
         rowCount: 1,
-        columns: ['year', 'sex', 'deaths', 'population'],
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       const dataRow = text.split('\n').find((l) => l.includes('Female'));

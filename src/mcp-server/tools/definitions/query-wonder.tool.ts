@@ -29,6 +29,16 @@ import { escapeTableCell } from '@/utils/markdown.js';
 const ICD10_CODE_OR_RANGE = /^[A-Z][0-9]{2}(\.[0-9]+)?(-[A-Z][0-9]{2}(\.[0-9]+)?)?$/;
 
 /**
+ * Ceiling on `limit`, matching the shape `cdc_query_dataset` uses. It never binds ahead of
+ * the table itself: the widest grouping WONDER can be asked for — 22 years × 12 age groups ×
+ * 2 sexes × 4 race groups on D76 — tops out near 2,100 combinations before CDC hides the
+ * zero-death and suppressed-death rows.
+ */
+const MAX_LIMIT = 5000;
+/** Ceiling on `offset`, comfortably past the largest table any grouping can produce. */
+const MAX_OFFSET = 10_000;
+
+/**
  * What each non-suppression CDC status token means, keyed by the lowercased token.
  * Suppression is reported through its own count and wording, so it is not listed here.
  */
@@ -65,7 +75,7 @@ function tallyOtherTokens(cellNotes: WonderCellNote[]): string[] {
 }
 
 export const queryWonder = tool('cdc_query_wonder', {
-  description: `Query CDC WONDER for national US mortality statistics — deaths, population, and crude/age-adjusted death rates — across its five mortality databases, selected with the database input: final underlying-cause data for 1999–2020 (the default) or 2018–2024, provisional data running from 2018 through the current year, and two multiple-cause databases covering the same two eras. Break results out by year, age group, sex, and/or race, and filter by ICD-10 cause of death, sex, age group, or year range; on a multiple-cause database, mcd_icd10 additionally matches a cause listed anywhere on the death certificate rather than only the one certified as underlying. Each database holds a different span of years (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last} across all of them) and a request whose year_range falls outside the selected one's span is rejected with that span named. WONDER is a separate CDC system from the Socrata datasets the other cdc_* tools query. Data is national only — sub-national (state/county) breakdowns are not available through the API (CDC vital-statistics policy). Cause of death is a filter, not a grouping. Some measure cells come back as a CDC status token rather than a number — "Suppressed" (withheld for confidentiality), "Unreliable" (a rate from fewer than 20 deaths), or "Not Applicable" (no population denominator); those cells read null in rows and each one is listed in cellNotes with its token. CDC also drops whole rows before sending the table — strata with zero deaths, and strata whose death count is suppressed — so a stratum can be missing from rows entirely; messages carries CDC's statement whenever that happened. CDC rejects requests made less than 15 seconds apart across all five databases, so consecutive calls are spaced automatically and a follow-up call may wait about 16 seconds before it runs.`,
+  description: `Query CDC WONDER for national US mortality statistics — deaths, population, and crude/age-adjusted death rates — across its five mortality databases, selected with the database input: final underlying-cause data for 1999–2020 (the default) or 2018–2024, provisional data running from 2018 through the current year, and two multiple-cause databases covering the same two eras. Break results out by year, age group, sex, and/or race, and filter by ICD-10 cause of death, sex, age group, or year range; on a multiple-cause database, mcd_icd10 additionally matches a cause listed anywhere on the death certificate rather than only the one certified as underlying. Each database holds a different span of years (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last} across all of them) and a request whose year_range falls outside the selected one's span is rejected with that span named. WONDER is a separate CDC system from the Socrata datasets the other cdc_* tools query. Data is national only — sub-national (state/county) breakdowns are not available through the API (CDC vital-statistics policy). Cause of death is a filter, not a grouping. Some measure cells come back as a CDC status token rather than a number — "Suppressed" (withheld for confidentiality), "Unreliable" (a rate from fewer than 20 deaths), or "Not Applicable" (no population denominator); those cells read null in rows and each one is listed in cellNotes with its token. CDC also drops whole rows before sending the table — strata with zero deaths, and strata whose death count is suppressed — so a stratum can be missing from rows entirely; messages carries CDC's statement whenever that happened. The whole table comes back by default; a broad grouping can run past a thousand rows, so set limit to take it a page at a time and follow the nextOffset the response reports. Paging shapes the response only — WONDER is asked once either way, and the figures, caveats and hidden-row notices are the same on every page. CDC rejects requests made less than 15 seconds apart across all five databases, so consecutive calls are spaced automatically and a follow-up call may wait about 16 seconds before it runs.`,
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -169,15 +179,37 @@ export const queryWonder = tool('cdc_query_wonder', {
       .describe(
         `Inclusive year range. These bounds span every database (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last}); the years the selected one actually holds are narrower, and a range outside them is rejected with that database's span named. Omit for all years the database holds.`,
       ),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_LIMIT)
+      .optional()
+      .describe(
+        `Rows to return from the table CDC sent (1–${MAX_LIMIT}). Omit to return the whole table. WONDER's request carries no limit of its own, so this pages a table already fetched in full rather than narrowing the query: the deaths, rates, caveats and hidden-row notices are the same whichever page is read. A four-dimension grouping can run past a thousand rows, so set this and follow nextOffset to walk them.`,
+      ),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_OFFSET)
+      .default(0)
+      .describe(
+        `Index of the first row to return, for continuing past a previous call (default 0, max ${MAX_OFFSET.toLocaleString('en-US')}). Rows keep the order CDC returned them in, which is stable for a given query, so offset plus limit walks the table without gaps or repeats. An offset at or past the row total returns an empty page rather than an error.`,
+      ),
   }),
 
   output: z.object({
     rows: z
       .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
       .describe(
-        'Result rows. Each carries the requested group-by dimensions plus deaths, population, crude_rate, and age_adjusted_rate (per 100,000) when age standardization is possible — it is omitted when age_group is a grouping dimension or age_groups selects a single group. Dimension values are CDC\'s own labels with only surrounding whitespace removed, so the same year keys identically across databases; nothing inside a label is changed, and on the provisional database a year reads "2025 (provisional)" or "2026 (provisional and partial)" rather than a bare year. A measure cell CDC returned as a status token instead of a number is null here; cellNotes names the cell and the token.',
+        'Result rows. Each carries the requested group-by dimensions plus deaths, population, crude_rate, and age_adjusted_rate (per 100,000) when age standardization is possible — it is omitted when age_group is a grouping dimension or age_groups selects a single group. Dimension values are CDC\'s own labels with only surrounding whitespace removed, so the same year keys identically across databases; nothing inside a label is changed, and on the provisional database a year reads "2025 (provisional)" or "2026 (provisional and partial)" rather than a bare year. A measure cell CDC returned as a status token instead of a number is null here; cellNotes names the cell and the token. When limit or offset is set these are one page of the table CDC sent, in its order; totalCount says how many rows the whole table holds.',
       ),
-    rowCount: z.number().describe('Number of rows returned.'),
+    rowCount: z
+      .number()
+      .describe(
+        'Number of rows returned in this response — the page size when limit or offset is set.',
+      ),
     database: z
       .string()
       .describe('WONDER dataset code the rows came from — e.g. "D76", "D176", "D157".'),
@@ -189,13 +221,17 @@ export const queryWonder = tool('cdc_query_wonder', {
     caveats: z
       .array(z.string())
       .describe(
-        'CDC-provided caveats and footnotes: data revisions, population-estimate sources, suppression and rate-reliability rules.',
+        'CDC-provided caveats and footnotes: data revisions, population-estimate sources, suppression and rate-reliability rules. They describe the whole table CDC assembled, so they come back complete on every page rather than scoped to the rows returned.',
       ),
     cellNotes: z
       .array(
         z
           .object({
-            row: z.number().describe('Zero-based index into rows.'),
+            row: z
+              .number()
+              .describe(
+                'Zero-based index into rows — the rows in this response, so it is relative to the page when limit or offset is set.',
+              ),
             column: z.string().describe('Measure column whose numeric value the token replaced.'),
             token: z
               .string()
@@ -206,31 +242,52 @@ export const queryWonder = tool('cdc_query_wonder', {
           .describe('One flagged measure cell: where it is and what CDC put there.'),
       )
       .describe(
-        'One entry per measure cell CDC returned as a status token rather than a number. Those cells read null in rows, so this is what tells a withheld value apart from an unreliable one or a genuinely absent one.',
+        'One entry per measure cell CDC returned as a status token rather than a number, covering the rows in this response only. Those cells read null in rows, so this is what tells a withheld value apart from an unreliable one or a genuinely absent one.',
       ),
     messages: z
       .array(z.string())
       .describe(
-        'Notices CDC attached to this table, verbatim. The ones that matter say rows were withheld before the table was sent — "Rows with zero Deaths are hidden." and "Rows with suppressed Deaths are hidden." A withheld row is absent from rows entirely, with nothing in the table marking the gap, so while this array is non-empty a stratum missing from rows may have been dropped rather than unobserved, and any count, ranking, or completeness claim drawn from rows is partial. Empty when CDC withheld no rows.',
+        'Notices CDC attached to this table, verbatim. The ones that matter say rows were withheld before the table was sent — "Rows with zero Deaths are hidden." and "Rows with suppressed Deaths are hidden." A withheld row is absent from rows entirely, with nothing in the table marking the gap, so while this array is non-empty a stratum missing from rows may have been dropped rather than unobserved, and any count, ranking, or completeness claim drawn from rows is partial. These describe the whole table, so they come back complete on every page. Empty when CDC withheld no rows.',
       ),
     suppressedCount: z
       .number()
       .describe(
-        'How many cellNotes carry the "Suppressed" token — cells CDC withheld for confidentiality.',
+        'How many cellNotes carry the "Suppressed" token — cells CDC withheld for confidentiality. Counted over the rows in this response, so it tracks the page rather than the whole table.',
       ),
   }),
 
   // Agent-facing result context: a summary of the grouping and filters applied (for
-  // reproducibility) and a notice when nothing matched or CDC replaced values with a token.
+  // reproducibility), where the returned rows sit in the whole table, and a notice when
+  // nothing matched or CDC replaced values with a token. Reaches structuredContent AND
+  // content[] automatically — no format() entry.
   enrichment: {
     effectiveQuery: z
       .string()
       .describe('Human-readable summary of the grouping and filters sent to WONDER.'),
+    totalCount: z
+      .number()
+      .describe(
+        'Rows in the whole table CDC returned, before limit/offset. Exact rather than estimated — the table is parsed in full before a page is taken from it.',
+      ),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when rows remain past the ones returned. Absent means this response runs to the end of the table, which is also the case for an offset past it.',
+      ),
+    shown: z.number().optional().describe('Number of rows returned in this response.'),
+    cap: z.number().optional().describe('The requested limit that bounded this response.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Offset to pass on the next call to resume immediately after the last row returned. Present only when further rows remain.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no rows matched, and a note when CDC returned a status token in place of a measure value.',
+        'Guidance when no rows matched, when the returned rows are a page of a larger table or the offset ran past it, and a note when CDC returned a status token in place of a measure value.',
       ),
   },
 
@@ -310,19 +367,54 @@ export const queryWonder = tool('cdc_query_wonder', {
     }`;
     ctx.enrich({ effectiveQuery });
 
+    /**
+     * WONDER's request XML has no offset or limit, so the page is taken from the parsed table
+     * rather than asked of CDC. That makes the total exact and free, and it makes the page a
+     * pure view: every row CDC sent is reachable at some offset, and nothing about the query
+     * changes between pages.
+     */
+    const total = result.rows.length;
+    const take = input.limit ?? Math.max(total - input.offset, 0);
+    const rows = result.rows.slice(input.offset, input.offset + take);
+    const consumed = input.offset + rows.length;
+    const hasMore = consumed < total;
+
+    /**
+     * Cell notes index into the whole parsed table, and `format()` looks a token up by the
+     * index of the row it is rendering. A page carrying the table's numbering therefore paints
+     * `Suppressed` and `Unreliable` markers onto whichever rows happen to sit at those indices
+     * in the page — so the notes are filtered to the rows returned and re-based onto them.
+     */
+    const cellNotes = result.cellNotes
+      .filter((n) => n.row >= input.offset && n.row < consumed)
+      .map((n) => ({ ...n, row: n.row - input.offset }));
+    const suppressedCount = cellNotes.filter((n) => isSuppressedToken(n.token)).length;
+
     const hiddenRowMessages = result.messages.filter(isHiddenRowsMessage);
 
     const notices: string[] = [];
-    if (result.rowCount === 0) {
+    if (total === 0) {
       notices.push(
         hiddenRowMessages.length > 0
           ? 'No rows came back, but CDC also reported withholding rows from this table — so an empty result here is not evidence that nothing matched; every matching stratum may have been hidden. Widen the query (more years, a broader cause or age range) so counts clear the suppression threshold.'
           : 'No rows matched. Broaden the filters (cause_icd10, sex, age_groups, year_range) or confirm the ICD-10 code covers the years selected.',
       );
-    }
-    if (result.suppressedCount > 0) {
+    } else if (input.offset >= total) {
       notices.push(
-        `${result.suppressedCount} cell(s) were withheld by CDC for confidentiality (Suppressed) and are null. Aggregate over more years or a broader cause/age range to reduce suppression.`,
+        `offset ${input.offset} is past the end of this table, which holds ${total} row(s) — the query itself matched. Lower offset below ${total} to see rows.`,
+      );
+    } else if (hasMore) {
+      notices.push(
+        `Showing rows ${input.offset + 1}–${consumed} of ${total}. Call again with offset=${consumed} for the next page, or raise limit (max ${MAX_LIMIT}) to pull more per call — every page is a slice of the one table CDC sent, so the figures, caveats and messages do not change between them.`,
+      );
+    } else if (rows.length < total) {
+      notices.push(
+        `Showing rows ${input.offset + 1}–${consumed} of ${total} — the end of the table. The earlier rows are at lower offset values.`,
+      );
+    }
+    if (suppressedCount > 0) {
+      notices.push(
+        `${suppressedCount} cell(s) were withheld by CDC for confidentiality (Suppressed) and are null. Aggregate over more years or a broader cause/age range to reduce suppression.`,
       );
     }
     if (hiddenRowMessages.length > 0) {
@@ -330,7 +422,7 @@ export const queryWonder = tool('cdc_query_wonder', {
         `CDC withheld whole rows from this table — ${hiddenRowMessages.join(' ')} (that is CDC's own wording, aimed at its web form; this tool has no input that unhides them). The withheld rows are absent from rows with nothing marking the gap, so a stratum you expected and do not see may have been dropped rather than unobserved; treat counts, rankings, and completeness claims drawn from rows as partial.`,
       );
     }
-    const otherTokens = tallyOtherTokens(result.cellNotes);
+    const otherTokens = tallyOtherTokens(cellNotes);
     if (otherTokens.length > 0) {
       notices.push(
         `CDC returned a status token instead of a number for some cells — ${otherTokens.join('; ')}. Those cells are null but were not withheld; cellNotes gives the row index and column of each.`,
@@ -345,26 +437,39 @@ export const queryWonder = tool('cdc_query_wonder', {
         `${spec.id} records every cause listed on the death certificate, but with no mcd_icd10 filter it counts each death once by its underlying cause — these figures match what ${twin.id} (${twin.title}) returns for the same years. Add mcd_icd10 to count deaths with a condition recorded anywhere on the certificate, or switch to ${twin.id}.`,
       );
     }
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
+    ctx.enrich.total(total);
+    /**
+     * `enrich.truncated()` writes `notice` itself and last-wins over `enrich.notice`, so the
+     * continuation guidance has to arrive carrying the other notices rather than after them.
+     */
+    if (hasMore) {
+      ctx.enrich.truncated({ shown: rows.length, cap: take, guidance: notices.join(' ') });
+      ctx.enrich({ nextOffset: consumed });
+    } else if (notices.length > 0) {
+      ctx.enrich.notice(notices.join(' '));
+    }
 
     ctx.log.info('WONDER query executed', {
       database: result.database,
       groupBy: input.group_by,
-      rowCount: result.rowCount,
-      cellNoteCount: result.cellNotes.length,
-      suppressedCount: result.suppressedCount,
+      totalCount: total,
+      rowCount: rows.length,
+      offset: input.offset,
+      hasMore,
+      cellNoteCount: cellNotes.length,
+      suppressedCount,
       hiddenRowMessageCount: hiddenRowMessages.length,
     });
 
     return {
-      rows: result.rows,
-      rowCount: result.rowCount,
+      rows,
+      rowCount: rows.length,
       database: result.database,
       databaseTitle: result.databaseTitle,
       caveats: result.caveats,
-      cellNotes: result.cellNotes,
+      cellNotes,
       messages: result.messages,
-      suppressedCount: result.suppressedCount,
+      suppressedCount,
     };
   },
 
