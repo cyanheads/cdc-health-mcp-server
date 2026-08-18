@@ -10,6 +10,35 @@ import { CDC_SOCRATA_DOMAINS, type QueryResult } from '@/services/socrata/types.
 import { escapeTableCell } from '@/utils/markdown.js';
 
 const MAX_LIMIT = 5000;
+/**
+ * Ceiling on `offset`, mirrored in the input schema and used to decide whether a
+ * `nextOffset` the caller could not actually replay is worth emitting.
+ */
+const MAX_OFFSET = 1_000_000;
+/**
+ * Response budget for the returned rows, counted as characters of `JSON.stringify(row)`.
+ * A row count is a leaky proxy for response size: 5,000 rows of a 38-column surveillance
+ * dataset serialize to ~6 MB, while 5,000 rows of a 3-column summary fit in a fraction of
+ * that. Bounding on serialized characters gives one number that holds across the catalog —
+ * roughly 50k tokens of `structuredContent`, and less in the narrower `content[]` table.
+ * `limit` still means what it says; rows dropped by the budget are disclosed with a
+ * `nextOffset` that resumes exactly where the response stopped.
+ */
+const MAX_ROW_CHARS = 200_000;
+
+/**
+ * Take rows from the head of the page until the next one would cross the character budget.
+ * Always keeps the first row: a single row wider than the whole budget still has to come
+ * back as a row, not as an empty page that reads like "nothing matched".
+ */
+function withinBudget(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  let used = 0;
+  for (const [index, row] of rows.entries()) {
+    used += JSON.stringify(row).length;
+    if (used > MAX_ROW_CHARS) return rows.slice(0, Math.max(index, 1));
+  }
+  return rows;
+}
 
 export const queryDataset = tool('cdc_query_dataset', {
   description:
@@ -107,21 +136,27 @@ export const queryDataset = tool('cdc_query_dataset', {
     order: z
       .string()
       .optional()
-      .describe('SoQL ORDER BY clause. Field name with optional ASC/DESC: "total_deaths DESC".'),
+      .describe(
+        'SoQL ORDER BY clause. Field name with optional ASC/DESC: "total_deaths DESC". Set one whenever paging with offset: SODA does not order results implicitly, so consecutive offsets without a deterministic order can skip or repeat rows. When the dataset has no natural unique column, Socrata\'s documented minimum tie-breaker is the system field `:id`, present on every dataset — order=":id".',
+      ),
     limit: z
       .number()
       .int()
       .min(1)
       .max(MAX_LIMIT)
       .default(100)
-      .describe(`Max rows to return (default 100, max ${MAX_LIMIT}).`),
+      .describe(
+        `Max rows to return (default 100, max ${MAX_LIMIT}). Fewer come back when the page would cross the ${MAX_ROW_CHARS.toLocaleString('en-US')}-character response budget; the response says so and gives a nextOffset to resume from.`,
+      ),
     offset: z
       .number()
       .int()
       .min(0)
-      .max(1_000_000)
+      .max(MAX_OFFSET)
       .default(0)
-      .describe('Row offset for pagination (max 1,000,000).'),
+      .describe(
+        'Row offset for pagination (max 1,000,000). Pair with a deterministic order clause — an offset walk over unordered results can skip or repeat rows.',
+      ),
   }),
 
   output: z.object({
@@ -145,14 +180,22 @@ export const queryDataset = tool('cdc_query_dataset', {
     truncated: z
       .boolean()
       .optional()
-      .describe('True when the result row count hit the requested limit and may be incomplete.'),
+      .describe(
+        'True when rows exist beyond the ones returned, established by fetching one row more than the limit rather than inferred from the row count. Absent means this response is the complete remainder of the result set.',
+      ),
     shown: z.number().optional().describe('Number of rows returned in this response.'),
     cap: z.number().optional().describe('The requested limit that bounded this response.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Offset to pass on the next call to resume immediately after the last row returned. Present only when further rows exist and the resume point is within the offset ceiling; a deterministic order clause is what makes the walk gap-free.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when no rows matched or results were truncated — how to verify filters, paginate, or broaden the query.',
+        'Guidance when no rows matched, when further rows remain, or when the response budget cut the page short — how to verify filters, resume paging, or broaden the query.',
       ),
   },
 
@@ -171,26 +214,45 @@ export const queryDataset = tool('cdc_query_dataset', {
 
     ctx.enrich({ effectiveQuery: result.query });
 
+    const rows = withinBudget(result.rows);
+    const budgetCut = rows.length < result.rows.length;
+    const hasMore = result.hasMore || budgetCut;
+    const nextOffset = input.offset + rows.length;
+
     if (result.rows.length === 0) {
+      /**
+       * The data endpoint reports no total, so an offset paged past the end of a real result
+       * set and a filter that matched nothing come back identically. One branch, no guess.
+       */
       ctx.enrich.notice(
         'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.',
       );
-    } else if (result.rowCount === input.limit) {
+    } else if (hasMore) {
+      const cause = budgetCut
+        ? `the ${MAX_ROW_CHARS.toLocaleString('en-US')}-character response size budget cut the page at ${rows.length} of the ${input.limit} rows requested`
+        : `the requested limit of ${input.limit} was reached`;
+      const resume =
+        nextOffset <= MAX_OFFSET
+          ? `Call again with offset=${nextOffset} to continue, and set an order clause (order=":id" works on any dataset) so the walk neither skips nor repeats rows.`
+          : `Resuming would need offset=${nextOffset.toLocaleString('en-US')}, past the ${MAX_OFFSET.toLocaleString('en-US')} ceiling this tool accepts — narrow the query with a where clause instead of paging further.`;
       ctx.enrich.truncated({
-        shown: result.rowCount,
+        shown: rows.length,
         cap: input.limit,
-        guidance: `Results may be truncated — rowCount equals the requested limit (${input.limit}). Use the offset parameter to paginate or increase limit (max ${MAX_LIMIT}).`,
+        guidance: `More rows exist beyond this response — ${cause}. ${resume}`,
       });
+      if (nextOffset <= MAX_OFFSET) ctx.enrich({ nextOffset });
     }
 
     ctx.log.info('Query executed', {
       domain: input.domain,
       datasetId: input.datasetId,
-      rowCount: result.rowCount,
+      rowCount: rows.length,
+      budgetCut,
+      hasMore,
       query: result.query,
     });
 
-    return { rows: result.rows, rowCount: result.rowCount };
+    return { rows, rowCount: rows.length };
   },
 
   format: (result) => {

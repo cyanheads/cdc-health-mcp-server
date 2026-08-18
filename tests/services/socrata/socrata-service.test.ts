@@ -28,6 +28,15 @@ function mockFetchError(status: number, body = '') {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status }));
 }
 
+type FetchSpy = ReturnType<typeof mockFetch>;
+
+/** URL the spy recorded on its first call. */
+function firstUrl(spy: FetchSpy): string {
+  const [call] = spy.mock.calls;
+  if (!call) throw new Error('fetch was not called');
+  return call[0] as string;
+}
+
 describe('SocrataService', () => {
   let service: SocrataService;
 
@@ -75,7 +84,7 @@ describe('SocrataService', () => {
         columnNames: ['state', 'year', 'deaths'],
       });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('domains=data.cdc.gov');
       expect(url).toContain('search_context=data.cdc.gov');
       expect(url).toContain('q=diabetes');
@@ -114,14 +123,15 @@ describe('SocrataService', () => {
         resultSetSize: 1,
       });
       const result = await service.discover({});
-      expect(result.datasets[0].assetType).toBeUndefined();
+      expect(result.datasets).toHaveLength(1);
+      expect(result.datasets[0]?.assetType).toBeUndefined();
     });
 
     it('defaults the catalog domain to data.cdc.gov when none is given', async () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({});
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('domains=data.cdc.gov');
       expect(url).toContain('search_context=data.cdc.gov');
     });
@@ -130,7 +140,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({ domain: 'chronicdata.cdc.gov', query: 'places' });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('domains=chronicdata.cdc.gov');
       expect(url).toContain('search_context=chronicdata.cdc.gov');
       expect(url).not.toContain('domains=data.cdc.gov');
@@ -140,7 +150,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({ category: 'NNDSS', tags: ['covid19', 'surveillance'] });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('categories=NNDSS');
       expect(url).toContain('tags=covid19');
       expect(url).toContain('tags=surveillance');
@@ -150,7 +160,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({ limit: 25, offset: 50 });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('limit=25');
       expect(url).toContain('offset=50');
     });
@@ -159,7 +169,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({});
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('limit=10');
     });
 
@@ -167,7 +177,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({ order: 'dataset_id' });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('order=dataset_id');
     });
 
@@ -175,7 +185,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({ order: 'relevance' });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('order=relevance');
     });
 
@@ -183,7 +193,7 @@ describe('SocrataService', () => {
       const spy = mockFetch({ results: [], resultSetSize: 0 });
       await service.discover({ limit: 50 });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).not.toContain('order=');
     });
   });
@@ -221,7 +231,7 @@ describe('SocrataService', () => {
         description: 'US state name',
       });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toBe('https://data.cdc.gov/api/views/bi63-dtpu.json');
     });
 
@@ -229,7 +239,7 @@ describe('SocrataService', () => {
       const spy = mockFetch(metadataResponse);
       await service.getMetadata('swc5-untb', undefined, 'chronicdata.cdc.gov');
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toBe('https://chronicdata.cdc.gov/api/views/swc5-untb.json');
     });
 
@@ -270,7 +280,7 @@ describe('SocrataService', () => {
       expect(result.query).toContain('$select=state');
       expect(result.query).toContain('$order=deaths');
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('https://data.cdc.gov/resource/bi63-dtpu.json');
     });
 
@@ -315,7 +325,7 @@ describe('SocrataService', () => {
       const spy = mockFetch(queryResponse);
       await service.query({ datasetId: 'bi63-dtpu', select: 'deaths + births as total' });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('%24select=deaths+%2B+births+as+total');
     });
 
@@ -327,7 +337,7 @@ describe('SocrataService', () => {
         where: "measureid='OBESITY' AND stateabbr='WA'",
       });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('https://chronicdata.cdc.gov/resource/swc5-untb.json');
       expect(url.startsWith('https://chronicdata.cdc.gov/')).toBe(true);
     });
@@ -336,7 +346,7 @@ describe('SocrataService', () => {
       const spy = mockFetch([]);
       await service.query({ datasetId: 'bi63-dtpu', search: 'diabetes' });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('%24q=diabetes');
     });
 
@@ -349,17 +359,83 @@ describe('SocrataService', () => {
         having: 'count(*) > 10',
       });
 
-      const url = spy.mock.calls[0][0] as string;
+      const url = firstUrl(spy);
       expect(url).toContain('%24group=state');
       expect(url).toContain('%24having=');
     });
 
-    it('defaults limit to 100', async () => {
+    it('defaults limit to 100 and probes one row beyond it', async () => {
       const spy = mockFetch([]);
-      await service.query({ datasetId: 'bi63-dtpu', search: 'test' });
+      const result = await service.query({ datasetId: 'bi63-dtpu', search: 'test' });
 
-      const url = spy.mock.calls[0][0] as string;
-      expect(url).toContain('%24limit=100');
+      // The wire carries the over-fetch probe...
+      expect(firstUrl(spy)).toContain('%24limit=101');
+      // ...while the echo carries the limit the caller actually asked for.
+      expect(result.query).toContain('$limit=100');
+    });
+
+    it('over-fetches one row beyond an explicit limit to test for a further page', async () => {
+      const spy = mockFetch([]);
+      await service.query({ datasetId: 'bi63-dtpu', limit: 500, offset: 10 });
+
+      const url = firstUrl(spy);
+      expect(url).toContain('%24limit=501');
+      expect(url).toContain('%24offset=10');
+    });
+
+    it('echoes the caller limit and offset, never the probe value', async () => {
+      /**
+       * The echo exists to be replayed. Handing back the probe's `$limit` would give a
+       * caller who copies it one more row than they asked for on every subsequent call.
+       */
+      mockFetch([]);
+      const result = await service.query({ datasetId: 'bi63-dtpu', limit: 3, offset: 6 });
+
+      expect(result.query).toBe('$limit=3&$offset=6');
+      expect(result.query).not.toContain('$limit=4');
+    });
+
+    it('trims the probe row off the result and reports hasMore', async () => {
+      const rows = Array.from({ length: 4 }, (_, i) => ({ id: String(i) }));
+      mockFetch(rows);
+      const result = await service.query({ datasetId: 'bi63-dtpu', limit: 3 });
+
+      expect(result.rows).toHaveLength(3);
+      expect(result.rowCount).toBe(3);
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('reports hasMore false when the remaining rows exactly fill the limit', async () => {
+      /**
+       * The case the old `rowCount === limit` heuristic always called truncated. The probe
+       * asked for 4 and got 3, which proves the result set ends here.
+       */
+      const rows = Array.from({ length: 3 }, (_, i) => ({ id: String(i) }));
+      mockFetch(rows);
+      const result = await service.query({ datasetId: 'bi63-dtpu', limit: 3 });
+
+      expect(result.rows).toHaveLength(3);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('reports hasMore false for a complete single-row aggregate', async () => {
+      mockFetch([{ total_rows: '67463' }]);
+      const result = await service.query({
+        datasetId: 'akvg-8vrb',
+        select: 'count(*) as total_rows',
+        limit: 1,
+      });
+
+      expect(result.rowCount).toBe(1);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('reports hasMore false for an empty result', async () => {
+      mockFetch([]);
+      const result = await service.query({ datasetId: 'bi63-dtpu', where: "state='Atlantis'" });
+
+      expect(result.rows).toEqual([]);
+      expect(result.hasMore).toBe(false);
     });
   });
 });

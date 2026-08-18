@@ -61,8 +61,15 @@ export interface DiscoverResult {
 /** Result from a SoQL query. */
 export interface QueryResult {
   /**
+   * True when at least one row exists past the ones returned. Established by asking SODA
+   * for one row more than the caller's limit and discarding it — the data endpoint reports
+   * no total, so an over-fetch is the only way to tell a full last page from a cut one.
+   */
+  hasMore: boolean;
+  /**
    * The SoQL parameters as `$clause=value` pairs, values in the caller's own text rather
    * than URL-encoded, so each clause can be copied back into the parameter it came from.
+   * `$limit` is the caller's own, never the internal over-fetch probe.
    */
   query: string;
   rowCount: number;

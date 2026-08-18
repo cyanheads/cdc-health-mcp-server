@@ -21,6 +21,7 @@ const sampleResult: QueryResult = {
   ],
   rowCount: 2,
   query: '$where=year%3D2020&$limit=100',
+  hasMore: false,
 };
 
 describe('cdc_query_dataset', () => {
@@ -30,7 +31,7 @@ describe('cdc_query_dataset', () => {
 
   it('returns rows and rowCount for valid input', async () => {
     mockQuery.mockResolvedValue(sampleResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({
       datasetId: 'bi63-dtpu',
       where: 'year=2020',
@@ -45,7 +46,7 @@ describe('cdc_query_dataset', () => {
 
   it('enriches with effectiveQuery', async () => {
     mockQuery.mockResolvedValue(sampleResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'year=2020' });
     await queryDataset.handler(input, ctx);
 
@@ -61,15 +62,15 @@ describe('cdc_query_dataset', () => {
      * who assumes it is URL-encoded will decode it and reintroduce the bug the echo was
      * fixed to avoid.
      */
-    const description = queryDataset.enrichment.effectiveQuery.description ?? '';
+    const description = queryDataset.enrichment?.effectiveQuery.description ?? '';
 
     expect(description).toContain('not URL-encoded');
     expect(description).toContain('copied back into the matching parameter');
   });
 
   it('emits a notice when no rows matched', async () => {
-    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$where=x' });
-    const ctx = createMockContext();
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$where=x', hasMore: false });
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'x=1' });
     await queryDataset.handler(input, ctx);
 
@@ -78,13 +79,30 @@ describe('cdc_query_dataset', () => {
     expect(enrichment.effectiveQuery).toBe('$where=x');
   });
 
-  it('discloses truncation when rowCount hits the requested limit', async () => {
-    mockQuery.mockResolvedValue({ ...sampleResult, rowCount: 2 });
-    const ctx = createMockContext();
+  it('keeps the no-rows notice unconditional on a paged-past-the-end offset', async () => {
+    /**
+     * The SODA data endpoint reports no total, so an offset past the end of a real result
+     * set and a filter that matched nothing arrive identically. The branch stays one branch.
+     */
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$offset=900', hasMore: false });
+    const ctx = createMockContext({ errors: queryDataset.errors });
+    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', offset: 900 });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toContain('No rows matched');
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.nextOffset).toBeUndefined();
+  });
+
+  it('discloses truncation and a usable nextOffset when a further row exists', async () => {
+    mockQuery.mockResolvedValue({ ...sampleResult, hasMore: true });
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({
       datasetId: 'bi63-dtpu',
       where: 'year=2020',
       limit: 2,
+      offset: 10,
     });
     await queryDataset.handler(input, ctx);
 
@@ -92,23 +110,68 @@ describe('cdc_query_dataset', () => {
     expect(enrichment.truncated).toBe(true);
     expect(enrichment.shown).toBe(2);
     expect(enrichment.cap).toBe(2);
-    expect(enrichment.notice).toContain('truncated');
+    expect(enrichment.nextOffset).toBe(12);
+    expect(enrichment.notice).toContain('offset=12');
   });
 
   it('does not disclose truncation when rowCount is below the limit', async () => {
     mockQuery.mockResolvedValue(sampleResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'year=2020' });
     await queryDataset.handler(input, ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.nextOffset).toBeUndefined();
     expect(enrichment.notice).toBeUndefined();
   });
 
+  it('does not claim truncation for a complete aggregate that fills its limit', async () => {
+    /**
+     * `select=count(*)` with `limit: 1` can only ever return one row. Reading `rowCount`
+     * back against the limit called that complete answer truncated and sent the caller
+     * paginating an aggregate.
+     */
+    mockQuery.mockResolvedValue({
+      rows: [{ total_rows: '67463' }],
+      rowCount: 1,
+      query: '$select=count(*) as total_rows&$limit=1&$offset=0',
+      hasMore: false,
+    });
+    const ctx = createMockContext({ errors: queryDataset.errors });
+    const input = queryDataset.input.parse({
+      datasetId: 'akvg-8vrb',
+      select: 'count(*) as total_rows',
+      limit: 1,
+    });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.nextOffset).toBeUndefined();
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('does not claim truncation when the remaining rows exactly equal the limit', async () => {
+    /**
+     * The off-by-one the `rowCount === limit` heuristic always got wrong: a result set whose
+     * last page happens to fill the limit exactly is complete, not truncated. Only the
+     * over-fetch probe can tell the two apart.
+     */
+    const rows = [{ state: 'CA' }, { state: 'TX' }, { state: 'NY' }];
+    mockQuery.mockResolvedValue({ rows, rowCount: 3, query: '$limit=3&$offset=0', hasMore: false });
+    const ctx = createMockContext({ errors: queryDataset.errors });
+    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', limit: 3 });
+    await queryDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.nextOffset).toBeUndefined();
+  });
+
   it('passes all SoQL clauses to the service', async () => {
-    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '' });
-    const ctx = createMockContext();
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '', hasMore: false });
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({
       datasetId: 'bi63-dtpu',
       search: 'diabetes',
@@ -139,16 +202,16 @@ describe('cdc_query_dataset', () => {
   });
 
   it('allows query with no filters', async () => {
-    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
-    const ctx = createMockContext();
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100', hasMore: false });
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu' });
     const result = await queryDataset.handler(input, ctx);
     expect(result.rowCount).toBe(0);
   });
 
   it('threads an explicit domain through to the service', async () => {
-    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
-    const ctx = createMockContext();
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100', hasMore: false });
+    const ctx = createMockContext({ errors: queryDataset.errors });
     const input = queryDataset.input.parse({
       datasetId: 'swc5-untb',
       domain: 'chronicdata.cdc.gov',

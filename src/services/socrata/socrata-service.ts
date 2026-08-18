@@ -192,9 +192,16 @@ export class SocrataService {
 
   /**
    * Execute a SoQL query against a CDC dataset.
+   *
+   * The wire request asks for one row more than the caller's limit. The SODA data endpoint
+   * reports no total, so that extra row is the only evidence that separates a result set
+   * whose last page happens to fill the limit from one that was cut short. It is dropped
+   * before returning and recorded as `hasMore`; the echoed `query` keeps the caller's own
+   * `$limit` so it can be replayed without inheriting the probe.
    */
   async query(options: QueryOptions, signal?: AbortSignal): Promise<QueryResult> {
     const params = new URLSearchParams();
+    const limit = options.limit ?? 100;
 
     if (options.search) params.set('$q', options.search);
     if (options.select) params.set('$select', options.select);
@@ -202,18 +209,19 @@ export class SocrataService {
     if (options.group) params.set('$group', options.group);
     if (options.having) params.set('$having', options.having);
     if (options.order) params.set('$order', options.order);
-    params.set('$limit', String(options.limit ?? 100));
+    params.set('$limit', String(limit));
     params.set('$offset', String(options.offset ?? 0));
 
-    const queryString = params.toString();
-    const url = `${this.baseUrlFor(options.domain)}/resource/${options.datasetId}.json?${queryString}`;
-    const rows = await this.fetchJson<Record<string, unknown>[]>(url, signal);
+    const query = decodedQueryString(params);
+    params.set('$limit', String(limit + 1));
 
-    return {
-      rows,
-      rowCount: rows.length,
-      query: decodedQueryString(params),
-    };
+    const url = `${this.baseUrlFor(options.domain)}/resource/${options.datasetId}.json?${params}`;
+    const fetched = await this.fetchJson<Record<string, unknown>[]>(url, signal);
+
+    const hasMore = fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit) : fetched;
+
+    return { rows, rowCount: rows.length, query, hasMore };
   }
 
   private throwBadRequest(body: string, url: string): never {

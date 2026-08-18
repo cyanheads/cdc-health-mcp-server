@@ -67,15 +67,15 @@ describe('cdc_query_dataset — edge cases', () => {
   describe('handler — edge cases', () => {
     it('propagates service errors', async () => {
       mockQuery.mockRejectedValue(new Error('No such column "badcol"'));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', where: "badcol='x'" });
       await expect(queryDataset.handler(input, ctx)).rejects.toThrow(/badcol/);
     });
 
     it('emits effectiveQuery as enrichment for zero-row result', async () => {
       const emptyQueryStr = '$where=year%3D2020&$limit=100&$offset=0';
-      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: emptyQueryStr });
-      const ctx = createMockContext();
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: emptyQueryStr, hasMore: false });
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', where: 'year=2020' });
       await queryDataset.handler(input, ctx);
 
@@ -84,8 +84,8 @@ describe('cdc_query_dataset — edge cases', () => {
     });
 
     it('does NOT include query in output object (only in enrichment)', async () => {
-      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
-      const ctx = createMockContext();
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100', hasMore: false });
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34' });
       const result = await queryDataset.handler(input, ctx);
       expect((result as Record<string, unknown>).query).toBeUndefined();
@@ -96,8 +96,8 @@ describe('cdc_query_dataset — edge cases', () => {
         id: String(i),
         state: 'California',
       }));
-      mockQuery.mockResolvedValue({ rows, rowCount: 500, query: '$limit=500' });
-      const ctx = createMockContext();
+      mockQuery.mockResolvedValue({ rows, rowCount: 500, query: '$limit=500', hasMore: false });
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 500 });
       const result = await queryDataset.handler(input, ctx);
       expect(result.rowCount).toBe(500);
@@ -106,21 +106,31 @@ describe('cdc_query_dataset — edge cases', () => {
   });
 
   describe('handler — truncation notice', () => {
-    it('emits truncation notice when rowCount equals limit', async () => {
-      mockQuery.mockResolvedValue({ rows: [{ state: 'CA' }], rowCount: 100, query: '$limit=100' });
-      const ctx = createMockContext();
+    it('emits a truncation notice when the probe found a further row', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [{ state: 'CA' }],
+        rowCount: 1,
+        query: '$limit=100',
+        hasMore: true,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 100 });
       await queryDataset.handler(input, ctx);
 
       const enrichment = getEnrichment(ctx);
-      expect(enrichment.notice).toContain('truncated');
-      expect(enrichment.notice).toContain('100');
-      expect(enrichment.notice).toContain('offset');
+      expect(enrichment.notice).toContain('More rows');
+      expect(enrichment.notice).toContain('offset=1');
+      expect(enrichment.notice).toContain('order');
     });
 
-    it('does not emit truncation notice when rowCount is less than limit', async () => {
-      mockQuery.mockResolvedValue({ rows: [{ state: 'CA' }], rowCount: 50, query: '$limit=100' });
-      const ctx = createMockContext();
+    it('does not emit a truncation notice when no further row exists', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [{ state: 'CA' }],
+        rowCount: 1,
+        query: '$limit=100',
+        hasMore: false,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 100 });
       await queryDataset.handler(input, ctx);
 
@@ -129,13 +139,163 @@ describe('cdc_query_dataset — edge cases', () => {
     });
 
     it('does not emit truncation notice for empty results', async () => {
-      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100' });
-      const ctx = createMockContext();
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$limit=100', hasMore: false });
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 100 });
       await queryDataset.handler(input, ctx);
 
       const enrichment = getEnrichment(ctx);
       expect(enrichment.notice).toContain('No rows matched');
+    });
+  });
+
+  describe('handler — response budget', () => {
+    /** A row roughly the width of akvg-8vrb's 38 columns (~1.2 KB serialized). */
+    const wideRow = (i: number) =>
+      Object.fromEntries(
+        Array.from({ length: 38 }, (_, c) => [`col_${c}`, `${i}-${'v'.repeat(28)}`]),
+      );
+
+    it('bounds a 5000-row page by serialized size and reports how far it got', async () => {
+      const rows = Array.from({ length: 5000 }, (_, i) => wideRow(i));
+      mockQuery.mockResolvedValue({
+        rows,
+        rowCount: 5000,
+        query: '$limit=5000&$offset=0',
+        hasMore: false,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'akvg-8vrb', limit: 5000 });
+      const result = await queryDataset.handler(input, ctx);
+
+      expect(result.rowCount).toBeLessThan(5000);
+      expect(result.rowCount).toBe(result.rows.length);
+      expect(JSON.stringify(result.rows).length).toBeLessThanOrEqual(200_000);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.shown).toBe(result.rowCount);
+      expect(enrichment.cap).toBe(5000);
+      expect(enrichment.nextOffset).toBe(result.rowCount);
+      expect(enrichment.notice).toMatch(/response size budget/i);
+    });
+
+    it('bounds content[] alongside structuredContent at the same cut', async () => {
+      const rows = Array.from({ length: 5000 }, (_, i) => wideRow(i));
+      mockQuery.mockResolvedValue({
+        rows,
+        rowCount: 5000,
+        query: '$limit=5000&$offset=0',
+        hasMore: false,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'akvg-8vrb', limit: 5000 });
+      const result = await queryDataset.handler(input, ctx);
+
+      const text = (queryDataset.format!(result)[0] as { type: 'text'; text: string }).text;
+      expect(new TextEncoder().encode(text).length).toBeLessThan(200_000);
+    });
+
+    it('keeps one row when a single row is larger than the whole budget', async () => {
+      const monster = { blob: 'x'.repeat(300_000) };
+      mockQuery.mockResolvedValue({
+        rows: [monster, { blob: 'y' }],
+        rowCount: 2,
+        query: '$limit=2&$offset=0',
+        hasMore: false,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 2 });
+      const result = await queryDataset.handler(input, ctx);
+
+      expect(result.rows).toHaveLength(1);
+      expect(getEnrichment(ctx).notice).not.toContain('No rows matched');
+      expect(getEnrichment(ctx).truncated).toBe(true);
+    });
+
+    it('leaves an ordinary page untouched', async () => {
+      const rows = Array.from({ length: 100 }, (_, i) => ({ id: String(i) }));
+      mockQuery.mockResolvedValue({
+        rows,
+        rowCount: 100,
+        query: '$limit=100&$offset=0',
+        hasMore: false,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34' });
+      const result = await queryDataset.handler(input, ctx);
+
+      expect(result.rows).toHaveLength(100);
+      expect(getEnrichment(ctx).truncated).toBeUndefined();
+    });
+  });
+
+  describe('handler — nextOffset boundaries', () => {
+    it('omits nextOffset when the next page would land past the offset ceiling', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [{ state: 'CA' }],
+        rowCount: 1,
+        query: '$limit=1&$offset=1000000',
+        hasMore: true,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({
+        datasetId: 'ab12-cd34',
+        limit: 1,
+        offset: 1_000_000,
+      });
+      await queryDataset.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.nextOffset).toBeUndefined();
+      expect(enrichment.notice).toContain('1,000,000');
+    });
+
+    it('walks a result set to exhaustion by replaying nextOffset', async () => {
+      /**
+       * Past the first page: each call must resume where the last stopped and the walk must
+       * end on the page the probe finds no successor for — not one page early, not looping.
+       */
+      const all = Array.from({ length: 7 }, (_, i) => ({ id: String(i) }));
+      mockQuery.mockImplementation(((options: { limit: number; offset: number }) => {
+        const page = all.slice(options.offset, options.offset + options.limit);
+        return Promise.resolve({
+          rows: page,
+          rowCount: page.length,
+          query: `$limit=${options.limit}&$offset=${options.offset}`,
+          hasMore: options.offset + page.length < all.length,
+        });
+      }) as unknown as () => Promise<QueryResult>);
+
+      const seen: string[] = [];
+      let offset: number | undefined = 0;
+      let calls = 0;
+      while (offset !== undefined) {
+        calls++;
+        const ctx = createMockContext({ errors: queryDataset.errors });
+        const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 3, offset });
+        const page = await queryDataset.handler(input, ctx);
+        seen.push(...page.rows.map((r) => r.id as string));
+        offset = getEnrichment(ctx).nextOffset as number | undefined;
+      }
+
+      expect(seen).toEqual(['0', '1', '2', '3', '4', '5', '6']);
+      expect(calls).toBe(3);
+    });
+
+    it('carries the caller offset into nextOffset rather than restarting at zero', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [{ a: '1' }, { a: '2' }],
+        rowCount: 2,
+        query: '$limit=2&$offset=400',
+        hasMore: true,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 2, offset: 400 });
+      await queryDataset.handler(input, ctx);
+
+      expect(getEnrichment(ctx).nextOffset).toBe(402);
     });
   });
 
@@ -181,7 +341,9 @@ describe('cdc_query_dataset — edge cases', () => {
       const ctx = createMockContext({ errors: queryDataset.errors });
       const input = queryDataset.input.parse({ datasetId: '235m-gsry', limit: 2 });
 
-      const err = (await queryDataset.handler(input, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(queryDataset.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
       expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
       const data = err.data as { reason: string; retryable?: boolean; recovery: { hint: string } };
       expect(data.reason).toBe('access_denied');
@@ -277,6 +439,27 @@ describe('cdc_query_dataset — edge cases', () => {
       const desc = queryDataset.input.shape.where.description;
       expect(desc).toMatch(/backtick/i);
       expect(desc).toContain('group');
+    });
+  });
+
+  describe('input schema — order description', () => {
+    it('order description names :id as the minimum tie-breaker for offset pagination', () => {
+      /**
+       * SODA does not order results implicitly, so an offset walk without an ORDER BY can
+       * skip or repeat rows. `:id` is a system field on every dataset, which is what makes
+       * it usable by a caller who knows no unique column.
+       */
+      const desc = queryDataset.input.shape.order.description ?? '';
+      expect(desc).toMatch(/deterministic|stable/i);
+      expect(desc).toContain(':id');
+    });
+  });
+
+  describe('enrichment schema — nextOffset', () => {
+    it('says nextOffset only appears when a further page exists', () => {
+      const desc = queryDataset.enrichment?.nextOffset.description ?? '';
+      expect(desc).toContain('offset');
+      expect(desc).toMatch(/only when|present only/i);
     });
   });
 });
