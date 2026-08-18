@@ -51,7 +51,7 @@ vi.mock('@/services/socrata/socrata-service.js', () => ({
 }));
 
 const emptyDiscover: DiscoverResult = { datasets: [], totalCount: 0 };
-const emptyQuery: QueryResult = { rows: [], rowCount: 0, query: '' };
+const emptyQuery: QueryResult = { rows: [], rowCount: 0, query: '', hasMore: false };
 
 describe('Security — input validation', () => {
   afterEach(() => {
@@ -142,7 +142,7 @@ describe('Security — input validation', () => {
       // the service which handles them. This test confirms the tool does not crash on long input.
       mockDiscover.mockResolvedValue(emptyDiscover);
       const longQuery = 'x'.repeat(2000);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const input = discoverDatasets.input.parse({ query: longQuery });
       await discoverDatasets.handler(input, ctx);
       expect(mockDiscover).toHaveBeenCalledWith(
@@ -176,6 +176,43 @@ describe('Security — input validation', () => {
     });
   });
 
+  describe('getDatasetSchema — column window bounds', () => {
+    it('rejects column_limit of 0', () => {
+      expect(() =>
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 0 }),
+      ).toThrow();
+    });
+
+    it('rejects column_limit above 500', () => {
+      expect(() =>
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 501 }),
+      ).toThrow();
+    });
+
+    it('rejects a pathological max-safe-integer column_offset', () => {
+      expect(() =>
+        getDatasetSchema.input.parse({
+          datasetId: 'ab12-cd34',
+          column_offset: Number.MAX_SAFE_INTEGER,
+        }),
+      ).toThrow();
+    });
+
+    it('rejects negative column_offset', () => {
+      expect(() =>
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_offset: -1 }),
+      ).toThrow();
+    });
+
+    it('rejects non-numeric column window values', () => {
+      for (const value of ['100', null, {}, []]) {
+        expect(
+          getDatasetSchema.input.safeParse({ datasetId: 'ab12-cd34', column_limit: value }).success,
+        ).toBe(false);
+      }
+    });
+  });
+
   describe('SoQL injection — query clauses are passed to service (no server-side sanitization)', () => {
     // These tests document expected behavior: the server forwards SoQL clauses as-is to
     // the Socrata API. Socrata itself is responsible for parsing and rejecting malformed queries.
@@ -183,7 +220,7 @@ describe('Security — input validation', () => {
 
     it('forwards WHERE clause with SQL-style injection attempt to service', async () => {
       mockQuery.mockResolvedValue(emptyQuery);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const injectionWhere = "year=2020 OR '1'='1'";
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', where: injectionWhere });
       await queryDataset.handler(input, ctx);
@@ -231,7 +268,7 @@ describe('Security — input validation', () => {
 
     it('carries the app token in the request header and nowhere in the request URL', async () => {
       const fetchSpy = await withRealService(json([{ state: 'Texas', deaths: '100' }]));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryDataset.errors });
       await queryDataset.handler(
         queryDataset.input.parse({ datasetId: 'ab12-cd34', where: 'year=2020' }),
         ctx,
@@ -246,7 +283,7 @@ describe('Security — input validation', () => {
 
     it('keeps the app token out of every payload cdc_query_dataset returns', async () => {
       await withRealService(json([{ state: 'Texas', deaths: '100' }]));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: queryDataset.errors });
       const result = await queryDataset.handler(
         queryDataset.input.parse({ datasetId: 'ab12-cd34', where: 'year=2020' }),
         ctx,
@@ -274,7 +311,7 @@ describe('Security — input validation', () => {
           resultSetSize: 1,
         }),
       );
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
       const result = await discoverDatasets.handler(
         discoverDatasets.input.parse({ query: 'test' }),
         ctx,
@@ -293,7 +330,7 @@ describe('Security — input validation', () => {
           columns: [{ fieldName: 'state', dataTypeName: 'text' }],
         }),
       );
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
       const result = await getDatasetSchema.handler(
         getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }),
         ctx,
@@ -319,9 +356,9 @@ describe('Security — input validation', () => {
         json({ error: true, message: 'no row or column access to non-tabular tables' }, 403),
       );
       const ctx = createMockContext({ errors: queryDataset.errors });
-      const err = (await queryDataset
-        .handler(queryDataset.input.parse({ datasetId: '235m-gsry', limit: 2 }), ctx)
-        .catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(
+        queryDataset.handler(queryDataset.input.parse({ datasetId: '235m-gsry', limit: 2 }), ctx),
+      ).catch((e: unknown) => e)) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(APP_TOKEN);
@@ -336,9 +373,9 @@ describe('Security — input validation', () => {
        */
       await withRealService(new Response('Unauthorized', { status: 401 }));
       const ctx = createMockContext({ errors: queryDataset.errors });
-      const err = (await queryDataset
-        .handler(queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 2 }), ctx)
-        .catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(
+        queryDataset.handler(queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 2 }), ctx),
+      ).catch((e: unknown) => e)) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       // The rethrow-unchanged path is what makes `data.url` reachable — pin it.
@@ -418,6 +455,33 @@ describe('Security — input validation', () => {
         expect(() => queryWonder.input.parse({ mcd_icd10: code })).toThrow();
       },
     );
+
+    it.each([0, -1, 5001, 2.5, '10', Number.NaN])('rejects limit %j', (limit) => {
+      /**
+       * `limit` slices a table already held in memory, so an out-of-range value costs no
+       * upstream call — but it is still the one place a caller sizes the response, and a
+       * non-integer or negative value would reach Array.prototype.slice unchecked.
+       */
+      expect(() => queryWonder.input.parse({ limit })).toThrow();
+    });
+
+    it.each([-1, 10_001, 1.5, '0'])('rejects offset %j', (offset) => {
+      expect(() => queryWonder.input.parse({ offset })).toThrow();
+    });
+
+    it('accepts the ends of the limit and offset ranges', () => {
+      expect(queryWonder.input.parse({ limit: 1 }).limit).toBe(1);
+      expect(queryWonder.input.parse({ limit: 5000 }).limit).toBe(5000);
+      expect(queryWonder.input.parse({ offset: 0 }).offset).toBe(0);
+      expect(queryWonder.input.parse({ offset: 10_000 }).offset).toBe(10_000);
+    });
+
+    it('leaves limit unset and offset at zero when neither is supplied', () => {
+      /** Omitting both has to keep returning the whole table, not a silently capped page. */
+      const input = queryWonder.input.parse({});
+      expect(input.limit).toBeUndefined();
+      expect(input.offset).toBe(0);
+    });
 
     it.each(['D76', 'D176', 'natality', '*All*'])('rejects database %j', (database) => {
       /** The database selects the upstream URL path segment; only the enum may reach it. */
