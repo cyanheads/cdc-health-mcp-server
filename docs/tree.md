@@ -1,11 +1,9 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-08-09 16:02:49
+Generated on: 2026-08-18 06:18:38
 
 ```text
 cdc-health-mcp-server/
-├── .agents/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -16,6 +14,8 @@ cdc-health-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/

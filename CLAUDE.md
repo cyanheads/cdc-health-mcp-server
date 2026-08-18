@@ -1,8 +1,8 @@
 # Agent Protocol
 
 **Server:** cdc-health-mcp-server
-**Version:** 0.8.4
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.1`
+**Version:** 0.8.5
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.5`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -24,11 +24,11 @@ The three Socrata tools take an allowlisted `domain` input (`data.cdc.gov` defau
 | Definition | Type | Purpose |
 |:-----------|:-----|:--------|
 | `cdc_discover_datasets` | tool | Search catalog by keyword/category/tag. Entry point. Trimmed payload — `assetType`, `columnCount` + an 8-name `columnSample` and a 300-char description; full column detail comes from `cdc_get_dataset_schema`. |
-| `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. Full-detail surface. Fails `not_queryable` on a non-tabular asset instead of returning empty columns. |
-| `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. |
-| `cdc_query_wonder` | tool | Query CDC WONDER for national deaths, population, crude/age-adjusted rates. Grouped by year/age/sex/race, filtered by ICD-10 cause. A `database` enum selects one of five mortality databases — D76 (default), D176 provisional, D158, D77, D157. |
+| `cdc_get_dataset_schema` | tool | Fetch column schema, row count, metadata for a dataset ID. Full-detail surface, windowed — `column_limit` (default 100, max 500) / `column_offset`, with `totalCount`/`truncated`/`nextOffset` enrichment. Fails `not_queryable` on a non-tabular asset instead of returning empty columns. |
+| `cdc_query_dataset` | tool | Execute SoQL queries — filter, aggregate, sort, full-text search. Continuation is measured by an over-fetch probe, not the row count, and the page is bounded by a character budget; discloses `truncated`/`shown`/`cap`/`nextOffset`, never a `totalCount`. |
+| `cdc_query_wonder` | tool | Query CDC WONDER for national deaths, population, crude/age-adjusted rates. Grouped by year/age/sex/race, filtered by ICD-10 cause. A `database` enum selects one of five mortality databases — D76 (default), D176 provisional, D158, D77, D157. Whole table by default; `limit`/`offset` page the parsed rows with `totalCount`/`truncated`/`nextOffset`, re-basing `cellNotes` onto the page while `caveats`/`messages` stay whole. |
 | `cdc://datasets` | resource | 50 most-viewed catalog entries for orientation — carries `assetType` + `columnCount`, since the page mixes charts/stories/filters in with datasets. |
-| `cdc://datasets/{datasetId}` | resource | Dataset metadata + schema (equivalent to schema tool). |
+| `cdc://datasets/{datasetId}` | resource | Dataset metadata + the first 100 columns, carrying `columnCount`/`truncated`/`notice`. Takes no selector — the SDK's `UriTemplate.match` compiles RFC 6570 query variables as *required*, so `{?column_limit,column_offset}` would stop the bare URI matching at all. |
 | `analyze_health_trend` | prompt | Guided workflow: pick the source (WONDER for national mortality, Socrata otherwise), then discover → inspect → query → compare → synthesize. Routing is prose the reader acts on — the handler never classifies the topic. |
 
 ### Socrata API Endpoints
@@ -70,6 +70,7 @@ Separate system, separate service (`src/services/wonder/`). `POST https://wonder
 - `fetchJson` is shared by all five Socrata definitions and each handler re-dispatches on `err.data.reason` alone, so a reason must be true for every status it covers **and** declared by every consumer that can raise it — `ctx.fail` with an undeclared reason returns an `InternalError` that leaks the declared-reason list. `tests/services/socrata/socrata-contract-parity.test.ts` enforces both directions; the status→reason table lives in `docs/design.md`.
 - Anything upstream interpolated into a markdown table cell goes through `escapeTableCell` (`src/utils/markdown.ts`) — Socrata column descriptions carry raw newlines, which terminate the row for `content[]`-only clients.
 - The Discovery API unions `tags` — one parameter per value, matched against the catalog's own vocabulary case-insensitively. Adding a tag widens the result set, and a tag no dataset carries matches nothing and changes nothing. `query` and `category` intersect with it. Every surface naming tags says so: the input `.describe()`, the `appliedFilters` trailer, `README.md`, and `docs/design.md`.
+- `SocrataService.query` sends `$limit + 1` on the wire and drops the extra row — the SODA data endpoint reports no total, so the over-fetch is the only thing that separates a last page which fills the limit exactly from one that was cut. The echoed `query` is built **before** the probe overwrites `$limit`, so it stays the caller's own; handing back the probe value would give anyone replaying the echo one extra row per call. `tests/services/socrata/socrata-service.test.ts` pins both halves.
 - `QueryResult.query` (the `effectiveQuery` echo) is read back off `URLSearchParams` rather than decoded from its output — that form writes a space as `+` and a caller's literal `+` as `%2B`, so decoding it strands every space as a plus sign and swapping plus for space afterwards erases the arithmetic `+`.
 - Year columns vary per dataset — some are numbers, some text. `where` clause must match the actual type.
 - Some datasets suppress small counts for privacy (missing values or footnote markers, not zeros).

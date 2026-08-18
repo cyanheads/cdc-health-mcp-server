@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.8.5] - 2026-08-18
+
+Truthful pagination for `cdc_query_dataset`, windowed column retrieval for `cdc_get_dataset_schema` and its resource twin, and row pagination for `cdc_query_wonder` — all three now share the same `truncated`/`totalCount`/`nextOffset` continuation vocabulary.
+
+### Added
+
+- **`column_limit`/`column_offset` on `cdc_get_dataset_schema`** (#38): defaults to the first 100 columns; wide schemas (up to 322 columns in the catalog) continue via `column_offset`, disclosing `totalCount`, `truncated`, `shown`, `cap`, and `nextOffset`. `column_limit` maxes at 500. An offset at or past the column count returns an empty window rather than an error. `cdc://datasets/{datasetId}` gets the same first-100-column window and points at the tool for the rest — the SDK's `UriTemplate.match` compiles RFC 6570 query variables as required, so the resource cannot take its own selector without breaking the bare URI every existing client holds.
+- **`limit`/`offset` on `cdc_query_wonder`** (#39): pages the already-parsed mortality table — WONDER's request XML has no offset/limit of its own, so CDC is asked once either way — with `totalCount`, `truncated`, and `nextOffset`. `cellNotes` is re-scoped to the page and `row`-indexed relative to it; `caveats` and `messages` stay whole on every page since they describe the table CDC assembled, not the slice returned. Omitting both preserves the existing whole-table behavior.
+
+### Fixed
+
+- **`cdc_query_dataset` pagination truthfulness** (#37): `truncated` is now established by fetching one row past the requested `limit` and dropping it (`SocrataService.query` sends `$limit + 1` on the wire), rather than inferred from `rowCount === limit` — a query whose true remaining count exactly equals `limit` no longer misreports truncation, and a one-row aggregate (`count(*)`) no longer reports it at all. The echoed `query` keeps the caller's own `$limit`. Rows are additionally bounded to a 200,000-character response budget (summed `JSON.stringify(row)` length) so a wide dataset at `limit: 5000` returns a usable page instead of several megabytes; either cause discloses `truncated`/`shown`/`cap`/`nextOffset`. The `order` input's description now names Socrata's documented minimum tie-breaker, `order=":id"`, for deterministic offset paging.
+
+### Changed
+
+- **Security contact**: `.github/SECURITY.md` now routes vulnerability reports to `security@caseyjhand.com` instead of the general contact address.
+- **Docker builds trim optional peer deps**: both `bun install`/`bun add` steps in `Dockerfile` add `--omit=peer`, dropping the framework's optional peer tiers (test runner, service SDKs, parsers) that Bun would otherwise auto-install into the production image.
+- **`tests/` now typechecked**: `tsconfig.json`/`tsconfig.build.json` split so `bun run build` compiles only `src/`, while the typecheck step now covers `tests/` too — several strict-mode gaps (implicit `any` in catch handlers, unchecked array indexing) fixed across the test suite as a result.
+- **`scripts/tree.ts`** now matches directory-only ignore patterns (`.claude/`, `.agents/`) only against directories, not files of the same name — `docs/tree.md` no longer lists them as empty entries.
+- Added `.github/CONTRIBUTING.md` and `.github/CODE_OF_CONDUCT.md`.
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.11.1 → ^0.11.5
+- `@biomejs/biome` 2.5.6 → 2.5.8
+- `@types/node` 26.1.2 → 26.2.0
+- `vitest` ^4.1.9 → ^4.1.10
+- `@vitest/coverage-istanbul` ^4.1.9 → ^4.1.10
+
 ## [0.8.4] - 2026-08-09
 
 Corrects the `domain` input's description on the three Socrata tools, which implied `chronicdata.cdc.gov` scoped access to datasets it does not, and closes a token-leak test that could never fail.

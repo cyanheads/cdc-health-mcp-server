@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cdc-health-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cdc-health-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cdc-health-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -34,9 +34,9 @@ Four tools for discovering and querying CDC public health data. Three query the 
 | Tool | Description |
 |:---|:---|
 | `cdc_discover_datasets` | Search the catalog by keyword, category, or tag. Entry point for all queries. |
-| `cdc_get_dataset_schema` | Fetch column schema, row count, and metadata for a dataset. Essential before writing SoQL queries. |
+| `cdc_get_dataset_schema` | Fetch column schema, row count, and metadata for a dataset. Essential before writing SoQL queries. Returns a bounded column window with a continuation offset for wide schemas. |
 | `cdc_query_dataset` | Execute SoQL queries — filter, aggregate, sort, full-text search, and field selection. |
-| `cdc_query_wonder` | Query CDC WONDER for national mortality statistics (deaths, population, crude/age-adjusted rates) by year, age, sex, and race, filtered by ICD-10 cause. Covers five CDC mortality databases — final and provisional, underlying-cause and multiple-cause. |
+| `cdc_query_wonder` | Query CDC WONDER for national mortality statistics (deaths, population, crude/age-adjusted rates) by year, age, sex, and race, filtered by ICD-10 cause. Covers five CDC mortality databases — final and provisional, underlying-cause and multiple-cause. Large tables page with a continuation offset. |
 
 ### `cdc_discover_datasets`
 
@@ -54,12 +54,14 @@ Search the CDC dataset catalog to find relevant datasets.
 
 ### `cdc_get_dataset_schema`
 
-Fetch the full column schema for a specific dataset.
+Fetch the column schema for a specific dataset.
 
-- Column names, data types, and descriptions
+- Column names, data types, and full descriptions — never truncated per column
 - Row count and last-updated timestamp
 - Essential for understanding column types before writing `$where` clauses
 - Accepts four-by-four dataset identifiers (e.g., `bi63-dtpu`)
+- Returns the first 100 columns by default. Catalog schemas run from 3 to 322 columns, so every ordinary dataset arrives whole; wider ones report `totalCount`, `truncated`, and a `nextOffset` to pass back as `column_offset`. Raise `column_limit` (max 500) to pull a wide schema in one call
+- A `column_offset` at or past the column count returns an empty window rather than an error
 - Fails with `not_queryable` when the ID names a non-tabular catalog asset, rather than returning an empty column list
 - `domain` selects the host contacted, `data.cdc.gov` (default) or `chronicdata.cdc.gov` — a four-by-four ID resolves on either
 
@@ -72,6 +74,9 @@ Execute SoQL queries against any CDC dataset.
 - Full SoQL support: `$select`, `$where`, `$group`, `$having`, `$order`
 - Full-text search across all text columns via `$q`
 - Up to 5,000 rows per request with pagination
+- `truncated` is measured, not guessed: the request fetches one row past the limit and drops it, so a page that fills the limit exactly is reported as complete instead of sending you paginating an aggregate
+- `nextOffset` names where to resume whenever rows remain. Pair it with an `order` clause — SODA does not order results implicitly, and `order=":id"` works on any dataset
+- Rows are also bounded by a 200,000-character response budget, so a wide dataset at `limit: 5000` returns a usable page with a `nextOffset` rather than several megabytes
 - Returns the SoQL clauses it sent as `effectiveQuery`, values in their original text rather than URL-encoded, so a clause can be copied back into the parameter it came from
 - All response values are strings (per SODA v2.1) — parse based on column type metadata
 - `domain` selects the host contacted, `data.cdc.gov` (default) or `chronicdata.cdc.gov` — a four-by-four ID returns the same rows from either
@@ -102,6 +107,8 @@ Query CDC WONDER for national US mortality statistics — a separate CDC system 
 - Row dimension values are CDC's own labels with surrounding whitespace removed, so the same year keys identically across databases — CDC pads a few of them, and `"2024 "` and `"2024"` would otherwise read as two different years
 - Provisional rows carry CDC's own year labels, e.g. `2025 (provisional)` and `2026 (provisional and partial)`, rather than a bare year
 - Returns deaths, population, and crude death rate, plus age-adjusted rate when WONDER can standardize by age — omitted when grouping by `age_group` or filtering to a single age group
+- Returns the whole table by default. A broad grouping runs long — `["year","age_group","sex","race"]` can pass a thousand rows — so `limit` (max 5,000) and `offset` take it a page at a time, alongside `totalCount`, `truncated`, and a `nextOffset` to resume from. An `offset` at or past the row total returns an empty page rather than an error
+- Paging shapes the response only: WONDER's request carries no limit of its own, so CDC is asked once either way and every page is a slice of the one table. `caveats` and `messages` come back complete on each page; `cellNotes` covers the rows returned, with `row` relative to them
 - National totals only — sub-national (state/county) breakdowns are not available through the WONDER API (CDC vital-statistics policy)
 - CDC replaces some measure values with a status token — `Suppressed` (withheld for confidentiality), `Unreliable` (a rate from fewer than 20 deaths), `Not Applicable` (no population denominator). Those cells read `null` in `rows`; `cellNotes` names the row, column, and token for each
 - CDC also hides whole rows before sending the table — strata with zero deaths, and strata whose death count is suppressed. Those rows are absent from `rows` with nothing marking the gap, so `messages` carries CDC's own statement whenever it happened
@@ -112,7 +119,7 @@ Query CDC WONDER for national US mortality statistics — a separate CDC system 
 | Type | Name | Description |
 |:---|:---|:---|
 | Resource | `cdc://datasets` | 50 most-viewed catalog entries for orientation, each with its asset type and column count |
-| Resource | `cdc://datasets/{datasetId}` | Dataset metadata and column schema (equivalent to schema tool) |
+| Resource | `cdc://datasets/{datasetId}` | Dataset metadata plus the first 100 columns, with the dataset's total column count and a truncation flag; `cdc_get_dataset_schema` reaches the rest |
 | Prompt | `analyze_health_trend` | Picks between CDC WONDER and the Socrata catalog for the question at hand, then runs a 5-step workflow: discover, inspect, baseline query, compare, synthesize |
 
 ## Features
