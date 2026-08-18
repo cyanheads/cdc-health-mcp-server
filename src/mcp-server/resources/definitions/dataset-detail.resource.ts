@@ -8,10 +8,22 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
 
+/**
+ * Columns carried per read, matching `cdc_get_dataset_schema`'s default window so both
+ * surfaces answer with the same shape.
+ *
+ * The resource takes no selector. RFC 6570 query expansion (`{?column_limit,column_offset}`)
+ * expresses such a URI, but the MCP SDK's `UriTemplate.match` compiles query variables into
+ * *required* pattern segments in declared order: a template carrying them stops matching the
+ * bare `cdc://datasets/{datasetId}` form every client already holds, and a URI supplying only
+ * one of the two matches nothing at all. Bounding the read and naming the tool for the
+ * remainder keeps the existing URI working with no unbounded path left to the same data.
+ */
+const COLUMN_WINDOW = 100;
+
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   name: 'CDC Dataset Detail',
-  description:
-    'Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Same payload as cdc_get_dataset_schema.',
+  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window.`,
   mimeType: 'application/json',
 
   errors: [
@@ -107,11 +119,27 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
       );
     }
 
+    const columnCount = metadata.columns.length;
+    const columns = metadata.columns.slice(0, COLUMN_WINDOW);
+    const truncated = columns.length < columnCount;
+
     ctx.log.info('Dataset detail resource accessed', {
       datasetId: params.datasetId,
       name: metadata.name,
+      columnCount,
+      columnsShown: columns.length,
     });
 
-    return metadata;
+    return {
+      ...metadata,
+      columns,
+      columnCount,
+      truncated,
+      ...(truncated
+        ? {
+            notice: `Showing the first ${columns.length} of ${columnCount} columns. Call cdc_get_dataset_schema with datasetId="${params.datasetId}" and column_offset=${columns.length} for the rest; every column is reachable that way.`,
+          }
+        : {}),
+    };
   },
 });

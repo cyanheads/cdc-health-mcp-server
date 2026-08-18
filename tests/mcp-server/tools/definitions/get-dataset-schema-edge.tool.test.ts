@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
@@ -28,7 +28,7 @@ describe('cdc_get_dataset_schema — edge cases', () => {
         // rowCount, updatedAt, description omitted
       };
       mockGetMetadata.mockResolvedValue(sparseMetadata);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
       const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
       const result = await getDatasetSchema.handler(input, ctx);
 
@@ -53,7 +53,9 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       const ctx = createMockContext({ errors: getDatasetSchema.errors });
       const input = getDatasetSchema.input.parse({ datasetId: '235m-gsry' });
 
-      const err = (await getDatasetSchema.handler(input, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(getDatasetSchema.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
       expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(err.data).toMatchObject({
@@ -70,10 +72,122 @@ describe('cdc_get_dataset_schema — edge cases', () => {
         columns: [{ fieldName: 'mystery', dataType: 'text' /* no description */ }],
       };
       mockGetMetadata.mockResolvedValue(meta);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
       const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
       const result = await getDatasetSchema.handler(input, ctx);
-      expect(result.columns[0].description).toBeUndefined();
+      expect(result.columns[0]?.description).toBeUndefined();
+    });
+  });
+
+  describe('column window — boundaries', () => {
+    const columns = Array.from({ length: 40 }, (_, i) => ({
+      fieldName: `col_${i}`,
+      dataType: 'text',
+    }));
+
+    it('applies the documented defaults when no selector is given', () => {
+      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
+      expect(input.column_limit).toBe(100);
+      expect(input.column_offset).toBe(0);
+    });
+
+    it('succeeds on the pre-change call shape', async () => {
+      mockGetMetadata.mockResolvedValue({ name: 'Narrow', columns: columns.slice(0, 6) });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'bi63-dtpu' }),
+        ctx,
+      );
+      expect(result.columns).toHaveLength(6);
+    });
+
+    it('returns a well-formed empty page when column_offset is past the end', async () => {
+      /**
+       * Consistent with how cdc_discover_datasets treats an offset past its result set: the
+       * lookup succeeded, the window is simply empty. An error here would be a lie about
+       * the dataset.
+       */
+      mockGetMetadata.mockResolvedValue({ name: 'Wide enough', columns });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_offset: 400 });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toEqual([]);
+      expect(result.name).toBe('Wide enough');
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(40);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.shown).toBe(0);
+      expect(enrichment.nextOffset).toBeUndefined();
+      expect(enrichment.notice).toContain('past the end');
+      expect(enrichment.notice).toContain('40');
+    });
+
+    it('returns the last column when column_offset lands on it exactly', async () => {
+      mockGetMetadata.mockResolvedValue({ name: 'Wide enough', columns });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_offset: 39 });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toHaveLength(1);
+      expect(result.columns[0]?.fieldName).toBe('col_39');
+      expect(getEnrichment(ctx).nextOffset).toBeUndefined();
+    });
+
+    it('honours column_limit=1', async () => {
+      mockGetMetadata.mockResolvedValue({ name: 'Wide enough', columns });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 1 });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toHaveLength(1);
+      expect(getEnrichment(ctx).nextOffset).toBe(1);
+    });
+
+    it('still fails not_queryable when the asset has no columns at all', async () => {
+      /**
+       * The empty-columns signal is read off the full upstream schema, never off an empty
+       * window — a chart asset must keep failing rather than looking like a paged-past page.
+       */
+      mockGetMetadata.mockResolvedValue({ name: 'A chart', columns: [] });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'sxbq-3sid', column_offset: 0 });
+
+      await expect(getDatasetSchema.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'not_queryable' },
+      });
+    });
+
+    it('rejects out-of-range column_limit and column_offset', () => {
+      const bad = [
+        { column_limit: 0 },
+        { column_limit: 501 },
+        { column_limit: 1.5 },
+        { column_offset: -1 },
+        { column_offset: 1.5 },
+      ];
+      for (const extra of bad) {
+        expect(getDatasetSchema.input.safeParse({ datasetId: 'ab12-cd34', ...extra }).success).toBe(
+          false,
+        );
+      }
+    });
+
+    it('accepts the column_limit boundaries', () => {
+      expect(
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 1 }).column_limit,
+      ).toBe(1);
+      expect(
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 500 }).column_limit,
+      ).toBe(500);
+    });
+
+    it('describes both selectors and names the other as the way to continue', () => {
+      const limitDesc = getDatasetSchema.input.shape.column_limit.description ?? '';
+      const offsetDesc = getDatasetSchema.input.shape.column_offset.description ?? '';
+      expect(limitDesc).toContain('column_offset');
+      expect(limitDesc).toContain('100');
+      expect(offsetDesc).toContain('column_limit');
     });
   });
 
@@ -194,7 +308,9 @@ describe('cdc_get_dataset_schema — edge cases', () => {
         const ctx = createMockContext({ errors: getDatasetSchema.errors });
         const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
 
-        const err = (await getDatasetSchema.handler(input, ctx).catch((e) => e)) as McpError;
+        const err = (await Promise.resolve(getDatasetSchema.handler(input, ctx)).catch(
+          (e: unknown) => e,
+        )) as McpError;
         expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
         expect(err.data).toMatchObject({ reason: 'upstream_error', retryable: true });
       },
@@ -215,7 +331,9 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       const ctx = createMockContext({ errors: getDatasetSchema.errors });
       const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
 
-      const err = (await getDatasetSchema.handler(input, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(getDatasetSchema.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
       expect(err).toBe(serviceErr);
       expect(err.code).toBe(JsonRpcErrorCode.Unauthorized);
       expect(err.code).not.toBe(JsonRpcErrorCode.InternalError);
@@ -238,7 +356,9 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       const ctx = createMockContext({ errors: getDatasetSchema.errors });
       const input = getDatasetSchema.input.parse({ datasetId: '235m-gsry' });
 
-      const err = (await getDatasetSchema.handler(input, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(getDatasetSchema.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
       expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
       const data = err.data as { reason: string; retryable?: boolean; recovery: { hint: string } };
       expect(data.reason).toBe('access_denied');

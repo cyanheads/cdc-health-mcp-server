@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/get-dataset-schema
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
@@ -33,7 +33,7 @@ describe('cdc_get_dataset_schema', () => {
 
   it('returns metadata for a valid dataset ID', async () => {
     mockGetMetadata.mockResolvedValue(sampleMetadata);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDatasetSchema.errors });
     const input = getDatasetSchema.input.parse({ datasetId: 'bi63-dtpu' });
     const result = await getDatasetSchema.handler(input, ctx);
 
@@ -46,7 +46,7 @@ describe('cdc_get_dataset_schema', () => {
 
   it('threads an explicit domain through to getMetadata', async () => {
     mockGetMetadata.mockResolvedValue(sampleMetadata);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDatasetSchema.errors });
     const input = getDatasetSchema.input.parse({
       datasetId: 'swc5-untb',
       domain: 'chronicdata.cdc.gov',
@@ -68,16 +68,155 @@ describe('cdc_get_dataset_schema', () => {
 
   it('propagates service errors', async () => {
     mockGetMetadata.mockRejectedValue(new Error('Dataset not found (404).'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDatasetSchema.errors });
     const input = getDatasetSchema.input.parse({ datasetId: 'bi63-dtpu' });
     await expect(getDatasetSchema.handler(input, ctx)).rejects.toThrow(/not found/);
+  });
+
+  describe('column window', () => {
+    /** A schema the width of ua7e-t2fy (Weekly Hospital Respiratory Data). */
+    const wideMetadata: DatasetMetadata = {
+      name: 'Weekly Hospital Respiratory Data',
+      columns: Array.from({ length: 322 }, (_, i) => ({
+        fieldName: `col_${i}`,
+        dataType: 'number',
+        description: `Description of column ${i}`,
+      })),
+    };
+
+    it('returns a narrow schema whole and reports its column total', async () => {
+      mockGetMetadata.mockResolvedValue(sampleMetadata);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'bi63-dtpu' });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toHaveLength(3);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(3);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.nextOffset).toBeUndefined();
+      expect(enrichment.notice).toBeUndefined();
+    });
+
+    it('bounds a 322-column schema at the default window and points at the next page', async () => {
+      mockGetMetadata.mockResolvedValue(wideMetadata);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({ datasetId: 'ua7e-t2fy' });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toHaveLength(100);
+      expect(result.columns[0]?.fieldName).toBe('col_0');
+      expect(result.columns[99]?.fieldName).toBe('col_99');
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(322);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.shown).toBe(100);
+      expect(enrichment.cap).toBe(100);
+      expect(enrichment.nextOffset).toBe(100);
+      expect(enrichment.notice).toContain('column_offset=100');
+    });
+
+    it('keeps selected column descriptions whole rather than truncating them', async () => {
+      const longDescription = 'D'.repeat(1200);
+      mockGetMetadata.mockResolvedValue({
+        name: 'Verbose',
+        columns: [{ fieldName: 'a', dataType: 'text', description: longDescription }],
+      });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }),
+        ctx,
+      );
+      expect(result.columns[0]?.description).toBe(longDescription);
+    });
+
+    it('continues from an explicit column_offset', async () => {
+      mockGetMetadata.mockResolvedValue(wideMetadata);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({
+        datasetId: 'ua7e-t2fy',
+        column_offset: 100,
+      });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns[0]?.fieldName).toBe('col_100');
+      expect(result.columns).toHaveLength(100);
+      expect(getEnrichment(ctx).nextOffset).toBe(200);
+    });
+
+    it('returns the final page without a nextOffset', async () => {
+      mockGetMetadata.mockResolvedValue(wideMetadata);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({
+        datasetId: 'ua7e-t2fy',
+        column_offset: 300,
+      });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toHaveLength(22);
+      expect(result.columns[21]?.fieldName).toBe('col_321');
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.nextOffset).toBeUndefined();
+      expect(enrichment.notice).toContain('322');
+    });
+
+    it('reaches every column across a sequence of calls', async () => {
+      mockGetMetadata.mockResolvedValue(wideMetadata);
+      const seen: string[] = [];
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const ctx = createMockContext({ errors: getDatasetSchema.errors });
+        const input = getDatasetSchema.input.parse({
+          datasetId: 'ua7e-t2fy',
+          column_offset: offset,
+        });
+        const page = await getDatasetSchema.handler(input, ctx);
+        seen.push(...page.columns.map((c) => c.fieldName));
+        offset = getEnrichment(ctx).nextOffset as number | undefined;
+      }
+      expect(seen).toHaveLength(322);
+      expect(new Set(seen).size).toBe(322);
+    });
+
+    it('returns the whole wide schema when column_limit is raised', async () => {
+      mockGetMetadata.mockResolvedValue(wideMetadata);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({
+        datasetId: 'ua7e-t2fy',
+        column_limit: 500,
+      });
+      const result = await getDatasetSchema.handler(input, ctx);
+
+      expect(result.columns).toHaveLength(322);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(322);
+      expect(enrichment.truncated).toBeUndefined();
+    });
+
+    it('renders the windowed columns in content[] as well as structuredContent', async () => {
+      mockGetMetadata.mockResolvedValue(wideMetadata);
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const input = getDatasetSchema.input.parse({
+        datasetId: 'ua7e-t2fy',
+        column_limit: 5,
+        column_offset: 10,
+      });
+      const result = await getDatasetSchema.handler(input, ctx);
+      const text = (getDatasetSchema.format!(result)[0] as { type: 'text'; text: string }).text;
+
+      for (const column of result.columns) expect(text).toContain(`\`${column.fieldName}\``);
+      expect(text).toContain('Description of column 14');
+      expect(text).not.toContain('`col_15`');
+    });
   });
 
   describe('format', () => {
     it('renders a markdown table of columns', () => {
       const blocks = getDatasetSchema.format!(sampleMetadata);
       expect(blocks).toHaveLength(1);
-      expect(blocks[0].type).toBe('text');
+      expect(blocks[0]?.type).toBe('text');
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('Diabetes Mortality');
       expect(text).toContain('50,000');

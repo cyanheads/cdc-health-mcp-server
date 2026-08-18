@@ -50,7 +50,7 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
         columns: [{ fieldName: 'id', dataType: 'text' }],
       };
       mockGetMetadata.mockResolvedValue(sparseMetadata);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
       const params = datasetDetailResource.params!.parse({ datasetId: 'ab12-cd34' });
       const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
 
@@ -66,7 +66,7 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
         columns: [{ fieldName: 'state', dataType: 'text' }],
       };
       mockGetMetadata.mockResolvedValue(meta);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
       const params = datasetDetailResource.params!.parse({ datasetId: 'zz99-ww88' });
       await datasetDetailResource.handler(params, ctx);
       expect(mockGetMetadata).toHaveBeenCalledWith('zz99-ww88', ctx.signal);
@@ -77,7 +77,9 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
       const ctx = createMockContext({ errors: datasetDetailResource.errors });
       const params = datasetDetailResource.params!.parse({ datasetId: '2g2d-yfx9' });
 
-      const err = (await datasetDetailResource.handler(params, ctx).catch((e) => e)) as McpError;
+      const err = (await Promise.resolve(datasetDetailResource.handler(params, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
       expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(err.data).toMatchObject({
@@ -90,7 +92,15 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
 
   describe('list()', () => {
     it('returns example dataset URIs', async () => {
-      const listing = await datasetDetailResource.list!();
+      // `list` receives the SDK's request-handler extra, not a Context — a minimal
+      // literal is enough for a listing that ignores it.
+      const extra = {
+        signal: new AbortController().signal,
+        requestId: 'test',
+        sendNotification: () => Promise.resolve(),
+        sendRequest: () => Promise.resolve({} as never),
+      };
+      const listing = await datasetDetailResource.list!(extra);
       expect(listing.resources.length).toBeGreaterThan(0);
       for (const r of listing.resources) {
         expect(r.uri).toMatch(/^cdc:\/\/datasets\/[a-z0-9]{4}-[a-z0-9]{4}$/);

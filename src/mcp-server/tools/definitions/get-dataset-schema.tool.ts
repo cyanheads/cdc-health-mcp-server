@@ -9,9 +9,20 @@ import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import { CDC_SOCRATA_DOMAINS, type DatasetMetadata } from '@/services/socrata/types.js';
 import { escapeTableCell } from '@/utils/markdown.js';
 
+/**
+ * Columns returned per call when the caller names no window. Catalog schemas run from 3 to
+ * 322 columns; at 100 every dataset in the ordinary range arrives whole, while the widest
+ * outlier's column payload drops by roughly two thirds. Descriptions carry the field
+ * semantics needed to write a correct query, so the count of columns returned is the knob —
+ * never their content.
+ */
+const DEFAULT_COLUMN_LIMIT = 100;
+/** Ceiling on `column_limit`, comfortably above the widest schema in the catalog. */
+const MAX_COLUMN_LIMIT = 500;
+
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
   description:
-    'Fetch the full column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Get dataset IDs from cdc_discover_datasets.',
+    'Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Returns the first 100 columns by default; wide datasets continue via column_offset. Get dataset IDs from cdc_discover_datasets.',
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -72,6 +83,24 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .describe(
         'Four-by-four dataset identifier (e.g., "bi63-dtpu"). Obtain from cdc_discover_datasets.',
       ),
+    column_limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_COLUMN_LIMIT)
+      .default(DEFAULT_COLUMN_LIMIT)
+      .describe(
+        `Columns to return in this call (default ${DEFAULT_COLUMN_LIMIT}, max ${MAX_COLUMN_LIMIT}). Every dataset under the default arrives whole; past it the response reports totalCount and a nextOffset to pass back as column_offset. Raise this to pull a wide schema in one call.`,
+      ),
+    column_offset: z
+      .number()
+      .int()
+      .min(0)
+      .max(10_000)
+      .default(0)
+      .describe(
+        'Index of the first column to return, for continuing past a previous call (default 0). Columns keep the order the dataset declares, so column_offset plus column_limit walks the schema without gaps or repeats. An offset at or past the column count returns an empty window rather than an error.',
+      ),
   }),
 
   output: z.object({
@@ -96,8 +125,39 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
           })
           .describe('A single column in the dataset schema.'),
       )
-      .describe('Dataset columns with types and descriptions.'),
+      .describe(
+        'The requested window of dataset columns, with full types and descriptions. Bounded by column_limit/column_offset; the enrichment fields say how the window sits in the whole schema.',
+      ),
   }),
+
+  // Agent-facing window context: the dataset's true column total, whether this response is
+  // a subset of it, and where to resume. Reaches structuredContent AND content[]
+  // automatically — no format() entry needed or allowed.
+  enrichment: {
+    totalCount: z
+      .number()
+      .describe('Total columns in the dataset schema, before column_limit/column_offset.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when the returned columns are a subset of the schema. Absent means every column of the dataset is in this response.',
+      ),
+    shown: z.number().optional().describe('Number of columns returned in this response.'),
+    cap: z.number().optional().describe('The column_limit that bounded this response.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Value to pass as column_offset on the next call to continue after the last column returned. Present only when columns remain beyond this window.',
+      ),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when the response is a subset of the schema — which columns it covers, how to reach the rest, or that column_offset ran past the end.',
+      ),
+  },
 
   async handler(input, ctx) {
     const service = getSocrataService();
@@ -126,15 +186,41 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       );
     }
 
+    const total = metadata.columns.length;
+    const columns = metadata.columns.slice(
+      input.column_offset,
+      input.column_offset + input.column_limit,
+    );
+    const consumed = input.column_offset + columns.length;
+
+    ctx.enrich.total(total);
+
+    if (columns.length < total) {
+      /**
+       * `enrich.truncated()` writes `notice` itself and last-wins over any other notice
+       * call, so the three window cases compose into the single `guidance` string.
+       */
+      const guidance =
+        input.column_offset >= total
+          ? `column_offset ${input.column_offset} is past the end of this schema, which holds ${total} columns. Lower column_offset below ${total} to see columns.`
+          : consumed < total
+            ? `Showing columns ${input.column_offset + 1}–${consumed} of ${total}. Call again with column_offset=${consumed} for the next window, or raise column_limit (max ${MAX_COLUMN_LIMIT}) to pull more per call.`
+            : `Showing columns ${input.column_offset + 1}–${consumed} of ${total} — the end of the schema. The earlier columns are at lower column_offset values.`;
+      ctx.enrich.truncated({ shown: columns.length, cap: input.column_limit, guidance });
+      if (consumed < total) ctx.enrich({ nextOffset: consumed });
+    }
+
     ctx.log.info('Schema retrieved', {
       domain: input.domain,
       datasetId: input.datasetId,
       name: metadata.name,
-      columnCount: metadata.columns.length,
+      columnCount: total,
+      columnsShown: columns.length,
+      columnOffset: input.column_offset,
       rowCount: metadata.rowCount,
     });
 
-    return metadata;
+    return { ...metadata, columns };
   },
 
   format: (result) => {
