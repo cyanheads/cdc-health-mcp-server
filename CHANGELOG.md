@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.8.6] - 2026-08-22
+
+Adopts `@cyanheads/mcp-ts-core` 0.12.3 and with it the MCP SDK v2 line: tool inputs are strict, advertised schemas are JSON Schema 2020-12, `outputSchema` declares the error envelope, and every HTTP endpoint serves protocol revision `2026-07-28` alongside the 2025 era. No tool, resource, or prompt behavior changed — `src/` is untouched.
+
+### Changed
+
+- **Tool inputs are strict**: an argument key a tool's schema does not declare is rejected by name before the handler runs, instead of being silently stripped. `cdc_discover_datasets` called with an undeclared key comes back as an input-validation error naming that key; a client that previously sent a misspelled or unsupported argument and had it ignored now gets an error.
+- **Advertised JSON Schema is 2020-12**: `"$schema": "https://json-schema.org/draft/2020-12/schema"` on every tool's `inputSchema` and `outputSchema`, with `additionalProperties: false` at each input root.
+- **`outputSchema` declares the error envelope**: success fields become optional and an `error` object (`code`, `message`, `data.{reason, recovery, retryable}`) is declared, so a client that validates `structuredContent` without first checking `isError` no longer rejects error results.
+- **Protocol revision `2026-07-28` is served** alongside the 2025 era — the server card at `/.well-known/mcp.json` reports `"mcp_version": "2026-07-28"`.
+- **Bun pins move to `1.4.0`**: both `Dockerfile` stages and `packageManager`. `engines.bun` stays `>=1.3.0`.
+- **`Dockerfile` build stage pinned to `$BUILDPLATFORM`**: the stage emits platform-independent JavaScript and only `dist/` is copied forward, and under QEMU Bun's JavaScriptCore aborts with a spurious `MemoryExhaustion` assertion — so a cross-arch build of that stage fails outright. Multi-arch images now build it natively.
+- **`.env.example` declares `MCP_SESSION_MODE=stateless`** rather than hinting at the framework's `stateful` default: this server holds no per-session state, and the production `Dockerfile` ENV already set it. `MCP_HTTP_RESUMABILITY`, `MCP_HTTP_RESUMABILITY_MAX_EVENTS`, and `MCP_HTTP_RESUMABILITY_TTL_MS` are documented alongside as commented defaults — they gate SSE replay on a dropped stateful stream and have no effect on stateless serving.
+- **Packaging and definition lint follow the SDK rename**: `scripts/lint-packaging.ts` checks `node_modules/@modelcontextprotocol/server/dist/` in place of `node_modules/@modelcontextprotocol/sdk/dist/`, and `scripts/lint-mcp.ts` drops its `taskHandlers` branch along with the framework's removed tasks surface.
+- README MCP SDK badge `^1.29.0` → `^2.0.0`; the Bun badge and the prerequisite line now read `v1.3.0`, matching `engines.bun`.
+- `package.json` drops `changelog:build`/`changelog:check` — this server has no `changelog/` directory — and gains `test:coverage`.
+- Resource `list()` tests construct the SDK's server context (`mcpReq`) in place of the removed request-handler extra. `CLAUDE.md` and the bundled skills re-sync to the 0.12.x API: `ctx.requestInput`/`ctx.inputs` replace `ctx.elicit`, and `ctx.progress` is gone with the tasks surface.
+
+### Dependencies
+
+- `@cyanheads/mcp-ts-core` ^0.11.5 → ^0.12.3
+- `@biomejs/biome` 2.5.8 → 2.5.9
+- `tsc-alias` ^1.9.1 → ^1.9.2
+- `vitest` ^4.1.10 → ^4.1.11
+- `@vitest/coverage-istanbul` ^4.1.10 → ^4.1.11
+- `packageManager` bun@1.3.14 → bun@1.4.0
+
 ## [0.8.5] - 2026-08-18
 
 Truthful pagination for `cdc_query_dataset`, windowed column retrieval for `cdc_get_dataset_schema` and its resource twin, and row pagination for `cdc_query_wonder` — all three now share the same `truncated`/`totalCount`/`nextOffset` continuation vocabulary.
