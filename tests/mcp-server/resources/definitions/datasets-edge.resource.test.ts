@@ -15,6 +15,31 @@ vi.mock('@/services/socrata/socrata-service.js', () => ({
   getSocrataService: () => ({ discover: mockDiscover }),
 }));
 
+/**
+ * `list()` receives the SDK's server context, not a handler Context, and this
+ * listing ignores it. The stub carries the members the type requires and
+ * rejects on every server-to-client call so an accidental use is loud.
+ */
+type ListExtra = Parameters<NonNullable<typeof datasetsResource.list>>[0];
+
+const unused = () => Promise.reject(new Error('list() must not call the client'));
+
+function makeListExtra(): ListExtra {
+  return {
+    mcpReq: {
+      id: 1,
+      method: 'resources/list',
+      signal: new AbortController().signal,
+      requestState: () => undefined,
+      send: unused,
+      notify: () => Promise.resolve(),
+      log: () => Promise.resolve(),
+      elicitInput: unused,
+      requestSampling: unused,
+    },
+  };
+}
+
 describe('cdc://datasets — edge cases', () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -85,15 +110,7 @@ describe('cdc://datasets — edge cases', () => {
   });
 
   it('list() returns the static listing entry', async () => {
-    // `list` receives the SDK's request-handler extra, not a Context — a minimal
-    // literal is enough for a listing that ignores it.
-    const extra = {
-      signal: new AbortController().signal,
-      requestId: 'test',
-      sendNotification: () => Promise.resolve(),
-      sendRequest: () => Promise.resolve({} as never),
-    };
-    const listing = await datasetsResource.list!(extra);
+    const listing = await datasetsResource.list!(makeListExtra());
     expect(listing.resources).toHaveLength(1);
     expect(listing.resources[0]?.uri).toBe('cdc://datasets');
   });
