@@ -22,6 +22,15 @@ await createApp({
   tools: [discoverDatasets, getDatasetSchema, queryDataset, queryWonder],
   resources: [datasetsResource, datasetDetailResource],
   prompts: [analyzeHealthTrend],
+
+  /**
+   * No handler reads session state and none calls `ctx.requestInput`, so the
+   * session store buys nothing. Declaring it here makes the posture travel with
+   * the code rather than with the launch environment; `MCP_SESSION_MODE` still
+   * wins when it carries a meaningful value.
+   */
+  sessionMode: 'stateless',
+
   landing: { requireAuth: false },
   setup() {
     initSocrataService();
