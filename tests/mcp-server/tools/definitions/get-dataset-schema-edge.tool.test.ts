@@ -291,14 +291,20 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       await expect(getDatasetSchema.handler(input, ctx)).rejects.toThrow('network failure');
     });
 
-    it.each([JsonRpcErrorCode.InternalError, JsonRpcErrorCode.Timeout])(
+    it.each([
+      JsonRpcErrorCode.ServiceUnavailable,
+      JsonRpcErrorCode.Timeout,
+      JsonRpcErrorCode.InternalError,
+    ])(
       'reports every 5xx as the contract ServiceUnavailable, whatever code the status carried (%i)',
       async (serviceCode) => {
         /**
-         * The framework splits 5xx across InternalError (500/501), ServiceUnavailable
-         * (502/503) and Timeout (504). The handler rebuilds from the contract entry, so
-         * `upstream_error` is what makes the band land on one retryable code — a caller
-         * seeing a bare InternalError for a 500 would have no recovery to act on.
+         * No HTTP status classifies as InternalError — that code means this server failed,
+         * which a remote status cannot establish. 500 and 501 join 502/503 as
+         * ServiceUnavailable, 504 stays Timeout, and InternalError is reachable only when
+         * the status is missing. The handler rebuilds from the contract entry, so
+         * `upstream_error` lands the whole band on one retryable code whichever of the
+         * three the service carried.
          */
         mockGetMetadata.mockRejectedValue(
           new McpError(serviceCode, 'Socrata returned a server error.', {

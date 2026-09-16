@@ -247,9 +247,10 @@ describe('SocrataService — error handling', () => {
         /**
          * 500 is the boundary the band opens on, so it is what a `> 500` slip drops —
          * turning a retryable outage into an unreasoned rethrow. The framework's own
-         * status mapping splits 5xx across InternalError, ServiceUnavailable, and Timeout;
-         * the reason is what unifies them, and each handler rebuilds the caller-visible
-         * code from its contract entry rather than from the status.
+         * status mapping splits 5xx between ServiceUnavailable and Timeout (504), and
+         * marks 501 `retryable: false` out of band; the reason is what unifies them, and
+         * each handler rebuilds the caller-visible code from its contract entry rather
+         * than from the status.
          */
         mockFetchText('Server error', status);
         const err = (await service.getMetadata('ab12-cd34').catch((e) => e)) as McpError;
