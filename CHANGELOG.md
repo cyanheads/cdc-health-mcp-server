@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.7](changelog/0.8.x/0.8.7.md) — 2026-09-16
+
+Adopts mcp-ts-core 0.13.2: sessionMode is now declared in src/index.ts and published on the server card, argument rejections carry a -32602 structured error, shutdown exits explicitly, and the changelog moves to a per-version directory layout.
+
 ## [0.8.6](changelog/0.8.x/0.8.6.md) — 2026-08-22
 
 Adopts `@cyanheads/mcp-ts-core` 0.12.3 and with it the MCP SDK v2 line: tool inputs are strict, advertised schemas are JSON Schema 2020-12, `outputSchema` declares the error envelope, and every HTTP endpoint serves protocol revision `2026-07-28` alongside the 2025 era. No tool, resource, or prompt behavior changed — `src/` is untouched.
