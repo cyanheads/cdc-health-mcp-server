@@ -115,6 +115,25 @@ describe('analyze_health_trend', () => {
     expect(text).toContain('national level');
   });
 
+  it('closes the topic sentence before the ones that follow it', async () => {
+    /** A bolded topic butted straight against the next sentence reads as one run-on line. */
+    const withTime = (
+      await generate(
+        analyzeHealthTrend.args!.parse({
+          topic: 'diabetes mortality trends by state',
+          timeRange: '2015-2023',
+        }),
+      )
+    ).split('\n')[0];
+    const withoutTime = (
+      await generate(analyzeHealthTrend.args!.parse({ topic: 'flu trends' }))
+    ).split('\n')[0];
+
+    expect(withTime).toContain('**diabetes mortality trends by state**. Focus on the period');
+    expect(withoutTime).toContain('**flu trends**. Start at the national level.');
+    for (const line of [withTime, withoutTime]) expect(line).not.toMatch(/\*\*\s+[A-Z]/);
+  });
+
   it('requires topic', () => {
     expect(() => analyzeHealthTrend.args!.parse({})).toThrow();
   });

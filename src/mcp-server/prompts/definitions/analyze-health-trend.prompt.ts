@@ -42,7 +42,7 @@ export const analyzeHealthTrend = prompt('analyze_health_trend', {
         content: {
           type: 'text',
           text: [
-            `Investigate this public health question using CDC data: **${args.topic}**${timeContext}${geoContext}`,
+            `Investigate this public health question using CDC data: **${args.topic}**.${timeContext}${geoContext}`,
             '',
             'This server reads two separate CDC systems. Settle which one answers the question before running any query:',
             '',

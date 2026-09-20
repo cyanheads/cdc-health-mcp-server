@@ -6,9 +6,20 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import { CDC_SOCRATA_DOMAINS, type DiscoverResult } from '@/services/socrata/types.js';
+import {
+  CDC_SOCRATA_DOMAINS,
+  type DiscoverResult,
+  type SocrataDomain,
+  type VocabularyTerm,
+} from '@/services/socrata/types.js';
+import { toPlainText } from '@/utils/text.js';
+import { matchVocabulary } from '@/utils/vocabulary.js';
 
-/** Max characters of a dataset description carried in discovery output before truncation. */
+/**
+ * Max characters of a dataset description carried in discovery output before truncation.
+ * The budget is spent on visible text: markup comes off first, so a description that opens
+ * with a styled block does not hand its whole allowance to tags and inline CSS.
+ */
 const DESCRIPTION_MAX = 300;
 /** Max column field names listed in the discovery sample. */
 const COLUMN_SAMPLE_MAX = 8;
@@ -19,12 +30,73 @@ const COLUMN_SAMPLE_MAX = 8;
  * crosses it is a caller error worth catching before the round trip.
  */
 const CATALOG_PAGE_WINDOW_MAX = 10_000;
+/**
+ * Vocabulary values named per dimension when a filter matched nothing. Three keeps the
+ * notice readable while covering the case where several values share a stem — "Vaccination"
+ * is close to "Vaccinations", "Child Vaccinations", and "Flu Vaccinations".
+ */
+const NEAR_MISS_MAX = 3;
 
-/** Truncate a description to DESCRIPTION_MAX chars, appending an ellipsis when cut. */
+/**
+ * Render a catalog description as plain text, then truncate to DESCRIPTION_MAX chars with an
+ * ellipsis when cut. Conversion runs before the cut, never after: markup left in place spends
+ * the budget on tags and puts the ellipsis before the first word about the dataset.
+ */
 function truncateDescription(description: string): string {
-  return description.length > DESCRIPTION_MAX
-    ? `${description.slice(0, DESCRIPTION_MAX)}…`
-    : description;
+  const text = toPlainText(description);
+  return text.length > DESCRIPTION_MAX ? `${text.slice(0, DESCRIPTION_MAX)}…` : text;
+}
+
+/** `"Vaccinations" (89 datasets), "Child Vaccinations" (15 datasets)` */
+function renderTerms(terms: VocabularyTerm[]): string {
+  return terms.map((t) => `"${t.value}" (${t.datasetCount} datasets)`).join(', ');
+}
+
+/**
+ * Notice segments naming the vocabulary values closest to a filter that matched nothing.
+ *
+ * Only the dimensions the caller actually filtered on are fetched, so a category near miss
+ * does not also pull the ~1,600-value tag vocabulary. The catalog matches `category` and
+ * `tags` against its own controlled vocabulary, so a near miss is the answer to an empty
+ * page — telling the caller to broaden their terms sends them after a problem that does not
+ * exist. Matching is containment, not correction: a genuine typo resolves to nothing and the
+ * caller is pointed at cdc_list_catalog_vocabulary instead.
+ */
+async function nearMissSegments(
+  domain: SocrataDomain,
+  category: string | undefined,
+  tags: string[] | undefined,
+  signal: AbortSignal | undefined,
+): Promise<string[]> {
+  const service = getSocrataService();
+  const none = Promise.resolve<VocabularyTerm[]>([]);
+  const [categoryTerms, tagTerms] = await Promise.all([
+    category ? service.listCategories(domain, signal) : none,
+    tags?.length ? service.listTags(domain, signal) : none,
+  ]);
+
+  const segments: string[] = [];
+  const categoryHits = category ? matchVocabulary(categoryTerms, category, NEAR_MISS_MAX) : [];
+  if (categoryHits.length > 0) {
+    segments.push(
+      `Closest category values in the catalog vocabulary: ${renderTerms(categoryHits)}.`,
+    );
+  }
+
+  // Tags union, so every supplied value is resolved; the same value can surface from two of
+  // them, and the ranking is rebuilt across the merged set rather than per input tag.
+  const byValue = new Map<string, VocabularyTerm>();
+  for (const tag of tags ?? []) {
+    for (const hit of matchVocabulary(tagTerms, tag, NEAR_MISS_MAX)) byValue.set(hit.value, hit);
+  }
+  const tagHits = [...byValue.values()]
+    .sort((a, b) => b.datasetCount - a.datasetCount)
+    .slice(0, NEAR_MISS_MAX);
+  if (tagHits.length > 0) {
+    segments.push(`Closest tag values in the catalog vocabulary: ${renderTerms(tagHits)}.`);
+  }
+
+  return segments;
 }
 
 const AppliedFiltersSchema = z.object({
@@ -102,13 +174,13 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .string()
       .optional()
       .describe(
-        'Filter by domain category (e.g., "NNDSS", "Vaccinations", "Behavioral Risk Factors").',
+        'Filter by domain category (e.g., "NNDSS", "Vaccinations", "Behavioral Risk Factors"). Values come from the catalog\'s own vocabulary and are matched exactly, including case — "Vaccinations" matches 89 entries while "Vaccination" matches none. Call cdc_list_catalog_vocabulary for every value with its entry count rather than guessing at one.',
       ),
     tags: z
       .array(z.string().describe('Tag value'))
       .optional()
       .describe(
-        'Filter by domain tags (e.g., ["covid19", "surveillance"]). Tags widen the search instead of narrowing it — a dataset matches when it carries any one of them, so every tag added returns more results, and an unrecognized tag matches nothing and leaves the result set unchanged. Values match the catalog\'s own tag vocabulary, case-insensitively; the tags field on each result shows which values are in use. To narrow, combine tags with query or category, which intersect with the tag set.',
+        'Filter by domain tags (e.g., ["covid19", "surveillance"]). Tags widen the search instead of narrowing it — a dataset matches when it carries any one of them, so every tag added returns more results, and an unrecognized tag matches nothing and leaves the result set unchanged. Values match the catalog\'s own tag vocabulary, case-insensitively; call cdc_list_catalog_vocabulary for the values in use with their entry counts, or read the tags field on any result. To narrow, combine tags with query or category, which intersect with the tag set.',
       ),
     limit: z
       .number()
@@ -151,7 +223,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
               .string()
               .optional()
               .describe(
-                `Dataset description when provided by the catalog, truncated to ${DESCRIPTION_MAX} characters. Fetch the full text via cdc_get_dataset_schema.`,
+                `Dataset description when provided by the catalog, as plain text — markup stripped and entity references decoded — then truncated to ${DESCRIPTION_MAX} characters, so the limit bounds visible text. Fetch the full text via cdc_get_dataset_schema.`,
               ),
             assetType: z
               .string()
@@ -193,7 +265,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .string()
       .optional()
       .describe(
-        'Guidance when the page came back empty — how to broaden a search that matched nothing, where to check tag values when a tag filter was applied, or the size of the result set when the offset ran past its end.',
+        'Guidance when the page came back empty — the catalog values closest to a category or tag filter that matched nothing, each with its entry count; how to broaden a search when no value is close; or the size of the result set when the offset ran past its end.',
       ),
   },
 
@@ -249,26 +321,65 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       const criteria = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
 
       /**
+       * Guidance accumulates here and is flushed through a single `ctx.enrich.notice` call:
+       * `notice` is last-wins, so a second writer would silently destroy the first message.
+       */
+      const segments: string[] = [];
+
+      /**
        * An offset at or past totalCount empties the page even though the search itself
        * matched. Suggesting broader terms there sends the caller after a problem that
        * does not exist — name the exhausted page instead.
        */
       if (result.totalCount > 0 && input.offset >= result.totalCount) {
-        ctx.enrich.notice(
+        segments.push(
           `Offset ${input.offset} is past the end of the result set${criteria}, which holds ${result.totalCount} datasets. The search itself matched — lower offset to below ${result.totalCount} to see results.`,
         );
       } else {
         /**
-         * Tags union, so an empty page under a tag filter means no dataset carries any of
-         * them — a misspelled tag is indistinguishable from a real one that matched nothing.
+         * The only branch that reaches the vocabulary endpoints, and only when a vocabulary
+         * filter was in play: an ordinary search, a non-empty page, and an exhausted page all
+         * cost nothing extra. The lookup annotates an answer that is already correct, so its
+         * failure is absorbed rather than allowed to fail a discovery that already succeeded.
          */
-        const tagHint = input.tags?.length
-          ? ' Tags match the catalog vocabulary rather than free text, so a tag no dataset carries contributes nothing — check the spelling against the tags field on any result.'
-          : '';
-        ctx.enrich.notice(
-          `No datasets found${criteria}. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.${tagHint}`,
-        );
+        const wantsNearMiss = Boolean(input.category) || Boolean(input.tags?.length);
+        let nearMiss: string[] = [];
+        if (wantsNearMiss) {
+          try {
+            nearMiss = await nearMissSegments(input.domain, input.category, input.tags, ctx.signal);
+          } catch {
+            ctx.log.debug('Near-miss vocabulary lookup failed', { domain: input.domain });
+          }
+        }
+
+        segments.push(`No datasets found${criteria}.`);
+        if (nearMiss.length > 0) {
+          segments.push(
+            ...nearMiss,
+            'Pass one exactly as spelled, or call cdc_list_catalog_vocabulary for every value with its entry count.',
+          );
+        } else {
+          segments.push(
+            'Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.',
+          );
+          /**
+           * Tags union, so an empty page under a tag filter means no dataset carries any of
+           * them — a misspelled tag is indistinguishable from a real one that matched nothing.
+           */
+          if (input.tags?.length) {
+            segments.push(
+              'Tags match the catalog vocabulary rather than free text, so a tag no dataset carries contributes nothing.',
+            );
+          }
+          if (wantsNearMiss) {
+            segments.push(
+              "Category and tag values come from the catalog's own vocabulary — call cdc_list_catalog_vocabulary to see them with their entry counts.",
+            );
+          }
+        }
       }
+
+      ctx.enrich.notice(segments.join(' '));
     }
 
     ctx.log.info('Dataset discovery completed', {
@@ -279,22 +390,27 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       totalCount: result.totalCount,
     });
 
-    const datasets = result.datasets.map((d) => ({
-      id: d.id,
-      name: d.name,
-      ...(d.assetType ? { assetType: d.assetType } : {}),
-      ...(d.description ? { description: truncateDescription(d.description) } : {}),
-      ...(d.category ? { category: d.category } : {}),
-      ...(d.tags ? { tags: d.tags } : {}),
-      ...(d.columnNames
-        ? {
-            columnCount: d.columnNames.length,
-            columnSample: d.columnNames.slice(0, COLUMN_SAMPLE_MAX),
-          }
-        : {}),
-      ...(d.updatedAt ? { updatedAt: d.updatedAt } : {}),
-      ...(typeof d.pageViews === 'number' ? { pageViews: d.pageViews } : {}),
-    }));
+    const datasets = result.datasets.map((d) => {
+      // A description that is markup all the way down renders to nothing — omit it rather
+      // than shipping an empty string as if the catalog had supplied one.
+      const description = d.description ? truncateDescription(d.description) : '';
+      return {
+        id: d.id,
+        name: d.name,
+        ...(d.assetType ? { assetType: d.assetType } : {}),
+        ...(description ? { description } : {}),
+        ...(d.category ? { category: d.category } : {}),
+        ...(d.tags ? { tags: d.tags } : {}),
+        ...(d.columnNames
+          ? {
+              columnCount: d.columnNames.length,
+              columnSample: d.columnNames.slice(0, COLUMN_SAMPLE_MAX),
+            }
+          : {}),
+        ...(d.updatedAt ? { updatedAt: d.updatedAt } : {}),
+        ...(typeof d.pageViews === 'number' ? { pageViews: d.pageViews } : {}),
+      };
+    });
 
     return { datasets };
   },

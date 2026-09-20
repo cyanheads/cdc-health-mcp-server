@@ -7,12 +7,23 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
-import type { DiscoverResult } from '@/services/socrata/types.js';
+import type { DiscoverResult, VocabularyTerm } from '@/services/socrata/types.js';
 
 const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
+/**
+ * An empty page under a `category`/`tags` filter resolves the filter against the catalog
+ * vocabulary before writing its notice. These cases care about the page arithmetic rather
+ * than the near miss, so both vocabularies answer empty.
+ */
+const mockListCategories = vi.fn<() => Promise<VocabularyTerm[]>>(async () => []);
+const mockListTags = vi.fn<() => Promise<VocabularyTerm[]>>(async () => []);
 
 vi.mock('@/services/socrata/socrata-service.js', () => ({
-  getSocrataService: () => ({ discover: mockDiscover }),
+  getSocrataService: () => ({
+    discover: mockDiscover,
+    listCategories: mockListCategories,
+    listTags: mockListTags,
+  }),
 }));
 
 const emptyResult: DiscoverResult = { datasets: [], totalCount: 0 };
