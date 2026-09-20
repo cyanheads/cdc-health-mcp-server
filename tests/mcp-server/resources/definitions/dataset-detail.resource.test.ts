@@ -42,6 +42,46 @@ describe('cdc://datasets/{datasetId}', () => {
     expect(mockGetMetadata).toHaveBeenCalledWith('bi63-dtpu', ctx.signal);
   });
 
+  it('carries the row count and its provenance, matching cdc_get_dataset_schema', async () => {
+    /** Both surfaces read the same metadata, so both must disclose which figure it is. */
+    mockGetMetadata.mockResolvedValue({
+      ...sampleMetadata,
+      rowCount: 137_700,
+      rowCountSource: 'live',
+    });
+    const ctx = createMockContext({ errors: datasetDetailResource.errors });
+    const params = datasetDetailResource.params!.parse({ datasetId: '9bhg-hcku' });
+    const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
+
+    expect(result.rowCount).toBe(137_700);
+    expect(result.rowCountSource).toBe('live');
+  });
+
+  it('discloses a cached row count rather than presenting it as the dataset total', async () => {
+    mockGetMetadata.mockResolvedValue({
+      ...sampleMetadata,
+      rowCount: 88_128,
+      rowCountSource: 'cached',
+    });
+    const ctx = createMockContext({ errors: datasetDetailResource.errors });
+    const params = datasetDetailResource.params!.parse({ datasetId: '9bhg-hcku' });
+    const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
+
+    expect(result.rowCount).toBe(88_128);
+    expect(result.rowCountSource).toBe('cached');
+  });
+
+  it('returns the dataset description whole, however long', async () => {
+    /** Only discovery truncates; the detail surfaces carry the full decoded text. */
+    const description = `${'Long prose. '.repeat(60)}end.`;
+    mockGetMetadata.mockResolvedValue({ ...sampleMetadata, description });
+    const ctx = createMockContext({ errors: datasetDetailResource.errors });
+    const params = datasetDetailResource.params!.parse({ datasetId: 'bi63-dtpu' });
+    const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
+
+    expect(result.description).toBe(description);
+  });
+
   describe('column window', () => {
     type BoundedDetail = DatasetMetadata & {
       columnCount: number;

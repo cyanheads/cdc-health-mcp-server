@@ -44,6 +44,91 @@ describe('cdc_get_dataset_schema', () => {
     expect(mockGetMetadata).toHaveBeenCalledWith('bi63-dtpu', ctx.signal, 'data.cdc.gov');
   });
 
+  describe('row count provenance', () => {
+    it('carries a live-derived count and its provenance on both surfaces', async () => {
+      /**
+       * Socrata's cached figure is built once and never refreshed, so it can badly understate
+       * an actively-updated dataset. A caller sizing a pagination walk against it stops early,
+       * and nothing in the response said which figure it was looking at.
+       */
+      mockGetMetadata.mockResolvedValue({
+        ...sampleMetadata,
+        rowCount: 218_700,
+        rowCountSource: 'live',
+      });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: '4va6-ph5s' }),
+        ctx,
+      );
+
+      // Route the result through the declared output schema: calling the handler directly
+      // bypasses Zod, so a field missing from `output` would otherwise pass unnoticed.
+      const parsed = getDatasetSchema.output.parse(result);
+      expect(parsed.rowCount).toBe(218_700);
+      expect(parsed.rowCountSource).toBe('live');
+
+      const text = (getDatasetSchema.format!(result)[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('**Rows:** 218,700 (live count)');
+    });
+
+    it('says in both surfaces when the count fell back to the cached figure', async () => {
+      mockGetMetadata.mockResolvedValue({
+        ...sampleMetadata,
+        rowCount: 139_968,
+        rowCountSource: 'cached',
+      });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: '4va6-ph5s' }),
+        ctx,
+      );
+
+      expect(getDatasetSchema.output.parse(result).rowCountSource).toBe('cached');
+      const text = (getDatasetSchema.format!(result)[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('139,968 (cached count');
+    });
+
+    it('renders an em dash and no provenance when upstream reports no row count', async () => {
+      mockGetMetadata.mockResolvedValue({ name: 'No Count', columns: sampleMetadata.columns });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }),
+        ctx,
+      );
+
+      expect(getDatasetSchema.output.parse(result).rowCountSource).toBeUndefined();
+      const text = (getDatasetSchema.format!(result)[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain('**Rows:** — |');
+    });
+
+    it('returns the dataset description whole and renders it in content[]', async () => {
+      /** Only discovery truncates; this surface is where the full text is fetched from. */
+      const description = `${'Long prose. '.repeat(60)}end.`;
+      mockGetMetadata.mockResolvedValue({ ...sampleMetadata, description });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'bi63-dtpu' }),
+        ctx,
+      );
+
+      expect(result.description).toBe(description);
+      const text = (getDatasetSchema.format!(result)[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain(description);
+    });
+
+    it('names the staleness of the cached figure in the rowCount description', () => {
+      /**
+       * The field used to be advertised as the dataset's row count with no qualifier, which
+       * is the whole reason a caller trusted a figure that was two thirds of the real total.
+       */
+      const shape = getDatasetSchema.output.shape;
+      expect(shape.rowCount.description).toMatch(/cached/i);
+      expect(shape.rowCount.description).toContain('rowCountSource');
+      expect(shape.rowCountSource.description).toMatch(/count\(\*\)/);
+    });
+  });
+
   it('threads an explicit domain through to getMetadata', async () => {
     mockGetMetadata.mockResolvedValue(sampleMetadata);
     const ctx = createMockContext({ errors: getDatasetSchema.errors });

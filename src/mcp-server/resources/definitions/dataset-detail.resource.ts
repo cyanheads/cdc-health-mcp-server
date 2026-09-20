@@ -23,7 +23,7 @@ const COLUMN_WINDOW = 100;
 
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   name: 'CDC Dataset Detail',
-  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window.`,
+  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window. The row count and its rowCountSource ("live" or "cached") match what cdc_get_dataset_schema reports for the same ID.`,
   mimeType: 'application/json',
 
   errors: [
@@ -128,6 +128,7 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
       name: metadata.name,
       columnCount,
       columnsShown: columns.length,
+      rowCountSource: metadata.rowCountSource,
     });
 
     return {

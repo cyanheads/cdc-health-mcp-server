@@ -109,11 +109,24 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .describe(
         'Dataset display name from the catalog (e.g., "Provisional COVID-19 Deaths by Sex and Age").',
       ),
-    description: z.string().optional().describe('Dataset description when provided.'),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        'Dataset description when provided, in full as plain text — markup stripped and entity references decoded. Never truncated here; cdc_discover_datasets is the surface that shortens it.',
+      ),
     rowCount: z
       .number()
       .optional()
-      .describe('Total number of rows when reported by upstream; omitted when unknown.'),
+      .describe(
+        'Total rows in the dataset; omitted when neither a live nor a cached figure is available. Read rowCountSource before sizing a pagination walk against it — the cached figure can understate an actively-updated dataset by a third or more.',
+      ),
+    rowCountSource: z
+      .enum(['live', 'cached'])
+      .optional()
+      .describe(
+        'Provenance of rowCount. "live" is a count(*) run against the dataset for this call. "cached" is the figure Socrata stored when it last built its column cache, returned when the count request did not succeed; Socrata does not refresh it as rows land. Absent exactly when rowCount is absent.',
+      ),
     updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
     columns: z
       .array(
@@ -218,6 +231,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       columnsShown: columns.length,
       columnOffset: input.column_offset,
       rowCount: metadata.rowCount,
+      rowCountSource: metadata.rowCountSource,
     });
 
     return { ...metadata, columns };
@@ -227,8 +241,14 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     const lines = [`## ${result.name}`, ''];
     if (result.description) lines.push(result.description, '');
     const rows = typeof result.rowCount === 'number' ? result.rowCount.toLocaleString() : '—';
+    const provenance =
+      result.rowCountSource === 'live'
+        ? ' (live count)'
+        : result.rowCountSource === 'cached'
+          ? " (cached count — a live count was unavailable, and Socrata's cache lags the dataset)"
+          : '';
     lines.push(
-      `**Rows:** ${rows} | **Updated:** ${result.updatedAt ?? '—'}`,
+      `**Rows:** ${rows}${provenance} | **Updated:** ${result.updatedAt ?? '—'}`,
       '',
       '| Column | Type | Description |',
       '|:-------|:-----|:------------|',
