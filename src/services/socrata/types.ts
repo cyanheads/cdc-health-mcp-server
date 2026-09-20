@@ -43,13 +43,37 @@ export interface DatasetColumn {
   fieldName: string;
 }
 
+/**
+ * Where a `rowCount` came from. `live` is a `count(*)` run against the dataset for this
+ * call; `cached` is `cachedContents.count` off the metadata document, which Socrata builds
+ * once and does not refresh as rows land — on an actively-updated dataset it understates the
+ * real total badly, and it is the only figure available when the count request fails.
+ */
+export type RowCountSource = 'cached' | 'live';
+
 /** Full dataset metadata from the Metadata API. Optional fields reflect upstream sparsity. */
 export interface DatasetMetadata {
   columns: DatasetColumn[];
+  /** Plain text: markup stripped and entity references decoded once (`utils/text`). */
   description?: string;
   name: string;
   rowCount?: number;
+  /** Present exactly when `rowCount` is. */
+  rowCountSource?: RowCountSource;
   updatedAt?: string;
+}
+
+/**
+ * One value of a catalog-controlled vocabulary — a domain category or a domain tag — with
+ * the number of catalog entries carrying it. The Discovery API publishes both vocabularies
+ * per domain, and `cdc_discover_datasets`'s `category` and `tags` filters are matched
+ * against exactly these values, so a value absent here matches nothing upstream.
+ */
+export interface VocabularyTerm {
+  /** Catalog entries carrying this value, as the Discovery API counts them. */
+  datasetCount: number;
+  /** The value as the catalog spells it — the form the discovery filters expect. */
+  value: string;
 }
 
 /** Result from catalog discovery. */

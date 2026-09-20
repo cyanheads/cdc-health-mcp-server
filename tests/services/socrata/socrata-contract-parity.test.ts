@@ -11,6 +11,7 @@ import { datasetDetailResource } from '@/mcp-server/resources/definitions/datase
 import { datasetsResource } from '@/mcp-server/resources/definitions/datasets.resource.js';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
+import { listCatalogVocabulary } from '@/mcp-server/tools/definitions/list-catalog-vocabulary.tool.js';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 
 /**
@@ -24,6 +25,7 @@ const DATA_ENDPOINT_ONLY = new Set(['no_such_column', 'type_mismatch']);
 const CONSUMERS: { name: string; errors: readonly ErrorContract[] | undefined }[] = [
   { name: 'cdc_discover_datasets', errors: discoverDatasets.errors },
   { name: 'cdc_get_dataset_schema', errors: getDatasetSchema.errors },
+  { name: 'cdc_list_catalog_vocabulary', errors: listCatalogVocabulary.errors },
   { name: 'cdc_query_dataset', errors: queryDataset.errors },
   { name: 'cdc://datasets', errors: datasetsResource.errors },
   { name: 'cdc://datasets/{datasetId}', errors: datasetDetailResource.errors },
@@ -43,7 +45,7 @@ describe('SocrataService ↔ definition error contracts', () => {
      * `ctx.fail` with an undeclared reason does not fall back — it returns an
      * InternalError whose message says the reason is not in `errors[]` and whose data
      * carries the full declared-reason list straight to the caller. So a reason the
-     * service can raise on a shared code path has to exist in all five contracts.
+     * service can raise on a shared code path has to exist in every one of these contracts.
      */
     const shared = serviceReasons().filter((r) => !DATA_ENDPOINT_ONLY.has(r));
     expect(shared.length).toBeGreaterThan(0);
@@ -64,7 +66,7 @@ describe('SocrataService ↔ definition error contracts', () => {
     }
   });
 
-  it('agrees across all five contracts on what each shared reason means', () => {
+  it('agrees across every contract on what each shared reason means', () => {
     /**
      * Parity of names is not enough. Each handler rebuilds the failure from its own
      * contract entry, so one upstream status can arrive as a permanent refusal from one

@@ -5,11 +5,14 @@
  * rowspan (`r="N"`) and is omitted on the group's subsequent rows, so dimension values must
  * be carried forward. Measure values arrive with comma thousands separators, or as a status
  * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number. Dimension labels
- * are CDC's own text with only surrounding whitespace removed (see `dimensionLabel`). Pure
- * module (no framework imports).
+ * are CDC's own text with only surrounding whitespace removed (see `dimensionLabel`). Caveat,
+ * footnote, and message text goes through the shared single-pass decode in `utils/text` — a
+ * per-entity chain resolves `&amp;` first and turns `&amp;lt;` into `<`. Pure module (no
+ * framework imports).
  * @module services/wonder/xml-parser
  */
 
+import { decodeEntities, toPlainText } from '@/utils/text.js';
 import { isSuppressedToken, type WonderCellNote, type WonderRow } from './types.js';
 
 /** Read an XML attribute value from a cell's attribute string (anchored to an attr-name start). */
@@ -18,28 +21,9 @@ function attr(attrs: string, name: string): string | undefined {
   return m ? m[1] : undefined;
 }
 
-/** Minimal HTML entity decode for caveat/footnote text. */
-function decodeEntities(s: string): string {
-  return s
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
-    .replaceAll('&apos;', "'")
-    .replaceAll('&nbsp;', ' ');
-}
-
-/** Strip CDATA wrapper + HTML tags from caveat/footnote inner content, collapse whitespace. */
+/** Strip the CDATA wrapper from caveat/footnote inner content, then render it as plain text. */
 function cleanText(inner: string): string {
-  return decodeEntities(
-    inner
-      .replace(/^\s*<!\[CDATA\[/, '')
-      .replace(/\]\]>\s*$/, '')
-      .replace(/<[^>]+>/g, ' '),
-  )
-    .replace(/\s+/g, ' ')
-    .trim();
+  return toPlainText(inner.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, ''));
 }
 
 /**

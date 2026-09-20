@@ -28,6 +28,40 @@ function mockFetchError(status: number, body = '') {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status }));
 }
 
+/**
+ * Route each request to its own outcome by matching a substring of the URL. `getMetadata`
+ * issues the metadata read and the live `count(*)` together, so a single canned response
+ * cannot express "metadata succeeded, the count did not".
+ */
+function mockFetchRoutes(
+  routes: { match: string; respond: (init?: RequestInit) => Response | Promise<never> }[],
+) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const route = routes.find((r) => url.includes(r.match));
+    if (!route) return Promise.reject(new Error(`unrouted request: ${url}`));
+    return Promise.resolve(route.respond(init));
+  });
+}
+
+/** A request that never answers on its own and rejects only when its signal aborts, as fetch does. */
+const stalledRequest = (init?: RequestInit): Promise<never> =>
+  new Promise((_resolve, reject) => {
+    const fail = () => reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+    if (init?.signal?.aborted) fail();
+    else init?.signal?.addEventListener('abort', fail);
+  });
+
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+/** URL of the first recorded call whose target contains `fragment`. */
+function urlMatching(spy: FetchSpy, fragment: string): string {
+  const match = spy.mock.calls.map((c) => c[0] as string).find((u) => u.includes(fragment));
+  if (match === undefined) throw new Error(`no fetch matched ${fragment}`);
+  return match;
+}
+
 type FetchSpy = ReturnType<typeof mockFetch>;
 
 /** URL the spy recorded on its first call. */
@@ -198,6 +232,106 @@ describe('SocrataService', () => {
     });
   });
 
+  describe('vocabulary', () => {
+    const categoryBody = {
+      results: [
+        { domain_category: 'Vaccinations', count: 89 },
+        { domain_category: 'NNDSS', count: 295 },
+      ],
+      resultSetSize: 2,
+    };
+
+    it('reads categories from the catalog sibling endpoint for the requested domain', async () => {
+      const spy = mockFetch(categoryBody);
+      await service.listCategories('chronicdata.cdc.gov');
+
+      const url = firstUrl(spy);
+      expect(url).toContain('https://api.us.socrata.com/api/catalog/v1/domain_categories?');
+      expect(url).toContain('domains=chronicdata.cdc.gov');
+    });
+
+    it('asks the tag endpoint for the whole vocabulary rather than its default page', async () => {
+      /**
+       * `domain_tags` answers a request that names no limit with 100 values and reports
+       * `resultSetSize: 100` beside them, so the under-count reads as the whole vocabulary
+       * and nothing downstream can tell it apart. The fix lives in the request, so this
+       * asserts on the URL — a row count against a fixture would prove nothing about what
+       * was asked for. The category endpoint sends no limit, which is what makes the
+       * assertion discriminating rather than vacuous.
+       */
+      const tagSpy = mockFetch({
+        results: [{ domain_tag: 'nndss', count: 294 }],
+        resultSetSize: 1,
+      });
+      await service.listTags();
+      const tagUrl = firstUrl(tagSpy);
+      vi.restoreAllMocks();
+
+      const categorySpy = mockFetch(categoryBody);
+      await new SocrataService().listCategories();
+      const categoryUrl = firstUrl(categorySpy);
+
+      expect(tagUrl).toContain('/domain_tags?');
+      expect(tagUrl).toContain('limit=10000');
+      expect(categoryUrl).not.toContain('limit=');
+    });
+
+    it('defaults the domain to data.cdc.gov', async () => {
+      const spy = mockFetch(categoryBody);
+      await service.listCategories();
+
+      expect(firstUrl(spy)).toContain('domains=data.cdc.gov');
+    });
+
+    it('ranks by entry count rather than trusting the order upstream sent', async () => {
+      /**
+       * Callers rank against this order — the near-miss notice names the most-used candidates
+       * and the tag page's threshold bound assumes the last value shown is the smallest.
+       */
+      mockFetch(categoryBody);
+      const terms = await service.listCategories();
+
+      expect(terms).toEqual([
+        { value: 'NNDSS', datasetCount: 295 },
+        { value: 'Vaccinations', datasetCount: 89 },
+      ]);
+    });
+
+    it('drops a row whose value or count is unusable instead of passing on a NaN', async () => {
+      mockFetch({
+        results: [
+          { domain_tag: 'nndss', count: 294 },
+          { domain_tag: '', count: 5 },
+          { domain_tag: 'no-count' },
+          { domain_tag: 'not-a-number', count: 'many' },
+          { count: 7 },
+        ],
+        resultSetSize: 5,
+      });
+      const terms = await service.listTags();
+
+      expect(terms).toEqual([{ value: 'nndss', datasetCount: 294 }]);
+    });
+
+    it('returns an empty vocabulary when the endpoint carries no results key', async () => {
+      mockFetch({ resultSetSize: 0 });
+
+      await expect(service.listTags()).resolves.toEqual([]);
+    });
+
+    it('lets a catalog failure out with its reason rather than an empty vocabulary', async () => {
+      /**
+       * An empty list and an outage read identically to a caller, and a near-miss notice
+       * built on one would silently claim nothing in the catalog is close.
+       */
+      mockFetchError(429);
+
+      await expect(service.listTags()).rejects.toMatchObject({
+        data: { reason: 'rate_limited' },
+      });
+    });
+  });
+
   describe('getMetadata', () => {
     const metadataResponse = {
       name: 'Test Dataset',
@@ -256,6 +390,258 @@ describe('SocrataService', () => {
     it('throws with status on other errors', async () => {
       mockFetchError(500, 'Internal Server Error');
       await expect(service.getMetadata('bi63-dtpu')).rejects.toThrow(/500/);
+    });
+
+    describe('description as plain text', () => {
+      const withDescription = (description: string) => ({
+        name: 'Test Dataset',
+        description,
+        columns: [{ fieldName: 'state', dataTypeName: 'text' }],
+      });
+
+      it('returns the description with markup removed and entities decoded, whole', async () => {
+        const body =
+          '<p style="margin:0in;"><strong>Deaths</strong> per 100,000 &amp; population.</p>' +
+          `<span>${'D'.repeat(600)}</span>`;
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(withDescription(body)) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '10' }]) },
+        ]);
+        const result = await service.getMetadata('bi63-dtpu');
+
+        expect(result.description).toBe(`Deaths per 100,000 & population. ${'D'.repeat(600)}`);
+        expect(result.description).not.toContain('<');
+      });
+
+      it('decodes an escaped entity exactly once', async () => {
+        mockFetchRoutes([
+          {
+            match: '/api/views/',
+            respond: () => jsonResponse(withDescription('Ages &amp;lt;1 &amp; over.')),
+          },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '10' }]) },
+        ]);
+        const result = await service.getMetadata('bi63-dtpu');
+        expect(result.description).toBe('Ages &lt;1 & over.');
+      });
+
+      it('omits the description when it is markup with no text in it', async () => {
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(withDescription('<p></p>  ')) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '10' }]) },
+        ]);
+        const result = await service.getMetadata('bi63-dtpu');
+        expect(result.description).toBeUndefined();
+      });
+    });
+
+    describe('live row count', () => {
+      const cachedCountMetadata = {
+        name: 'COVID-19 Case Surveillance',
+        columns: [
+          { fieldName: 'state', dataTypeName: 'text', cachedContents: { count: '139968' } },
+          { fieldName: 'year', dataTypeName: 'number' },
+        ],
+      };
+
+      it('reports the live count(*) rather than the cached figure', async () => {
+        /**
+         * Socrata builds `cachedContents.count` once and never refreshes it, so on an
+         * actively-updated dataset the cached figure understates the real total and a
+         * caller sizing a pagination walk against it stops early.
+         */
+        const spy = mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '218700' }]) },
+        ]);
+        const result = await service.getMetadata('4va6-ph5s');
+
+        expect(result.rowCount).toBe(218700);
+        expect(result.rowCountSource).toBe('live');
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+
+      it('sends count(*) with no other projection and no filters', async () => {
+        /**
+         * `$select=state,count(*)&$group=state` answers a different question — a count per
+         * state, not the dataset total — so the count request must project nothing else.
+         */
+        const spy = mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '218700' }]) },
+        ]);
+        await service.getMetadata('4va6-ph5s');
+
+        const countUrl = urlMatching(spy, '/resource/');
+        const params = new URL(countUrl).searchParams;
+        expect(params.get('$select')).toBe('count(*)');
+        expect([...params.keys()]).toEqual(['$select']);
+        expect(countUrl.startsWith('https://data.cdc.gov/resource/4va6-ph5s.json?')).toBe(true);
+      });
+
+      it('routes the count to the same allowlisted host as the metadata read', async () => {
+        const spy = mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '9' }]) },
+        ]);
+        await service.getMetadata('swc5-untb', undefined, 'chronicdata.cdc.gov');
+
+        expect(urlMatching(spy, '/resource/').startsWith('https://chronicdata.cdc.gov/')).toBe(
+          true,
+        );
+      });
+
+      it('falls back to the cached figure and says so when the count request fails', async () => {
+        const spy = mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => jsonResponse({ error: true }, 500) },
+        ]);
+        const result = await service.getMetadata('4va6-ph5s');
+
+        expect(result.name).toBe('COVID-19 Case Surveillance');
+        expect(result.rowCount).toBe(139968);
+        expect(result.rowCountSource).toBe('cached');
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+
+      it('still answers when the count request rejects at the network layer', async () => {
+        /**
+         * The count annotates the schema response; it must never be able to fail or hang
+         * the response it annotates.
+         */
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => Promise.reject(new TypeError('fetch failed')) },
+        ]);
+        const result = await service.getMetadata('4va6-ph5s');
+
+        expect(result.columns).toHaveLength(2);
+        expect(result.rowCount).toBe(139968);
+        expect(result.rowCountSource).toBe('cached');
+      });
+
+      it('gives up on a stalled count instead of holding the schema response open', async () => {
+        /**
+         * The metadata document has already arrived by then. Waiting on an annotation that
+         * may never answer turns an optional extra into a hang of the response it annotates,
+         * so the count carries a deadline of its own and the request is cancelled with it.
+         */
+        vi.useFakeTimers();
+        try {
+          mockFetchRoutes([
+            { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+            { match: '/resource/', respond: stalledRequest },
+          ]);
+          const pending = service.getMetadata('4va6-ph5s');
+          await vi.advanceTimersByTimeAsync(60_000);
+          const result = await pending;
+
+          expect(result.rowCount).toBe(139968);
+          expect(result.rowCountSource).toBe('cached');
+          expect(result.columns).toHaveLength(2);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('cancels an in-flight count when the caller aborts mid-request', async () => {
+        /** A cancelled tool call must not leave the annotation's request running behind it. */
+        const controller = new AbortController();
+        let countSignal: AbortSignal | undefined;
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          {
+            match: '/resource/',
+            respond: (init) => {
+              countSignal = init?.signal ?? undefined;
+              // Register the listener first, then cancel — as a real in-flight abort arrives.
+              const inFlight = stalledRequest(init);
+              controller.abort();
+              return inFlight;
+            },
+          },
+        ]);
+        const result = await service.getMetadata('4va6-ph5s', controller.signal);
+
+        expect(countSignal?.aborted).toBe(true);
+        expect(result.rowCountSource).toBe('cached');
+      });
+
+      it('supplies a row count for an asset that carries no cached count at all', async () => {
+        /** A `filter` asset has real columns and queries fine, but no cachedContents.count. */
+        mockFetchRoutes([
+          {
+            match: '/api/views/',
+            respond: () =>
+              jsonResponse({
+                name: 'DHDS',
+                columns: [{ fieldName: 'year', dataTypeName: 'text' }],
+              }),
+          },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '3592' }]) },
+        ]);
+        const result = await service.getMetadata('s2qv-b27b');
+
+        expect(result.rowCount).toBe(3592);
+        expect(result.rowCountSource).toBe('live');
+      });
+
+      it('omits rowCount entirely when neither the cache nor the count supplies one', async () => {
+        mockFetchRoutes([
+          {
+            match: '/api/views/',
+            respond: () =>
+              jsonResponse({
+                name: 'DHDS',
+                columns: [{ fieldName: 'year', dataTypeName: 'text' }],
+              }),
+          },
+          { match: '/resource/', respond: () => jsonResponse({ error: true }, 500) },
+        ]);
+        const result = await service.getMetadata('s2qv-b27b');
+
+        expect(result.rowCount).toBeUndefined();
+        expect(result.rowCountSource).toBeUndefined();
+      });
+
+      it('ignores a count body that is not a row carrying a number', async () => {
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => jsonResponse([]) },
+        ]);
+        const result = await service.getMetadata('4va6-ph5s');
+
+        expect(result.rowCount).toBe(139968);
+        expect(result.rowCountSource).toBe('cached');
+      });
+
+      it('skips the count request when the caller asks for metadata alone', async () => {
+        /**
+         * `cdc_query_dataset`'s queryability probe needs the column list and nothing else;
+         * spending a second upstream request on a row total it discards is waste on a path
+         * that already answered the caller badly.
+         */
+        const spy = mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '218700' }]) },
+        ]);
+        const result = await service.getMetadata('4va6-ph5s', undefined, undefined, {
+          liveRowCount: false,
+        });
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(urlMatching(spy, '/api/views/')).toContain('4va6-ph5s');
+        expect(result.rowCount).toBe(139968);
+        expect(result.rowCountSource).toBe('cached');
+      });
+
+      it('rethrows the metadata failure rather than a count failure', async () => {
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse({ error: true }, 404) },
+          { match: '/resource/', respond: () => jsonResponse({ error: true }, 500) },
+        ]);
+        await expect(service.getMetadata('ab12-cd34')).rejects.toThrow(/not found/i);
+      });
     });
   });
 

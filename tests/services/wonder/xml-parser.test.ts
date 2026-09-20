@@ -29,6 +29,42 @@ describe('parseMessages', () => {
   it('returns nothing when the response carries no messages', () => {
     expect(parseMessages('<page><data-table></data-table></page>')).toEqual([]);
   });
+
+  it('decodes an escaped entity once, leaving pre-escaped markup as text', () => {
+    /**
+     * A chained decode resolves `&amp;` before `&lt;`/`&gt;`, so `&amp;lt;b&amp;gt;` came out
+     * as `<b>` — markup manufactured from text a publisher had escaped precisely so it would
+     * not be markup.
+     */
+    const xml = '<page><message>Codes written &amp;lt;b&amp;gt; are excluded.</message></page>';
+    expect(parseMessages(xml)).toEqual(['Codes written &lt;b&gt; are excluded.']);
+  });
+
+  it('leaves an out-of-range numeric reference as text instead of throwing', () => {
+    /** `String.fromCodePoint` raises a RangeError above U+10FFFF. */
+    const xml = '<page><message>Marker &#x110000; retained.</message></page>';
+    expect(parseMessages(xml)).toEqual(['Marker &#x110000; retained.']);
+  });
+
+  it('never emits a lone-surrogate reference as a raw code point', () => {
+    /**
+     * Bun round-trips a lone surrogate through JSON.stringify/parse without complaint, but a
+     * strict consumer (jq) rejects the whole frame as an invalid surrogate pair escape — so
+     * the reference stays literal text rather than becoming an unpaired code unit.
+     */
+    const xml = '<page><message>Marker &#xD800; retained.</message></page>';
+    const [message] = parseMessages(xml);
+    expect(message).toBe('Marker &#xD800; retained.');
+    for (const char of message ?? '') {
+      const code = char.charCodeAt(0);
+      expect(code >= 0xd800 && code <= 0xdfff).toBe(false);
+    }
+  });
+
+  it('decodes a well-formed numeric reference', () => {
+    const xml = '<page><message>Rate per 100&#37; &#8212; see notes.</message></page>';
+    expect(parseMessages(xml)).toEqual(['Rate per 100% — see notes.']);
+  });
 });
 
 describe('parseDataTable', () => {

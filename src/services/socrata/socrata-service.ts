@@ -15,6 +15,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { httpErrorFromResponse } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
+import { toPlainText } from '@/utils/text.js';
 import type {
   CatalogDataset,
   DatasetColumn,
@@ -22,9 +23,27 @@ import type {
   DiscoverResult,
   QueryResult,
   SocrataDomain,
+  VocabularyTerm,
 } from './types.js';
 
 const MIN_REQUEST_INTERVAL_MS = 250;
+
+/**
+ * Explicit page size for the tag vocabulary. `domain_tags` answers a request that names no
+ * limit with 100 values and reports `resultSetSize: 100` beside them, so the response looks
+ * complete at a hundredth of the vocabulary and nothing in it says otherwise. Measured live,
+ * `data.cdc.gov` carries 1,583 tags and a larger limit returns the same 1,583 — so this
+ * value reaches the whole set rather than trading one silent cap for another.
+ */
+const TAG_VOCABULARY_LIMIT = 10_000;
+
+/**
+ * Deadline on the live row count, which annotates a metadata response that has usually
+ * already arrived. Without a bound of its own, a stalled count would hold that response open
+ * indefinitely — turning an optional annotation into a hang of the answer it decorates.
+ * Measured live, the request returns in well under a second.
+ */
+const ROW_COUNT_TIMEOUT_MS = 5_000;
 
 /** Options for discovering datasets. */
 export interface DiscoverOptions {
@@ -90,8 +109,9 @@ export class SocrataService {
 
   /**
    * Resolve the SODA base URL for a request. An explicit allowlisted `domain` selects the
-   * host; otherwise the configured `CDC_BASE_URL` (default `https://data.cdc.gov`) applies,
-   * so env-based overrides keep working for callers that don't pass a domain.
+   * host; otherwise the configured `CDC_BASE_URL` (default `https://data.cdc.gov`) applies.
+   * Every tool declares `domain` with a default, so Zod always supplies one and the env
+   * override is reached only from `cdc://datasets/{datasetId}`, the one call that omits it.
    */
   private baseUrlFor(domain: SocrataDomain | undefined): string {
     return domain ? `https://${domain}` : getServerConfig().baseUrl;
@@ -151,14 +171,98 @@ export class SocrataService {
   }
 
   /**
+   * Every value in the catalog's category vocabulary for a domain, ranked by entry count.
+   *
+   * The whole vocabulary arrives in one request: `domain_categories` answers with 55 values
+   * for both CDC hosts and reports the same figure as `resultSetSize`, well inside any page
+   * size the endpoint applies.
+   */
+  listCategories(domain?: SocrataDomain, signal?: AbortSignal): Promise<VocabularyTerm[]> {
+    return this.fetchVocabulary('domain_categories', 'domain_category', domain, signal);
+  }
+
+  /**
+   * Every value in the catalog's tag vocabulary for a domain, ranked by entry count.
+   *
+   * Sends `TAG_VOCABULARY_LIMIT` explicitly — without it the endpoint returns a silent
+   * hundred-value page.
+   */
+  listTags(domain?: SocrataDomain, signal?: AbortSignal): Promise<VocabularyTerm[]> {
+    return this.fetchVocabulary('domain_tags', 'domain_tag', domain, signal, {
+      limit: String(TAG_VOCABULARY_LIMIT),
+    });
+  }
+
+  /**
+   * Read one of the Discovery API's vocabulary endpoints, which are siblings of the catalog
+   * search URL and answer `{ results: [{ <key>, count }] }`.
+   *
+   * A row whose value or count is missing or unusable is dropped rather than passed on as an
+   * empty string or a `NaN`. The result is sorted by count descending with the value as a
+   * tiebreak: callers rank against it — the near-miss notice and the tag page's threshold
+   * bound both assume the order — so it is established here rather than assumed of upstream.
+   */
+  private async fetchVocabulary(
+    path: 'domain_categories' | 'domain_tags',
+    key: 'domain_category' | 'domain_tag',
+    domain: SocrataDomain | undefined,
+    signal: AbortSignal | undefined,
+    extra?: Record<string, string>,
+  ): Promise<VocabularyTerm[]> {
+    const params = new URLSearchParams({ domains: domain ?? 'data.cdc.gov', ...extra });
+    const data = await this.fetchJson(`${getServerConfig().catalogUrl}/${path}?${params}`, signal);
+
+    const terms: VocabularyTerm[] = [];
+    for (const row of (data.results ?? []) as Record<string, unknown>[]) {
+      const value = row[key];
+      const datasetCount = Number(row.count);
+      if (typeof value !== 'string' || value.length === 0) continue;
+      if (!Number.isInteger(datasetCount) || datasetCount < 0) continue;
+      terms.push({ value, datasetCount });
+    }
+
+    return terms.sort((a, b) => b.datasetCount - a.datasetCount || a.value.localeCompare(b.value));
+  }
+
+  /**
    * Fetch full metadata and column schema for a dataset.
    *
+   * A live `count(*)` runs alongside the metadata read rather than after it, and replaces
+   * the cached row count when it succeeds. It is strictly an annotation: it is issued in
+   * parallel, its failure is absorbed, and the metadata response is returned either way with
+   * `rowCountSource` naming which figure is in hand.
+   *
    * @param domain - Allowlisted CDC Socrata host. Omit to use the configured default host.
+   * @param options - `liveRowCount: false` returns the cached figure and issues one request,
+   *   for callers that want the column list and will discard the row total anyway.
    */
   async getMetadata(
     datasetId: string,
     signal?: AbortSignal,
     domain?: SocrataDomain,
+    options?: { liveRowCount?: boolean },
+  ): Promise<DatasetMetadata> {
+    const wantsLiveCount = options?.liveRowCount ?? true;
+    const [documentResult, countResult] = await Promise.allSettled([
+      this.fetchMetadataDocument(datasetId, signal, domain),
+      wantsLiveCount
+        ? this.countRows(datasetId, signal, domain)
+        : Promise.resolve<number | undefined>(undefined),
+    ]);
+
+    if (documentResult.status === 'rejected') throw documentResult.reason as Error;
+
+    const metadata = documentResult.value;
+    const liveCount = countResult.status === 'fulfilled' ? countResult.value : undefined;
+    if (liveCount === undefined) return metadata;
+    return { ...metadata, rowCount: liveCount, rowCountSource: 'live' };
+  }
+
+  /** The `/api/views/{id}.json` document, carrying the cached row count Socrata stored. */
+  private async fetchMetadataDocument(
+    datasetId: string,
+    signal: AbortSignal | undefined,
+    domain: SocrataDomain | undefined,
   ): Promise<DatasetMetadata> {
     const url = `${this.baseUrlFor(domain)}/api/views/${datasetId}.json`;
     const data = await this.fetchJson(url, signal);
@@ -179,15 +283,52 @@ export class SocrataService {
     const rowsUpdatedAt = data.rowsUpdatedAt as number | undefined;
     const updatedAt =
       typeof rowsUpdatedAt === 'number' ? new Date(rowsUpdatedAt * 1000).toISOString() : undefined;
-    const description = data.description as string | undefined;
+    const description = toPlainText((data.description as string | undefined) ?? '');
 
     return {
       name: (data.name as string) ?? '',
       columns,
       ...(description ? { description } : {}),
-      ...(Number.isFinite(rowCount) ? { rowCount } : {}),
+      ...(Number.isFinite(rowCount) ? { rowCount, rowCountSource: 'cached' as const } : {}),
       ...(updatedAt ? { updatedAt } : {}),
     };
+  }
+
+  /**
+   * The dataset's current row total, as `count(*)` alone.
+   *
+   * Nothing else may ride in the `$select`: naming a real column changes what Socrata groups
+   * over, so `$select=state,count(*)&$group=state` answers with a count per state rather than
+   * the dataset total. The alias Socrata puts on the result has varied across SODA versions,
+   * so the first value of the first row is read rather than a fixed key.
+   *
+   * The request runs under its own deadline on top of the caller's signal, and is cancelled
+   * when either fires — see `ROW_COUNT_TIMEOUT_MS`.
+   */
+  private async countRows(
+    datasetId: string,
+    signal: AbortSignal | undefined,
+    domain: SocrataDomain | undefined,
+  ): Promise<number | undefined> {
+    const url = `${this.baseUrlFor(domain)}/resource/${datasetId}.json?${new URLSearchParams({
+      $select: 'count(*)',
+    })}`;
+
+    const deadline = new AbortController();
+    const abort = () => deadline.abort();
+    const timer = setTimeout(abort, ROW_COUNT_TIMEOUT_MS);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener('abort', abort);
+
+    try {
+      const rows = await this.fetchJson<Record<string, unknown>[]>(url, deadline.signal);
+      const [value] = Object.values(rows[0] ?? {});
+      const count = Number(value);
+      return Number.isInteger(count) && count >= 0 ? count : undefined;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
   }
 
   /**
