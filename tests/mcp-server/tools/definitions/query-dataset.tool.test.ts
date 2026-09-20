@@ -3,15 +3,17 @@
  * @module tests/mcp-server/tools/definitions/query-dataset
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
-import type { QueryResult } from '@/services/socrata/types.js';
+import type { DatasetMetadata, QueryResult } from '@/services/socrata/types.js';
 
 const mockQuery = vi.fn<() => Promise<QueryResult>>();
+const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
 
 vi.mock('@/services/socrata/socrata-service.js', () => ({
-  getSocrataService: () => ({ query: mockQuery }),
+  getSocrataService: () => ({ query: mockQuery, getMetadata: mockGetMetadata }),
 }));
 
 const sampleResult: QueryResult = {
@@ -169,6 +171,131 @@ describe('cdc_query_dataset', () => {
     expect(enrichment.nextOffset).toBeUndefined();
   });
 
+  describe('rows that carry no fields', () => {
+    /** What Socrata serves from /resource/{id}.json for a chart or map asset. */
+    const fieldlessPage: QueryResult = {
+      rows: [{}, {}],
+      rowCount: 2,
+      query: '$limit=2&$offset=0',
+      hasMore: true,
+    };
+
+    it('fails not_queryable when the asset metadata reports no columns', async () => {
+      /**
+       * Socrata answers a chart ID with HTTP 200 and a body of empty objects, so the row
+       * shape alone reads as a successful page plus an invitation to keep paging. The
+       * asset's column metadata is the signal that separates it from a real result.
+       */
+      mockQuery.mockResolvedValue(fieldlessPage);
+      mockGetMetadata.mockResolvedValue({ name: 'Pfizer Allocations', columns: [] });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'sxbq-3sid', limit: 2 });
+
+      const err = (await Promise.resolve(queryDataset.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      const data = err.data as { reason: string; recovery: { hint: string } };
+      expect(data.reason).toBe('not_queryable');
+      expect(data.recovery.hint).toContain('columnCount');
+      expect(err.message).toContain('sxbq-3sid');
+      expect(err.message).toContain('Pfizer Allocations');
+    });
+
+    it('succeeds with a notice when the dataset has columns but the projection is all null', async () => {
+      /**
+       * Socrata omits null keys from its JSON, so a real dataset queried with a select that
+       * projects only null-valued columns on the matched rows serializes to the same
+       * `[{},{}]` shape a chart does. Metadata with columns is what tells them apart.
+       */
+      mockQuery.mockResolvedValue({ ...fieldlessPage, hasMore: false });
+      mockGetMetadata.mockResolvedValue({
+        name: 'Provisional COVID-19 Deaths',
+        columns: [
+          { fieldName: 'footnote', dataType: 'text' },
+          { fieldName: 'state', dataType: 'text' },
+        ],
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({
+        datasetId: '9bhg-hcku',
+        select: 'footnote',
+        limit: 2,
+      });
+      const result = await queryDataset.handler(input, ctx);
+
+      expect(result.rowCount).toBe(2);
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('select clause "footnote"');
+      expect(notice).toContain('null on all 2 matched rows');
+      expect(notice).toContain('cdc_get_dataset_schema');
+    });
+
+    it('names every column as the projection when the caller supplied no select', async () => {
+      mockQuery.mockResolvedValue({ ...fieldlessPage, hasMore: false });
+      mockGetMetadata.mockResolvedValue({
+        name: 'Provisional COVID-19 Deaths',
+        columns: [{ fieldName: 'state', dataType: 'text' }],
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: '9bhg-hcku', limit: 2 });
+      await queryDataset.handler(input, ctx);
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('every column of the dataset');
+      expect(notice).toContain('null on all 2 matched rows');
+    });
+
+    it('probes with metadata alone, never spending a request on a row count it discards', async () => {
+      mockQuery.mockResolvedValue(fieldlessPage);
+      mockGetMetadata.mockResolvedValue({ name: 'Chart', columns: [] });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'sxbq-3sid', limit: 2 });
+      await Promise.resolve(queryDataset.handler(input, ctx)).catch(() => undefined);
+
+      expect(mockGetMetadata).toHaveBeenCalledWith('sxbq-3sid', ctx.signal, 'data.cdc.gov', {
+        liveRowCount: false,
+      });
+    });
+
+    it('issues no metadata request for a page whose rows carry data', async () => {
+      mockQuery.mockResolvedValue(sampleResult);
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'year=2020' });
+      await queryDataset.handler(input, ctx);
+
+      expect(mockGetMetadata).not.toHaveBeenCalled();
+    });
+
+    it('issues no metadata request when nothing matched', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$where=x', hasMore: false });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'x=1' });
+      await queryDataset.handler(input, ctx);
+
+      expect(mockGetMetadata).not.toHaveBeenCalled();
+      expect(getEnrichment(ctx).notice).toContain('No rows matched');
+    });
+
+    it('issues no metadata request when only some rows carry no fields', async () => {
+      /** Socrata rows are sparse per row; one bare row among populated ones is ordinary. */
+      mockQuery.mockResolvedValue({
+        rows: [{}, { state: 'California' }],
+        rowCount: 2,
+        query: '$limit=2&$offset=0',
+        hasMore: false,
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', limit: 2 });
+      await queryDataset.handler(input, ctx);
+
+      expect(mockGetMetadata).not.toHaveBeenCalled();
+      expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+  });
+
   it('passes all SoQL clauses to the service', async () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '', hasMore: false });
     const ctx = createMockContext({ errors: queryDataset.errors });
@@ -259,6 +386,30 @@ describe('cdc_query_dataset', () => {
       const blocks = queryDataset.format!({ rows: [], rowCount: 0 });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('No rows matched the query');
+    });
+
+    it('renders a null-only projection as a line of text rather than an empty table', () => {
+      /**
+       * Socrata omits null keys, so a projection null on every matched row arrives as rows
+       * carrying no fields. Rendered as a table that is a header of nothing over rows of
+       * nothing — the degenerate output a client reading only content[] is left with.
+       */
+      const blocks = queryDataset.format!({ rows: [{}, {}, {}], rowCount: 3 });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).not.toContain('|');
+      expect(text).toContain('3 rows');
+      expect(text).toContain('no fields');
+    });
+
+    it('still renders a table when only some rows carry no fields', () => {
+      /** A bare row among populated ones is ordinary Socrata sparsity, not a null projection. */
+      const blocks = queryDataset.format!({ rows: [{}, { state: 'California' }], rowCount: 2 });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain('2 rows returned');
+      expect(text).toContain('| state |');
+      expect(text).toContain('California');
     });
 
     it('escapes pipe characters in cell values', () => {

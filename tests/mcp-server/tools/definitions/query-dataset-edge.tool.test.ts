@@ -7,12 +7,13 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
-import type { QueryResult } from '@/services/socrata/types.js';
+import type { DatasetMetadata, QueryResult } from '@/services/socrata/types.js';
 
 const mockQuery = vi.fn<() => Promise<QueryResult>>();
+const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
 
 vi.mock('@/services/socrata/socrata-service.js', () => ({
-  getSocrataService: () => ({ query: mockQuery }),
+  getSocrataService: () => ({ query: mockQuery, getMetadata: mockGetMetadata }),
 }));
 
 describe('cdc_query_dataset — edge cases', () => {
@@ -350,6 +351,90 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(data.retryable).toBeUndefined();
       expect(data.recovery.hint).toContain('cdc_get_dataset_schema');
       expect(data.recovery.hint).not.toMatch(/temporarily unavailable|retry after/i);
+    });
+  });
+
+  describe('handler — fieldless rows alongside truncation', () => {
+    it('carries both the null-projection and the truncation guidance in one notice', async () => {
+      /**
+       * `enrich.notice` is last-wins and `enrich.truncated()` writes `notice` too, so two
+       * conditions that co-occur would silently destroy one another's guidance.
+       */
+      mockQuery.mockResolvedValue({
+        rows: [{}, {}],
+        rowCount: 2,
+        query: '$select=footnote&$limit=2&$offset=0',
+        hasMore: true,
+      });
+      mockGetMetadata.mockResolvedValue({
+        name: 'Provisional COVID-19 Deaths',
+        columns: [{ fieldName: 'footnote', dataType: 'text' }],
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({
+        datasetId: '9bhg-hcku',
+        select: 'footnote',
+        limit: 2,
+      });
+      await queryDataset.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      const notice = enrichment.notice as string;
+      expect(notice).toContain('null on all 2 matched rows');
+      expect(notice).toContain('More rows exist beyond this response');
+      expect(notice).toContain('offset=2');
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.shown).toBe(2);
+      expect(enrichment.cap).toBe(2);
+      expect(enrichment.nextOffset).toBe(2);
+    });
+
+    it('re-raises a failed queryability probe through the tool contract', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [{}],
+        rowCount: 1,
+        query: '$limit=1&$offset=0',
+        hasMore: false,
+      });
+      mockGetMetadata.mockRejectedValue(
+        new McpError(JsonRpcErrorCode.RateLimited, 'Rate limited by Socrata API (429).', {
+          reason: 'rate_limited',
+        }),
+      );
+      const ctx = createMockContext({ errors: queryDataset.errors });
+      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 1 });
+
+      await expect(queryDataset.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.RateLimited,
+        data: expect.objectContaining({
+          reason: 'rate_limited',
+          recovery: { hint: expect.stringContaining('Retry after a brief delay') },
+        }),
+      });
+    });
+  });
+
+  describe('error contract — non-tabular assets', () => {
+    it('declares not_queryable as a validation failure with a columnCount recovery', () => {
+      const entry = queryDataset.errors?.find((e) => e.reason === 'not_queryable');
+      expect(entry).toBeDefined();
+      expect(entry?.code).toBe(JsonRpcErrorCode.ValidationError);
+      // A non-tabular asset is a permanent answer, so the entry must not advertise a retry.
+      expect(entry).not.toHaveProperty('retryable');
+      expect(entry?.recovery).toContain('columnCount');
+    });
+
+    it('scopes access_denied to the asset classes that actually 403', () => {
+      /**
+       * Chart and map assets never 403 — they answer 200 with rows carrying no fields.
+       * Naming them here sent callers chasing an access decision that never happened.
+       */
+      const when = queryDataset.errors?.find((e) => e.reason === 'access_denied')?.when ?? '';
+      expect(when).toContain('403');
+      expect(when).toMatch(/story/i);
+      expect(when).toMatch(/file/i);
+      expect(when).not.toMatch(/\bchart\b/i);
+      expect(when).not.toMatch(/\bmap\b/i);
     });
   });
 

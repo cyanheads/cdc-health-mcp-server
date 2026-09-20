@@ -6,7 +6,11 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import { CDC_SOCRATA_DOMAINS, type QueryResult } from '@/services/socrata/types.js';
+import {
+  CDC_SOCRATA_DOMAINS,
+  type DatasetMetadata,
+  type QueryResult,
+} from '@/services/socrata/types.js';
 import { escapeTableCell } from '@/utils/markdown.js';
 
 const MAX_LIMIT = 5000;
@@ -75,9 +79,16 @@ export const queryDataset = tool('cdc_query_dataset', {
         'Read the error message for the specific clause and consult the dataset schema before retrying.',
     },
     {
+      reason: 'not_queryable',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The ID names a non-tabular asset: the data endpoint answered with rows carrying no fields, and the asset reports no columns.',
+      recovery:
+        'Pick an ID from cdc_discover_datasets whose columnCount is above zero; those are the entries cdc_query_dataset can read.',
+    },
+    {
       reason: 'access_denied',
       code: JsonRpcErrorCode.Forbidden,
-      when: 'Socrata returned 403 — typically an ID naming a chart, map, story, file, or external link rather than a tabular dataset.',
+      when: 'Socrata returned 403 — typically an ID naming a story, file, or external link rather than a tabular dataset.',
       recovery:
         'Confirm the ID with cdc_get_dataset_schema, then query one whose schema lists columns; retrying this ID returns the same refusal.',
     },
@@ -201,15 +212,24 @@ export const queryDataset = tool('cdc_query_dataset', {
 
   async handler(input, ctx) {
     const service = getSocrataService();
+
+    /**
+     * Re-raise a service failure through this tool's contract so it reaches the caller with
+     * the declared reason and recovery instead of an unclassified upstream error.
+     */
+    const asContractError = (err: unknown): unknown => {
+      if (err instanceof McpError && typeof err.data?.reason === 'string') {
+        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
+        return ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+      }
+      return err;
+    };
+
     let result: QueryResult;
     try {
       result = await service.query(input, ctx.signal);
     } catch (err) {
-      if (err instanceof McpError && typeof err.data?.reason === 'string') {
-        const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
-      }
-      throw err;
+      throw asContractError(err);
     }
 
     ctx.enrich({ effectiveQuery: result.query });
@@ -219,15 +239,55 @@ export const queryDataset = tool('cdc_query_dataset', {
     const hasMore = result.hasMore || budgetCut;
     const nextOffset = input.offset + rows.length;
 
+    /**
+     * `enrich.notice` is last-wins, and `enrich.truncated()` writes `notice` too. The
+     * fieldless-rows notice and the truncation notice can both apply to one response, so the
+     * guidance accumulates here and is flushed once rather than one call overwriting another.
+     */
+    const guidance: string[] = [];
+
     if (result.rows.length === 0) {
       /**
        * The data endpoint reports no total, so an offset paged past the end of a real result
        * set and a filter that matched nothing come back identically. One branch, no guess.
        */
-      ctx.enrich.notice(
+      guidance.push(
         'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.',
       );
-    } else if (hasMore) {
+    } else if (rows.every((row) => Object.keys(row).length === 0)) {
+      /**
+       * Socrata answers a chart or map ID with HTTP 200 and a body of empty objects, which is
+       * a paginated success as far as the row shape goes. The shape cannot decide it either
+       * way: SODA omits null keys, so a real dataset whose projected columns are null on the
+       * matched rows serializes identically. Only the asset's column metadata separates them,
+       * which is why this one request is spent here and on no other path.
+       */
+      let metadata: DatasetMetadata;
+      try {
+        metadata = await service.getMetadata(input.datasetId, ctx.signal, input.domain, {
+          liveRowCount: false,
+        });
+      } catch (err) {
+        throw asContractError(err);
+      }
+
+      if (metadata.columns.length === 0) {
+        throw ctx.fail(
+          'not_queryable',
+          `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset — a chart or a map — and the rows it returned carry no fields, so there is no data to page through.`,
+          { ...ctx.recoveryFor('not_queryable') },
+        );
+      }
+
+      const projection = input.select
+        ? `the select clause "${input.select}"`
+        : 'every column of the dataset';
+      guidance.push(
+        `Every row came back with no fields: ${projection} is null on all ${rows.length} matched rows, and Socrata omits null keys from its JSON rather than sending them as nulls. The dataset itself has ${metadata.columns.length} columns — check them with cdc_get_dataset_schema and select ones the matched rows populate, or widen the where clause.`,
+      );
+    }
+
+    if (result.rows.length > 0 && hasMore) {
       const cause = budgetCut
         ? `the ${MAX_ROW_CHARS.toLocaleString('en-US')}-character response size budget cut the page at ${rows.length} of the ${input.limit} rows requested`
         : `the requested limit of ${input.limit} was reached`;
@@ -235,13 +295,12 @@ export const queryDataset = tool('cdc_query_dataset', {
         nextOffset <= MAX_OFFSET
           ? `Call again with offset=${nextOffset} to continue, and set an order clause (order=":id" works on any dataset) so the walk neither skips nor repeats rows.`
           : `Resuming would need offset=${nextOffset.toLocaleString('en-US')}, past the ${MAX_OFFSET.toLocaleString('en-US')} ceiling this tool accepts — narrow the query with a where clause instead of paging further.`;
-      ctx.enrich.truncated({
-        shown: rows.length,
-        cap: input.limit,
-        guidance: `More rows exist beyond this response — ${cause}. ${resume}`,
-      });
+      ctx.enrich.truncated({ shown: rows.length, cap: input.limit });
+      guidance.push(`More rows exist beyond this response — ${cause}. ${resume}`);
       if (nextOffset <= MAX_OFFSET) ctx.enrich({ nextOffset });
     }
+
+    if (guidance.length > 0) ctx.enrich.notice(guidance.join(' '));
 
     ctx.log.info('Query executed', {
       domain: input.domain,
@@ -276,6 +335,22 @@ export const queryDataset = tool('cdc_query_dataset', {
     // rows and appear only later. Build the column set from the union of keys across
     // all rows (first-seen order) so late-appearing fields still render in content[].
     const columns = [...new Set(result.rows.flatMap((r) => Object.keys(r)))];
+
+    if (columns.length === 0) {
+      /**
+       * Rows matched but the projection is null on every one of them, so there is no column
+       * to head a table with. Rendered as one anyway it is a header of nothing over rows of
+       * nothing — the same meaningless table to a client that reads only this surface. The
+       * notice carrying the next move is already its own block in `content[]`.
+       */
+      return [
+        {
+          type: 'text',
+          text: `**${result.rowCount} rows matched, and every one came back with no fields.** The selected columns are null on all of them, so there is nothing to tabulate.`,
+        },
+      ];
+    }
+
     const lines = [
       `**${result.rowCount} rows returned**`,
       '',
