@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-09-20 · 🛡️ Security
+
+New cdc_list_catalog_vocabulary tool, live row counts on cdc_get_dataset_schema, and fixes for chart/map queries and double-decoded HTML descriptions.
+
 ## [0.8.7](changelog/0.8.x/0.8.7.md) — 2026-09-16
 
 Adopts mcp-ts-core 0.13.2: sessionMode is now declared in src/index.ts and published on the server card, argument rejections carry a -32602 structured error, shutdown exits explicitly, and the changelog moves to a per-version directory layout.

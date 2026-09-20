@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-09-16 12:16:58
+Generated on: 2026-09-20 23:22:44
 
 ```text
 cdc-health-mcp-server/
@@ -14,6 +14,8 @@ cdc-health-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── workflows/
+│   │   └── codeql.yml
 │   ├── CODE_OF_CONDUCT.md
 │   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
@@ -30,6 +32,7 @@ cdc-health-mcp-server/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
 │   ├── 0.8.x/
+│   ├── 0.9.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -153,6 +156,7 @@ cdc-health-mcp-server/
 │   │       └── definitions/
 │   │           ├── discover-datasets.tool.ts
 │   │           ├── get-dataset-schema.tool.ts
+│   │           ├── list-catalog-vocabulary.tool.ts
 │   │           ├── query-dataset.tool.ts
 │   │           └── query-wonder.tool.ts
 │   ├── services/
@@ -165,7 +169,9 @@ cdc-health-mcp-server/
 │   │       ├── xml-builder.ts
 │   │       └── xml-parser.ts
 │   ├── utils/
-│   │   └── markdown.ts
+│   │   ├── markdown.ts
+│   │   ├── text.ts
+│   │   └── vocabulary.ts
 │   └── index.ts
 ├── tests/
 │   ├── config/
@@ -187,6 +193,7 @@ cdc-health-mcp-server/
 │   │           ├── discover-datasets.tool.test.ts
 │   │           ├── get-dataset-schema-edge.tool.test.ts
 │   │           ├── get-dataset-schema.tool.test.ts
+│   │           ├── list-catalog-vocabulary.tool.test.ts
 │   │           ├── query-dataset-edge.tool.test.ts
 │   │           ├── query-dataset.tool.test.ts
 │   │           └── query-wonder.tool.test.ts
@@ -206,7 +213,10 @@ cdc-health-mcp-server/
 │   │       ├── wonder-service.test.ts
 │   │       ├── xml-builder.test.ts
 │   │       └── xml-parser.test.ts
-│   └── tools/
+│   ├── tools/
+│   └── utils/
+│       ├── text.test.ts
+│       └── vocabulary.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
