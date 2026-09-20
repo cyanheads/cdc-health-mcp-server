@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/cdc-health-mcp-server</h1>
   <p><b>Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.</b>
-  <div>4 Tools • 2 Resources • 1 Prompt</div>
+  <div>5 Tools • 2 Resources • 1 Prompt</div>
   </p>
 </div>
 
@@ -37,6 +37,7 @@ CDC public health data — the Socrata-based CDC Open Data portal, plus CDC WOND
 |:---|:---|
 | `cdc_discover_datasets` | Search the CDC dataset catalog by keyword, category, or tag |
 | `cdc_get_dataset_schema` | Fetch column schema, row count, and metadata for a dataset |
+| `cdc_list_catalog_vocabulary` | List the catalog's category and tag values with their entry counts |
 | `cdc_query_dataset` | Execute SoQL queries — filter, aggregate, sort, full-text search, select fields |
 | `cdc_query_wonder` | Query CDC WONDER for national mortality, population, and death rates across five databases |
 
@@ -64,7 +65,8 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 - Up to 100 results per page (default 10); `offset` is capped at 9999, and `offset + limit` must not exceed 10,000 — Socrata's catalog ceiling
 - `order`: `dataset_id` (default) sorts deterministically for stable pagination; `relevance` ranks by best match but is not stably paginable across pages
 - Each result carries `columnCount` — a value of 0 marks a non-tabular asset (chart, map, story, file, or href) that yields no data from the other tools; `assetType` is descriptive only
-- Enrichment carries `totalCount` and `appliedFilters`; a `notice` distinguishes an offset past the end of the result set from a search that matched nothing
+- `description` is converted to plain text before it is cut to 300 characters, so the budget buys visible text rather than the HTML tags catalog entries arrive wrapped in
+- Enrichment carries `totalCount` and `appliedFilters`; a `notice` distinguishes an offset past the end of the result set from a search that matched nothing, and resolves a `category`/`tags` value that matched nothing against the catalog vocabulary — `category: "Vaccination"` comes back naming `"Vaccinations" (89 datasets)` rather than advising a broader search. The vocabulary is read only on that branch, so an ordinary search costs no extra request
 
 ---
 
@@ -74,6 +76,19 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 - Returns the first 100 columns by default (`column_limit`, max 500) — catalog schemas run 3 to 322 columns, so ordinary datasets arrive whole; wider ones report `totalCount`, `truncated`, and `nextOffset` to pass back as `column_offset`
 - A `column_offset` at or past the column count returns an empty window rather than an error
 - Fails with `not_queryable` when the ID names a non-tabular catalog asset, rather than returning an empty column list
+- `rowCount` prefers a live `count(*)` fetched alongside the metadata; `rowCountSource` says `live` or `cached`, since Socrata's cached figure is built once and can understate an actively-updated dataset by a third or more. A failed count falls back to the cached figure and never fails the schema response
+- `description` is returned in full as plain text — markup stripped, entity references decoded; only `cdc_discover_datasets` truncates it
+
+---
+
+### `cdc_list_catalog_vocabulary` <sub>tool</sub>
+
+- The controlled vocabularies `cdc_discover_datasets`' `category` and `tags` filters are matched against — a value the catalog does not carry matches nothing, which is indistinguishable from a real value with no results
+- All 55 categories return whole (~3 KB); the tag vocabulary runs to 1,583 values, so tags are ranked by entry count and paged with `tag_limit` (default 50, max 500) and `tag_offset`
+- The service asks the tag endpoint for the whole vocabulary explicitly — left to its default it returns 100 values and reports `resultSetSize: 100` beside them, so the under-count reads as complete
+- `filter` narrows both vocabularies before the page is cut, matching on whole words in either direction (`"vaccin"` reaches `Vaccinations` and `covid-19 vaccination`). Not fuzzy — a misspelling returns nothing rather than a guess
+- Enrichment carries `vocabularySize`, the matched `categoryCount`/`tagCount`, and `truncated`/`shown`/`cap`/`nextOffset`; `truncationCeiling` bounds every omitted tag, since the list is ranked by the same count
+- Both hosts publish the same vocabulary — measured live, `data.cdc.gov` and `chronicdata.cdc.gov` return the identical 55 categories and 1,583 tags
 
 ---
 
@@ -83,6 +98,7 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 - Up to 5,000 rows per request (default 100); `offset` capped at 1,000,000
 - `truncated` is measured by an over-fetch probe (one row past the limit), never guessed from the row count; rows are also bounded by a 200,000-character response budget, so a wide page can end short of `limit` with a `nextOffset`
 - `effectiveQuery` echoes the SoQL clauses sent in their original text, not URL-encoded, so a clause can be copied back into the parameter it came from
+- Fails with `not_queryable` when every returned row carries no fields and the asset reports no columns — a chart or map ID, which Socrata answers 200 with a body of empty objects. When the asset does have columns, the same shape is a null-only projection and comes back as a success with a notice
 - All response values are strings (SODA v2.1) — parse per the column's `dataType` from the schema
 
 ---
@@ -268,7 +284,7 @@ cp .env.example .env
 | `LOGS_DIR` | Directory for log files (Node.js only) | `<project-root>/logs` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1` | `in-memory` |
 | `CDC_APP_TOKEN` | Socrata app token for higher rate limits | — |
-| `CDC_BASE_URL` | Base URL for SODA API requests | `https://data.cdc.gov` |
+| `CDC_BASE_URL` | SODA host for requests that name no `domain` — in practice only the `cdc://datasets/{datasetId}` resource. The three Socrata tools always send a `domain` (`data.cdc.gov` by default), which overrides this | `https://data.cdc.gov` |
 | `CDC_CATALOG_URL` | Base URL for Socrata Discovery API | `https://api.us.socrata.com/api/catalog/v1` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) (spans, metrics, completion logs) | `false` |
 
