@@ -9,6 +9,7 @@ import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
+import { listCatalogVocabulary } from '@/mcp-server/tools/definitions/list-catalog-vocabulary.tool.js';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
 import type { DiscoverOptions, QueryOptions } from '@/services/socrata/socrata-service.js';
@@ -17,6 +18,7 @@ import type {
   DiscoverResult,
   QueryResult,
   SocrataDomain,
+  VocabularyTerm,
 } from '@/services/socrata/types.js';
 
 /**
@@ -41,11 +43,17 @@ const mockGetMetadata =
     (datasetId: string, signal?: AbortSignal, domain?: SocrataDomain) => Promise<DatasetMetadata>
   >();
 const mockQuery = vi.fn<(options: QueryOptions, signal?: AbortSignal) => Promise<QueryResult>>();
+const mockListCategories =
+  vi.fn<(domain?: SocrataDomain, signal?: AbortSignal) => Promise<VocabularyTerm[]>>();
+const mockListTags =
+  vi.fn<(domain?: SocrataDomain, signal?: AbortSignal) => Promise<VocabularyTerm[]>>();
 
 vi.mock('@/services/socrata/socrata-service.js', () => ({
   getSocrataService: () => ({
     discover: mockDiscover,
     getMetadata: mockGetMetadata,
+    listCategories: mockListCategories,
+    listTags: mockListTags,
     query: mockQuery,
   }),
 }));
@@ -103,6 +111,10 @@ describe('Security — input validation', () => {
       expect(() => queryDataset.input.parse({ datasetId: 'ab12-cd34', domain })).toThrow();
     });
 
+    it.each(disallowedDomains)('rejects domain %j in listCatalogVocabulary', (domain) => {
+      expect(() => listCatalogVocabulary.input.parse({ domain })).toThrow();
+    });
+
     it('accepts the two allowlisted CDC Socrata hosts', () => {
       for (const domain of ['data.cdc.gov', 'chronicdata.cdc.gov'] as const) {
         expect(discoverDatasets.input.parse({ domain }).domain).toBe(domain);
@@ -110,6 +122,7 @@ describe('Security — input validation', () => {
           domain,
         );
         expect(queryDataset.input.parse({ datasetId: 'ab12-cd34', domain }).domain).toBe(domain);
+        expect(listCatalogVocabulary.input.parse({ domain }).domain).toBe(domain);
       }
     });
 
@@ -117,6 +130,52 @@ describe('Security — input validation', () => {
       expect(discoverDatasets.input.parse({}).domain).toBe('data.cdc.gov');
       expect(getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }).domain).toBe('data.cdc.gov');
       expect(queryDataset.input.parse({ datasetId: 'ab12-cd34' }).domain).toBe('data.cdc.gov');
+      expect(listCatalogVocabulary.input.parse({}).domain).toBe('data.cdc.gov');
+    });
+
+    it('exposes no host input on the vocabulary tool beyond the allowlisted enum', () => {
+      /**
+       * The vocabulary endpoints are addressed by path off CDC_CATALOG_URL with the domain as
+       * a query value, so `domain` is the only caller-supplied component that reaches a URL.
+       */
+      expect(Object.keys(listCatalogVocabulary.input.shape)).toEqual([
+        'domain',
+        'filter',
+        'tag_limit',
+        'tag_offset',
+      ]);
+    });
+  });
+
+  describe('listCatalogVocabulary — input bounds', () => {
+    it('rejects tag_limit of 0 and above 500', () => {
+      expect(() => listCatalogVocabulary.input.parse({ tag_limit: 0 })).toThrow();
+      expect(() => listCatalogVocabulary.input.parse({ tag_limit: 501 })).toThrow();
+    });
+
+    it('rejects a negative and a pathological tag_offset', () => {
+      expect(() => listCatalogVocabulary.input.parse({ tag_offset: -1 })).toThrow();
+      expect(() =>
+        listCatalogVocabulary.input.parse({ tag_offset: Number.MAX_SAFE_INTEGER }),
+      ).toThrow();
+    });
+
+    it('keeps an oversized filter out of any URL, since it is matched in-process', async () => {
+      /**
+       * `filter` never reaches the wire — both vocabularies are fetched whole and narrowed
+       * locally — so length is bounded by what the caller sends, not by what upstream accepts.
+       */
+      mockListCategories.mockResolvedValue([]);
+      mockListTags.mockResolvedValue([]);
+      const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
+      const longFilter = 'x'.repeat(5000);
+      await listCatalogVocabulary.handler(
+        listCatalogVocabulary.input.parse({ filter: longFilter }),
+        ctx,
+      );
+
+      expect(mockListCategories).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
+      expect(mockListTags).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
     });
   });
 
@@ -253,6 +312,10 @@ describe('Security — input validation', () => {
         real.getMetadata(id, signal, domain),
       );
       mockQuery.mockImplementation((options, signal) => real.query(options, signal));
+      mockListCategories.mockImplementation((domain, signal) =>
+        real.listCategories(domain, signal),
+      );
+      mockListTags.mockImplementation((domain, signal) => real.listTags(domain, signal));
       return fetchSpy;
     }
 
@@ -323,6 +386,51 @@ describe('Security — input validation', () => {
       }
     });
 
+    it('keeps the app token out of the vocabulary URLs and payloads', async () => {
+      /**
+       * Both vocabulary endpoints are catalog siblings and go through the same `fetchJson`,
+       * so the token rides `X-App-Token`. Socrata also accepts it as a `$$app_token` query
+       * parameter — that form would ship in the `url` on every error the service throws.
+       */
+      const fetchSpy = await withRealService(json({}));
+      /**
+       * Both vocabulary reads are issued together and each consumes a body, so the single
+       * canned `Response` the helper hands back cannot serve both — mint a fresh one per call
+       * and route it by endpoint.
+       */
+      fetchSpy.mockImplementation((input) =>
+        Promise.resolve(
+          String(input).includes('/domain_tags')
+            ? json({ results: [{ domain_tag: 'nndss', count: 294 }], resultSetSize: 1 })
+            : json({ results: [{ domain_category: 'Vaccinations', count: 89 }], resultSetSize: 1 }),
+        ),
+      );
+      const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
+      const result = await listCatalogVocabulary.handler(
+        listCatalogVocabulary.input.parse({}),
+        ctx,
+      );
+
+      const urls = fetchSpy.mock.calls.map((call) => String(call[0]));
+      expect(urls).toHaveLength(2);
+      expect(urls.some((url) => url.includes('/domain_categories?'))).toBe(true);
+      expect(urls.some((url) => url.includes('/domain_tags?'))).toBe(true);
+      for (const url of urls) {
+        expect(url).not.toContain(APP_TOKEN);
+        expect(url).not.toContain('app_token');
+      }
+
+      const surfaces = [
+        JSON.stringify(result),
+        JSON.stringify(getEnrichment(ctx)),
+        (listCatalogVocabulary.format!(result)[0] as { type: 'text'; text: string }).text,
+      ];
+      for (const surface of surfaces) {
+        expect(surface).not.toContain(APP_TOKEN);
+        expect(surface).not.toContain('CDC_APP_TOKEN');
+      }
+    });
+
     it('keeps the app token out of the payloads cdc_get_dataset_schema returns', async () => {
       await withRealService(
         json({
@@ -343,6 +451,29 @@ describe('Security — input validation', () => {
       for (const surface of surfaces) {
         expect(surface).not.toContain(APP_TOKEN);
         expect(surface).not.toContain('CDC_APP_TOKEN');
+      }
+    });
+
+    it('keeps the token out of every URL the schema path builds, count request included', async () => {
+      /**
+       * Fetching a dataset's schema issues two requests — the metadata document and the live
+       * `count(*)` that annotates it. Checking only the first would leave the second free to
+       * carry the token as the `$$app_token` query parameter Socrata also accepts.
+       */
+      const fetchSpy = await withRealService(
+        json({ name: 'Test', columns: [{ fieldName: 'state', dataTypeName: 'text' }] }),
+      );
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      await getDatasetSchema.handler(getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }), ctx);
+
+      const urls = fetchSpy.mock.calls.map((call) => String(call[0]));
+      expect(urls).toHaveLength(2);
+      expect(urls.some((url) => url.includes('/api/views/ab12-cd34.json'))).toBe(true);
+      expect(urls.some((url) => url.includes('/resource/ab12-cd34.json'))).toBe(true);
+      for (const url of urls) {
+        expect(url).not.toContain(APP_TOKEN);
+        expect(url).not.toContain('app_token');
+        expect(url.startsWith('https://data.cdc.gov/')).toBe(true);
       }
     });
 
@@ -381,6 +512,114 @@ describe('Security — input validation', () => {
       // The rethrow-unchanged path is what makes `data.url` reachable — pin it.
       expect((err.data as { url?: string }).url).toContain('/resource/ab12-cd34.json');
       expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(APP_TOKEN);
+    });
+  });
+
+  describe('upstream markup in descriptions', () => {
+    /**
+     * Catalog descriptions are publisher-authored HTML that reaches both response surfaces.
+     * Converting them to plain text is what keeps upstream markup from arriving as markup —
+     * and keeps an escaped `&amp;lt;` from being decoded twice back into a live tag.
+     */
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const INJECTION =
+      '<script>alert(1)</script><p onclick="steal()">Weekly counts</p>' +
+      '&amp;lt;img src=x onerror=alert(2)&amp;gt;';
+
+    it('strips markup from a discovery description on both surfaces', async () => {
+      mockDiscover.mockResolvedValue({
+        datasets: [{ id: 'ab12-cd34', name: 'Injected', description: INJECTION }],
+        totalCount: 1,
+      });
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+      const text = (discoverDatasets.format!(result)[0] as { type: 'text'; text: string }).text;
+
+      for (const surface of [JSON.stringify(result), text]) {
+        expect(surface).not.toContain('<script>');
+        expect(surface).not.toContain('<p ');
+      }
+      const description = result.datasets[0]?.description ?? '';
+      // No angle bracket survives, so nothing upstream wrote can reopen as an element...
+      expect(description).not.toContain('<');
+      // ...while the pre-escaped fragment stays escaped rather than decoding into a tag.
+      expect(description).toContain('&lt;img src=x onerror=alert(2)&gt;');
+      expect(description).toContain('Weekly counts');
+    });
+
+    it('strips markup from a schema description on both surfaces', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'Injected',
+        description: INJECTION,
+        columns: [{ fieldName: 'state', dataType: 'text' }],
+      });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' }),
+        ctx,
+      );
+
+      // The service owns the conversion, so run it for real rather than trusting the stub.
+      const actual = await vi.importActual<typeof import('@/services/socrata/socrata-service.js')>(
+        '@/services/socrata/socrata-service.js',
+      );
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            name: 'Injected',
+            description: INJECTION,
+            columns: [{ fieldName: 'state', dataTypeName: 'text' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+      const converted = await new actual.SocrataService().getMetadata('ab12-cd34');
+
+      expect(converted.description).not.toContain('<');
+      expect(converted.description).toContain('&lt;img src=x onerror=alert(2)&gt;');
+      expect(result.name).toBe('Injected');
+    });
+
+    it('never emits a decoded lone surrogate, which a strict JSON consumer rejects', async () => {
+      /**
+       * Bun round-trips an unpaired surrogate through JSON.stringify/parse without complaint,
+       * so the runtime's tolerance proves nothing — `jq` fails the entire frame as an invalid
+       * surrogate pair escape. An out-of-range reference is the neighbouring hazard: decoding
+       * one raises a RangeError from String.fromCodePoint.
+       */
+      mockDiscover.mockResolvedValue({
+        datasets: [
+          {
+            id: 'ab12-cd34',
+            name: 'Edge',
+            description: 'Lone &#xD800; and over-range &#x110000; and &#128169; pile.',
+          },
+        ],
+        totalCount: 1,
+      });
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      const result = await discoverDatasets.handler(discoverDatasets.input.parse({}), ctx);
+
+      const payload = JSON.stringify(result);
+      for (let i = 0; i < payload.length; i++) {
+        const code = payload.charCodeAt(i);
+        const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+        const isLowSurrogate = code >= 0xdc00 && code <= 0xdfff;
+        if (isHighSurrogate) {
+          const next = payload.charCodeAt(i + 1);
+          expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+          i++;
+        } else {
+          expect(isLowSurrogate).toBe(false);
+        }
+      }
+      // The two undecodable references stay literal; a valid astral one still decodes.
+      expect(result.datasets[0]?.description).toContain('&#xD800;');
+      expect(result.datasets[0]?.description).toContain('&#x110000;');
+      expect(result.datasets[0]?.description).toContain('💩');
     });
   });
 
