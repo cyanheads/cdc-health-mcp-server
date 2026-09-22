@@ -116,12 +116,14 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 | `multiple_1999_2020` | D77 — Multiple Cause of Death | 1999–2020 | 4 bridged | yes |
 | `multiple_2018_2024` | D157 — Multiple Cause of Death, Single Race | 2018–2024 | 6 single-race | yes |
 
-- `group_by`: 1–4 of `year`, `age_group`, `sex`, `race`; national totals only — no sub-national breakdown at any setting
+- `group_by`: 1–4 of `year`, `age_group`, `sex`, `race`, each at most once; national totals only — no sub-national breakdown at any setting
+- `cause_icd10` and `mcd_icd10` take one ICD-10 code or range, or a list of up to 50 matched as one union — e.g. the drug-overdose set `["X40","X41","X42","X43","X44","X60","X61","X62","X63","X64","X85","Y10","Y11","Y12","Y13","Y14"]` returns one series with one set of rates. A range must be a chapter or block of WONDER's ICD-10 tree (`X40-X49`); any other span (`X40-X44`) is rejected, so list its codes instead
 - `mcd_icd10` matches a cause recorded anywhere on the death certificate rather than only the underlying cause; accepted only by `provisional`, `multiple_1999_2020`, and `multiple_2018_2024` — the others reject it
 - `age_groups` must include `"NS"` (age not recorded) to match an unfiltered total; a `year_range` outside the selected database's span is rejected with that span named
 - Measure cells CDC withholds or flags (`Suppressed`, `Unreliable`, `Not Applicable`) read `null` in `rows` and are named per cell in `cellNotes`; whole rows CDC hides (zero or suppressed deaths) are absent from `rows` with no gap marker — check `messages`
-- Returns the whole table by default; `limit` (max 5,000) and `offset` (max 10,000) page it, alongside `totalCount`, `truncated`, and `nextOffset`
-- Consecutive requests are spaced 16 seconds automatically — CDC rejects anything sent less than 15 seconds after the prior response finished, measured across all five databases
+- Each response is bounded by a 200,000-character budget over `structuredContent` and `content[]` together, so a large grouping comes back a page at a time with an exact `totalCount`, `truncated`, and a `nextOffset` to continue from; `limit` (max 5,000) takes smaller pages and `offset` (max 10,000) resumes
+- Consecutive requests are spaced 16 seconds automatically — CDC rejects anything sent less than 15 seconds after the prior response finished, measured across all five databases. Concurrent calls queue and run one at a time, each queued call adding about 16 seconds
+- CDC's caveats and notices keep their methodology links as Markdown links
 
 ---
 
