@@ -12,6 +12,7 @@ import {
   type QueryResult,
 } from '@/services/socrata/types.js';
 import { escapeTableCell } from '@/utils/markdown.js';
+import { jsonLength, MAX_RESPONSE_CHARS } from '@/utils/response-budget.js';
 
 const MAX_LIMIT = 5000;
 /**
@@ -20,30 +21,22 @@ const MAX_LIMIT = 5000;
  */
 const MAX_OFFSET = 1_000_000;
 /**
- * Response budget, in characters of the serialized tool result — `structuredContent` and
- * `content[]` together, as a caller receives them. Every row reaches the caller twice: as
- * JSON in `structuredContent` and as a line of the markdown table in `content[]`, so each
- * row is charged both costs. A row count is a leaky proxy for size: 5,000 rows of a
- * 38-column surveillance dataset serialize to ~6 MB, while 5,000 rows of a 3-column summary
- * fit in a fraction of that. `limit` still means what it says; rows dropped by the budget are
- * disclosed with a `nextOffset` that resumes exactly where the response stopped.
- */
-const MAX_RESPONSE_CHARS = 200_000;
-/**
- * Characters held back from the row budget for the parts of the response that are not rows:
- * the result keys, the row-count heading, the table's opening pipes, the schema tip, the
- * enrichment trailer's labels, and the notice, which reaches both surfaces. The fixed text of
- * the longest notice combination, doubled, is under 2,000 characters; the query echo is
- * reserved separately because its length is the caller's.
+ * Characters held back from the `MAX_RESPONSE_CHARS` row budget for the parts of the response
+ * that are not rows: the result keys, the row-count heading, the table's opening pipes, the
+ * schema tip, the enrichment trailer's labels, and the notice, which reaches both surfaces.
+ * The fixed text of the longest notice combination, doubled, is under 2,000 characters; the
+ * query echo is reserved separately because its length is the caller's.
+ *
+ * Every row reaches the caller twice: as JSON in `structuredContent` and as a line of the
+ * markdown table in `content[]`, so each row is charged both costs. A row count is a leaky
+ * proxy for size: 5,000 rows of a 38-column surveillance dataset serialize to ~6 MB, while
+ * 5,000 rows of a 3-column summary fit in a fraction of that. `limit` still means what it
+ * says; rows dropped by the budget are disclosed with a `nextOffset` that resumes exactly
+ * where the response stopped.
  */
 const FRAMING_RESERVE = 4_000;
 
 type Row = Record<string, unknown>;
-
-/** Length of `text` once embedded in a JSON string — the form it takes on the wire. */
-function jsonLength(text: string): number {
-  return JSON.stringify(text).length - 2;
-}
 
 /** One table cell, as `format()` renders it — shared so the budget charges what is rendered. */
 function renderCell(value: unknown): string {
@@ -312,7 +305,7 @@ export const queryDataset = tool('cdc_query_dataset', {
 
       if (matchedAtStart === true) {
         guidance.push(
-          `Offset ${input.offset} is past the end of the result set. The same query returns rows from offset 0, so it matched — the result set holds ${input.offset} rows or fewer. Lower offset to page within it.`,
+          `Offset ${input.offset} is past the end of the result set. The same query returns rows from offset 0, so it matched — the result set holds ${input.offset} row${input.offset === 1 ? '' : 's'} or fewer. Lower offset to page within it.`,
         );
       } else if (matchedAtStart === false) {
         guidance.push(NO_MATCH_NOTICE);

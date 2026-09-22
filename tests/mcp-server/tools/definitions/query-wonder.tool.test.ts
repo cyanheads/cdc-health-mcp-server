@@ -122,7 +122,7 @@ describe('cdc_query_wonder', () => {
     await queryWonder.handler(input, ctx);
 
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.objectContaining({ database: 'multiple_1999_2020', mcdIcd10: 'J00-J98' }),
+      expect.objectContaining({ database: 'multiple_1999_2020', mcdIcd10: ['J00-J98'] }),
       ctx.signal,
     );
   });
@@ -243,8 +243,9 @@ describe('cdc_query_wonder', () => {
   describe('database-conditional rejections', () => {
     /**
      * Every check runs in the handler rather than a Zod refinement. A refinement contributes
-     * nothing to the emitted JSON Schema and fails as a raw ZodError at the transport, before
-     * the handler and its declared recovery hint are reached — the defect #27 corrected for
+     * nothing to the emitted JSON Schema and fails argument parsing as a -32602
+     * `invalid_arguments` envelope before the handler runs, out of reach of the declared
+     * reason and its recovery hint — the defect #27 corrected for
      * cdc_discover_datasets. These cases pin the handler-level behaviour: a declared reason,
      * the contract recovery attached, and a message that names the way out.
      */
@@ -373,7 +374,7 @@ describe('cdc_query_wonder', () => {
         await queryWonder.handler(input, ctx);
         expect(mockQuery).toHaveBeenCalledWith(
           expect.objectContaining(
-            field === 'cause_icd10' ? { causeIcd10: '999--999' } : { mcdIcd10: '999--999' },
+            field === 'cause_icd10' ? { causeIcd10: ['999--999'] } : { mcdIcd10: ['999--999'] },
           ),
           ctx.signal,
         );
@@ -464,7 +465,7 @@ describe('cdc_query_wonder', () => {
       return { result, enrichment: getEnrichment(ctx) };
     }
 
-    it('returns the whole table untouched when limit and offset are omitted', async () => {
+    it('returns a table inside the response budget whole when limit and offset are omitted', async () => {
       const { result, enrichment } = await page({});
 
       expect(result.rows).toEqual(pagedResult.rows);
@@ -716,11 +717,31 @@ describe('cdc_query_wonder', () => {
     it('says on the race grouping that the two race families are not comparable', () => {
       /**
        * Bridged race collapses Asian and Pacific Islander into one group; single race splits
-       * them and adds a multiracial category. A reader who splices the two series produces a
-       * discontinuity that looks like a finding.
+       * them and counts "More than one race" as one of its six categories. A reader who
+       * splices the two series produces a discontinuity that looks like a finding.
        */
       expect(queryWonder.input.shape.group_by.description).toContain('bridged');
       expect(queryWonder.input.shape.database.description).toContain('not comparable');
+    });
+
+    it('counts six single-race categories with "More than one race" among them, not six plus one', () => {
+      const description = queryWonder.input.shape.group_by.description ?? '';
+      expect(description).toContain('six single-race categories');
+      expect(description).toContain('More than one race');
+      expect(description).not.toMatch(/plus a multiracial/);
+    });
+
+    it('tells the caller that concurrent calls queue, each adding about 16 seconds', () => {
+      expect(queryWonder.description).toContain('wait their turn');
+      expect(queryWonder.description).toContain('each queued call adding about 16 seconds');
+      const rateLimited = queryWonder.errors?.find((e) => e.reason === 'rate_limited');
+      expect(rateLimited?.recovery).toContain('wait their turn');
+      expect(rateLimited?.recovery).toContain('each queued call adding about 16 seconds');
+    });
+
+    it('says caveats and messages keep CDC links as Markdown links', () => {
+      expect(queryWonder.output.shape.caveats.description).toContain('Markdown links');
+      expect(queryWonder.output.shape.messages.description).toContain('Markdown links');
     });
 
     it('rejects more than four group-by dimensions', () => {
@@ -738,8 +759,88 @@ describe('cdc_query_wonder', () => {
       expect(() => queryWonder.input.parse({ cause_icd10: 'cancer' })).toThrow();
     });
 
-    it('rejects a year range where from is after to', () => {
-      expect(() => queryWonder.input.parse({ year_range: { from: 2020, to: 2018 } })).toThrow();
+    it('leaves a reversed year range and a repeated group_by dimension to the handler', async () => {
+      /**
+       * Rejected at the schema they would fail as `invalid_arguments`, out of reach of the
+       * declared `invalid_query` recovery; the handler rejects both before calling the service.
+       */
+      const reversed = queryWonder.input.parse({ year_range: { from: 2020, to: 2018 } });
+      const repeated = queryWonder.input.parse({ group_by: ['sex', 'sex'] });
+      const ctx = Object.assign(createMockContext({ errors: queryWonder.errors }), {
+        recoveryFor: (reason: string) => ({ recovery: `recover ${reason}` }),
+        fail: (reason: string, message?: string, data?: Record<string, unknown>) =>
+          new McpError(JsonRpcErrorCode.ValidationError, message ?? '', { reason, ...data }),
+      });
+      await expect(queryWonder.handler(reversed, ctx)).rejects.toMatchObject({
+        data: { reason: 'invalid_query', recovery: 'recover invalid_query' },
+      });
+      await expect(queryWonder.handler(repeated, ctx)).rejects.toMatchObject({
+        data: { reason: 'invalid_query', recovery: 'recover invalid_query' },
+      });
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates repeated age groups and cause codes before they reach the service', async () => {
+      mockQuery.mockResolvedValue(sampleResult);
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      await queryWonder.handler(
+        queryWonder.input.parse({
+          database: 'provisional',
+          age_groups: ['25-34', '25-34'],
+          cause_icd10: ['X40', 'X40', 'X41'],
+          mcd_icd10: 'T40.1',
+        }),
+        ctx,
+      );
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ageGroups: ['25-34'],
+          causeIcd10: ['X40', 'X41'],
+          mcdIcd10: ['T40.1'],
+        }),
+        ctx.signal,
+      );
+    });
+
+    it('accepts a cause as one value or a list of them on both cause inputs', () => {
+      expect(queryWonder.input.parse({ cause_icd10: ['X40', 'X41'] }).cause_icd10).toEqual([
+        'X40',
+        'X41',
+      ]);
+      expect(queryWonder.input.parse({ mcd_icd10: ['T40.1', '999--999'] }).mcd_icd10).toEqual([
+        'T40.1',
+        '999--999',
+      ]);
+      expect(queryWonder.input.parse({ cause_icd10: 'X40' }).cause_icd10).toBe('X40');
+      expect(() => queryWonder.input.parse({ cause_icd10: [] })).toThrow();
+      expect(() => queryWonder.input.parse({ cause_icd10: [''] })).toThrow();
+    });
+
+    it('advertises the list form with its bounds in the input schema', () => {
+      const schema = z.toJSONSchema(queryWonder.input) as unknown as {
+        properties: Record<
+          string,
+          { anyOf: { type?: string; minItems?: number; maxItems?: number }[] }
+        >;
+      };
+      for (const field of ['cause_icd10', 'mcd_icd10']) {
+        const list = schema.properties[field]?.anyOf.find((branch) => branch.type === 'array');
+        expect(list).toMatchObject({ minItems: 1, maxItems: 50 });
+      }
+    });
+
+    it('describes ICD-10 ranges as nodes of WONDER’s tree, not chapter boundaries', () => {
+      /**
+       * WONDER takes a chapter, a block, or a code, and rejects any other span. "Chapter
+       * boundaries" steered callers away from blocks such as X40-X49, which WONDER accepts.
+       */
+      const text = JSON.stringify(z.toJSONSchema(queryWonder.input)).replaceAll(
+        String.raw`\"`,
+        `"`,
+      );
+      expect(text).not.toMatch(/chapter boundaries/i);
+      expect(text).toContain('a block such as "X40-X49"');
+      expect(text).toContain('rejects any other span, e.g. "X40-X44"');
     });
 
     it('rejects an unknown age group', () => {

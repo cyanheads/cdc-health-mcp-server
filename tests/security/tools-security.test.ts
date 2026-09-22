@@ -645,6 +645,21 @@ describe('Security — input validation', () => {
       expect(() => queryWonder.input.parse({ cause_icd10: cause })).toThrow();
     });
 
+    it.each(icd10Injections)('rejects %j inside a cause list on either field', (cause) => {
+      /** Each list entry becomes its own `<value>`, so every entry carries the same guard. */
+      expect(() => queryWonder.input.parse({ cause_icd10: ['I21', cause] })).toThrow();
+      expect(() => queryWonder.input.parse({ mcd_icd10: ['I21', cause] })).toThrow();
+    });
+
+    it('bounds a cause list at 50 entries', () => {
+      const codes = Array.from({ length: 51 }, (_, i) => `X${i + 10}`);
+      expect(() => queryWonder.input.parse({ cause_icd10: codes })).toThrow();
+      expect(() => queryWonder.input.parse({ mcd_icd10: codes })).toThrow();
+      expect(queryWonder.input.parse({ cause_icd10: codes.slice(0, 50) }).cause_icd10).toHaveLength(
+        50,
+      );
+    });
+
     it('accepts a well-formed code and chapter range', () => {
       expect(queryWonder.input.parse({ cause_icd10: 'I21' }).cause_icd10).toBe('I21');
       expect(queryWonder.input.parse({ cause_icd10: 'C00-C97' }).cause_icd10).toBe('C00-C97');
@@ -667,16 +682,27 @@ describe('Security — input validation', () => {
     it.each([
       { from: 1998, to: 2000 },
       { from: 1999, to: CURRENT_YEAR + 1 },
-      { from: 2010, to: 2005 },
     ])('rejects year_range %j', (range) => {
       expect(() => queryWonder.input.parse({ year_range: range })).toThrow();
+    });
+
+    it('leaves a reversed year_range inside the bounds to the handler', () => {
+      /**
+       * The handler rejects it as invalid_query before any request, with the declared recovery
+       * (pinned in query-wonder.input-seam.test.ts). Each year is still bounded here, so the
+       * loop that expands the range into finder values never runs past the union span.
+       */
+      expect(queryWonder.input.parse({ year_range: { from: 2010, to: 2005 } }).year_range).toEqual({
+        from: 2010,
+        to: 2005,
+      });
     });
 
     it('leaves a range inside the schema bounds but outside a database to the handler', () => {
       /**
        * The bounds span every database, so 2021–2024 parses even though the default database
        * stops at 2020 — that rejection belongs in the handler, where it can carry the declared
-       * recovery hint instead of failing as a raw ZodError at the transport. What matters
+       * recovery hint instead of failing argument parsing as `invalid_arguments`. What matters
        * here is only that widening the bounds did not open a hole: the value is still an
        * integer inside the union, and nothing outside it gets through.
        */
@@ -716,7 +742,10 @@ describe('Security — input validation', () => {
     });
 
     it('leaves limit unset and offset at zero when neither is supplied', () => {
-      /** Omitting both has to keep returning the whole table, not a silently capped page. */
+      /**
+       * No row cap is imposed by default — the response budget alone bounds an omitted
+       * limit, and discloses the cut with truncated and nextOffset rather than capping silently.
+       */
       const input = queryWonder.input.parse({});
       expect(input.limit).toBeUndefined();
       expect(input.offset).toBe(0);

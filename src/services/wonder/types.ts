@@ -61,8 +61,9 @@ export interface WonderDatabaseSpec {
   multipleCause: boolean;
   /**
    * Variable backing the `race` grouping. `V8` is bridged race (4 groups, Asian and Pacific
-   * Islander collapsed into one); `V42` is single race (6 groups plus multiracial). The two
-   * families return different labels and are not comparable with each other.
+   * Islander collapsed into one); `V42` is single race (6 categories, "More than one race"
+   * among them). The two families return different labels and are not comparable with each
+   * other.
    */
   raceVariable: 'V8' | 'V42';
   /** WONDER's own title for the database, as its request form reports it. */
@@ -206,17 +207,21 @@ export interface WonderYearRange {
 export interface WonderQueryOptions {
   /** Ten-year age groups to include. Omit for all ages. */
   ageGroups?: WonderAgeGroup[] | undefined;
-  /** ICD-10 underlying-cause code or range (e.g. "C00-C97"). Omit for all causes. */
-  causeIcd10?: string | undefined;
+  /**
+   * ICD-10 underlying-cause codes or ranges (e.g. `["X40-X49"]`, `["I21", "I22"]`), matched as a
+   * union — one finder value each. Omit for all causes.
+   */
+  causeIcd10?: string[] | undefined;
   /** Database to query. Defaults to `underlying_1999_2020` (D76). */
   database?: WonderDatabase | undefined;
   /** Dimensions to group by, in output-column order. 1–4 entries. */
   groupBy: WonderGroupBy[];
   /**
-   * ICD-10 code or range to match against any cause listed on the death certificate. Only
-   * meaningful on a database whose spec has `multipleCause` — the callers reject it elsewhere.
+   * ICD-10 codes or ranges to match against any cause listed on the death certificate, matched
+   * as a union and ANDed with `causeIcd10`. Only meaningful on a database whose spec has
+   * `multipleCause` — the callers reject it elsewhere.
    */
-  mcdIcd10?: string | undefined;
+  mcdIcd10?: string[] | undefined;
   /** Sex filter. Defaults to all. */
   sex?: WonderSex | undefined;
   /** Inclusive year range within the selected database's span. Omit for all years. */

@@ -178,6 +178,31 @@ describe('cdc_query_dataset — whole response', () => {
       expect(probe.get('$limit')).toBe('2');
     });
 
+    it('counts in the singular when the offset past the end is 1', async () => {
+      http.route({
+        match: /\/resource\/bi63-dtpu\.json/,
+        respond: sodaEndpoint([{ id: '0' }]),
+      });
+
+      const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', offset: 1 });
+      const sc = structured(result);
+
+      expect(sc.notice).toContain('the result set holds 1 row or fewer');
+      expect(sc.notice).not.toContain('1 rows');
+      expect(text(result)).toContain('the result set holds 1 row or fewer');
+    });
+
+    it('counts in the plural for any larger offset past the end', async () => {
+      http.route({
+        match: /\/resource\/bi63-dtpu\.json/,
+        respond: sodaEndpoint([{ id: '0' }]),
+      });
+
+      const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', offset: 2 });
+
+      expect(structured(result).notice).toContain('the result set holds 2 rows or fewer');
+    });
+
     it('carries the caller filters into the probe so it asks the same question', async () => {
       http.route({
         match: /\/resource\/bi63-dtpu\.json/,

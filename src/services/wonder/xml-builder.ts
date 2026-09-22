@@ -351,18 +351,22 @@ export function buildRequestXml(options: WonderQueryOptions): BuiltRequest {
   params.M_3 = `${id}.${MEASURE_CODE.crude_rate}`;
   if (measures.includes('age_adjusted_rate')) params.O_aar = 'aar_std';
 
-  // Underlying-cause filter (finder selection)
-  if (options.causeIcd10) {
-    params[`F_${id}.V2`] = options.causeIcd10;
-    params[`I_${id}.V2`] = options.causeIcd10;
+  /**
+   * Cause filters: one F_ `<value>` per code, which WONDER ORs within the finder (and the two
+   * finders AND together). I_ is the finder's display echo and carries the codes space-joined
+   * in a single value, as the request form submits it.
+   */
+  if (options.causeIcd10?.length) {
+    params[`F_${id}.V2`] = [...options.causeIcd10];
+    params[`I_${id}.V2`] = options.causeIcd10.join(' ');
   }
 
   // Multiple-cause filter — switches the .V13 finder out of the form's paired-textarea
   // advanced mode into the same range mode the underlying-cause finder uses.
-  if (options.mcdIcd10 && spec.multipleCause) {
+  if (options.mcdIcd10?.length && spec.multipleCause) {
     params.O_V13_fmode = 'freg';
-    params[`F_${id}.V13`] = options.mcdIcd10;
-    params[`I_${id}.V13`] = options.mcdIcd10;
+    params[`F_${id}.V13`] = [...options.mcdIcd10];
+    params[`I_${id}.V13`] = options.mcdIcd10.join(' ');
   }
 
   // Sex filter

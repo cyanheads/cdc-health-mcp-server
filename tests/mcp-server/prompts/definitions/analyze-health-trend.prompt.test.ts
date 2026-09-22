@@ -199,6 +199,23 @@ describe('analyze_health_trend', () => {
       expect(wonderGuidance).toContain('mcd_icd10');
     });
 
+    it('routes a cause defined as a set of ICD-10 codes to WONDER as one list', async () => {
+      /**
+       * Overdose, firearm, and suicide deaths are code sets that no single chapter or block
+       * spans. Limiting WONDER to "a code or chapter range" sends those questions to Socrata,
+       * or to one call per code, whose rates cannot be summed.
+       */
+      const wonderGuidance = (
+        await generate(analyzeHealthTrend.args!.parse({ topic: 'opioid overdose deaths' }))
+      )
+        .split('\n')
+        .find((line) => line.startsWith('- `cdc_query_wonder`'));
+
+      expect(wonderGuidance).toContain('a set of ICD-10 codes or ranges');
+      expect(wonderGuidance).toContain('one list');
+      expect(wonderGuidance).not.toContain('chapter range');
+    });
+
     it('routes a sub-national or non-mortality question to the Socrata catalog', async () => {
       const args = analyzeHealthTrend.args!.parse({
         topic: 'childhood vaccination coverage by state',

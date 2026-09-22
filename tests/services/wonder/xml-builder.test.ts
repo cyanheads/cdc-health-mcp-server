@@ -352,9 +352,39 @@ describe('buildRequestXml', () => {
 
   it('sets the cause finder from causeIcd10 and leaves it at *All* otherwise', () => {
     expect(values(buildRequestXml({ groupBy: ['year'] }).xml, 'F_D76.V2')).toEqual(['*All*']);
-    const { xml } = buildRequestXml({ groupBy: ['year'], causeIcd10: 'C00-C97' });
+    const { xml } = buildRequestXml({ groupBy: ['year'], causeIcd10: ['C00-C97'] });
     expect(values(xml, 'F_D76.V2')).toEqual(['C00-C97']);
     expect(values(xml, 'I_D76.V2')).toEqual(['C00-C97']);
+  });
+
+  it('sends a cause list as one finder value per code, echoed space-joined in I_', () => {
+    /**
+     * The request shape WONDER was verified to OR: repeated `<value>`s on F_, and the display
+     * echo as one space-joined value, as the request form submits it.
+     */
+    const { xml } = buildRequestXml({
+      groupBy: ['year'],
+      database: 'multiple_2018_2024',
+      causeIcd10: ['X40', 'X41', 'X42'],
+      mcdIcd10: ['T40.1', 'T40.4'],
+    });
+    expect(values(xml, 'F_D157.V2')).toEqual(['X40', 'X41', 'X42']);
+    expect(values(xml, 'I_D157.V2')).toEqual(['X40 X41 X42']);
+    expect(values(xml, 'F_D157.V13')).toEqual(['T40.1', 'T40.4']);
+    expect(values(xml, 'I_D157.V13')).toEqual(['T40.1 T40.4']);
+    expect(values(xml, 'O_V13_fmode')).toEqual(['freg']);
+  });
+
+  it('leaves both cause finders at *All* for an empty cause list', () => {
+    const { xml } = buildRequestXml({
+      groupBy: ['year'],
+      database: 'multiple_1999_2020',
+      causeIcd10: [],
+      mcdIcd10: [],
+    });
+    expect(values(xml, 'F_D77.V2')).toEqual(['*All*']);
+    expect(values(xml, 'F_D77.V13')).toEqual(['*All*']);
+    expect(values(xml, 'O_V13_fmode')).toEqual(['fadv']);
   });
 
   it('maps sex filter to the D76.V7 value', () => {
@@ -392,8 +422,8 @@ describe('buildRequestXml', () => {
     const { xml } = buildRequestXml({
       groupBy: ['year'],
       database: 'provisional',
-      causeIcd10: '999--999',
-      mcdIcd10: '999--999',
+      causeIcd10: ['999--999'],
+      mcdIcd10: ['999--999'],
     });
     expect(values(xml, 'F_D176.V2')).toEqual(['999--999']);
     expect(values(xml, 'I_D176.V2')).toEqual(['999--999']);
@@ -418,7 +448,7 @@ describe('buildRequestXml', () => {
     const { xml } = buildRequestXml({
       groupBy: ['year', 'sex', 'race'],
       sex: 'male',
-      causeIcd10: 'I00-I99',
+      causeIcd10: ['I00-I99'],
     });
     expect(values(xml, 'F_D76.V9')).toEqual(['*All*']);
     expect(values(xml, 'V_D76.V9')).toEqual(['']); // present but empty — never a specific location
@@ -440,7 +470,7 @@ describe('buildRequestXml', () => {
       const { xml } = buildRequestXml({
         groupBy: ['year', 'race'],
         database: db,
-        causeIcd10: 'I00-I99',
+        causeIcd10: ['I00-I99'],
       });
       const prefixes = new Set([...xml.matchAll(/\b(D\d+)\./g)].map((m) => m[1]));
       expect([...prefixes]).toEqual([ID[db]]);
@@ -471,8 +501,8 @@ describe('buildRequestXml', () => {
     ] as const)('groups race by %s’s own race variable (%s)', (db, variable) => {
       /**
        * The one dimension that genuinely diverges: bridged race (V8, four groups) versus
-       * single race (V42, six plus multiracial). Sending the wrong one silently returns a
-       * different vocabulary rather than failing.
+       * single race (V42, six categories, "More than one race" among them). Sending the wrong
+       * one silently returns a different vocabulary rather than failing.
        */
       const { xml } = buildRequestXml({ groupBy: ['race'], database: db });
       expect(values(xml, 'B_1')).toEqual([`${ID[db]}.${variable}`]);
@@ -510,7 +540,7 @@ describe('buildRequestXml', () => {
         const { xml } = buildRequestXml({
           groupBy: ['year'],
           database: db,
-          mcdIcd10: 'J00-J98',
+          mcdIcd10: ['J00-J98'],
         });
         expect(values(xml, 'O_V13_fmode')).toEqual(['freg']);
         expect(values(xml, `F_${ID[db]}.V13`)).toEqual(['J00-J98']);
@@ -526,7 +556,7 @@ describe('buildRequestXml', () => {
       const { xml } = buildRequestXml({
         groupBy: ['year'],
         database: 'underlying_1999_2020',
-        mcdIcd10: 'J00-J98',
+        mcdIcd10: ['J00-J98'],
       });
       expect(names(xml)).not.toContain('F_D76.V13');
       expect(values(xml, 'O_V13_fmode')).toEqual([]);
