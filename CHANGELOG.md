@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.1](changelog/0.9.x/0.9.1.md) — 2026-09-22
+
+cdc_query_dataset now bounds the whole serialized response, not just row JSON, and diagnoses an offset past the end of a result set instead of blaming filters.
+
 ## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-09-20 · 🛡️ Security
 
 New cdc_list_catalog_vocabulary tool, live row counts on cdc_get_dataset_schema, and fixes for chart/map queries and double-decoded HTML descriptions.
