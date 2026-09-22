@@ -95,6 +95,16 @@ describe('toPlainText', () => {
     );
   });
 
+  it('drops an anchor to its text, since a Socrata description has no link surface', () => {
+    /**
+     * WONDER turns its caveat anchors into Markdown links in its own parser; this conversion
+     * is shared with Socrata descriptions and must keep rendering an anchor as bare text.
+     */
+    expect(toPlainText('See <a href="/wonder/help/x.html#A b" onclick="f()">docs</a>.')).toBe(
+      'See docs .',
+    );
+  });
+
   it('reads through a deeply nested block, not just its outermost element', () => {
     const nested =
       '<div><section><ul><li><span><em>Cases</em> by <b>age group</b></span></li></ul></section></div>';

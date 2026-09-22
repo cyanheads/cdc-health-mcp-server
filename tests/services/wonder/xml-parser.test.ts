@@ -3,8 +3,134 @@
  * @module tests/services/wonder/xml-parser
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseDataTable, parseMessages } from '@/services/wonder/xml-parser.js';
+
+/** A real D158 response (race × age group, cause C00, 2024), captured from WONDER unchanged. */
+const D158_RESPONSE = readFileSync(
+  new URL('../../fixtures/wonder/d158-race-age-c00-2024.response.xml', import.meta.url),
+  'utf8',
+);
+
+/** One caveat element wrapping `inner` in CDATA, as WONDER sends them, parsed alone. */
+function caveatOf(inner: string): string | undefined {
+  const xml = `<results><caveats><caveat><![CDATA[${inner}]]></caveat></caveats></results>`;
+  return parseDataTable(xml, ['year', 'deaths'], 1).caveats[0];
+}
+
+describe('links in caveats and messages', () => {
+  it('keeps every link destination on a captured D158 response', () => {
+    const { rows, caveats } = parseDataTable(
+      D158_RESPONSE,
+      ['race', 'age_group', 'deaths', 'population', 'crude_rate'],
+      2,
+    );
+    expect(rows).toHaveLength(4);
+    expect(caveats).toHaveLength(8);
+    expect(caveats[0]).toBe(
+      'Data are Suppressed when the data meet the criteria for confidentiality constraints. [More information.](https://wonder.cdc.gov/wonder/help/ucd-expanded.html#Assurance%20of%20Confidentiality)',
+    );
+    expect(caveats[2]).toBe(
+      'The method used to calculate 95% confidence intervals is documented here: [More information.](https://wonder.cdc.gov/wonder/help/ucd-expanded.html#Confidence-Intervals)',
+    );
+    expect(caveats[7]).toBe(
+      'Changes to cause of death classification affect reporting trends. [More information.](https://wonder.cdc.gov/wonder/help/ucd-expanded.html#ICD-10%20Changes)',
+    );
+    // Seven of the eight carry a link; the North Carolina revision note has none.
+    const linked = caveats.filter((c) => /\]\(https:\/\/wonder\.cdc\.gov\/wonder\/help\//.test(c));
+    expect(linked).toHaveLength(7);
+    expect(caveats[6]).toMatch(
+      /^After the creation of the final 2023 dataset.*mortality datasets\.$/,
+    );
+    for (const caveat of caveats) {
+      expect(caveat).not.toMatch(/onclick|target=|setfocus|<a\b|WONDER_Help/);
+    }
+  });
+
+  it('keeps the link on a captured message and leaves the hidden-row notices as they were', () => {
+    expect(parseMessages(D158_RESPONSE)).toEqual([
+      'Totals are not available for these results due to suppression constraints. [More Information.](https://wonder.cdc.gov/wonder/help/faq.html#Privacy)',
+      'Rows with zero Deaths are hidden. Use Quick Options above to show zero rows.',
+      'Rows with suppressed Deaths are hidden. Use Quick Options above to show suppressed rows.',
+    ]);
+  });
+
+  it('converts several links in one caveat, each resolved on its own', () => {
+    expect(
+      caveatOf(
+        'See <a href="/wonder/help/a.html#One">part one</a> and <a href="https://www.cdc.gov/nchs/b.htm">part two</a>, then <a href=\'c.html\'>three</a>.',
+      ),
+    ).toBe(
+      'See [part one](https://wonder.cdc.gov/wonder/help/a.html#One) and [part two](https://www.cdc.gov/nchs/b.htm), then [three](https://wonder.cdc.gov/c.html).',
+    );
+  });
+
+  it('keeps the text and drops the link for a fragment-only href', () => {
+    /** A fragment on its own points into CDC's web page, which the caller never sees. */
+    expect(
+      caveatOf('Rates use <a href="#Non-standard Age Adjusted Rate">these parameters</a>.'),
+    ).toBe('Rates use these parameters.');
+  });
+
+  it.each([
+    ['javascript:', 'javascript:alert(1)'],
+    ['mailto:', 'mailto:wonder@cdc.gov'],
+    ['data:', 'data:text/html,hi'],
+    ['unparseable', 'http://[bad'],
+  ])('keeps the text and drops the link for a %s href', (_label, href) => {
+    expect(caveatOf(`Read <a href="${href}">the notes</a> first.`)).toBe('Read the notes first.');
+  });
+
+  it('keeps the text of an anchor that carries no href', () => {
+    expect(caveatOf('See <a name="top">the top</a>.')).toBe('See the top.');
+  });
+
+  it('decodes an entity-bearing href exactly once', () => {
+    expect(caveatOf('See <a href="/help?a=1&amp;b=2&amp;amp;c">the query</a>.')).toBe(
+      'See [the query](https://wonder.cdc.gov/help?a=1&b=2&amp;c).',
+    );
+  });
+
+  it('decodes entities once across text, link text, and CDATA', () => {
+    expect(
+      caveatOf(
+        'Codes &amp;lt;b&amp;gt; &amp; <a href="/h.html"><b>Deaths</b> &amp; births &amp;lt;1</a> &#8212; done.',
+      ),
+    ).toBe('Codes &lt;b&gt; & [Deaths & births &lt;1](https://wonder.cdc.gov/h.html) — done.');
+  });
+
+  it('leaves an entity-encoded anchor as literal text rather than making it a link', () => {
+    /** The publisher escaped the markup so it would be read as text, not followed. */
+    expect(caveatOf('Write &lt;a href="/h.html"&gt;x&lt;/a&gt; to link.')).toBe(
+      'Write <a href="/h.html">x</a> to link.',
+    );
+  });
+
+  it('escapes brackets and parentheses so the link cannot be broken open', () => {
+    expect(caveatOf('See <a href="/h (old).html#A b">notes [2024] \\ more</a>.')).toBe(
+      'See [notes \\[2024\\] \\\\ more](https://wonder.cdc.gov/h%20%28old%29.html#A%20b).',
+    );
+  });
+
+  it('drops an anchor whose text is empty', () => {
+    expect(caveatOf('Icon <a href="/h.html"><img src="i.png"/></a> here.')).toBe('Icon here.');
+  });
+
+  it('leaves unlinked text exactly as the plain-text conversion renders it', () => {
+    expect(caveatOf('Deaths &amp; births, <b>national</b>\n\t\ttotals.')).toBe(
+      'Deaths & births, national totals.',
+    );
+  });
+
+  it('links a message the same way it links a caveat', () => {
+    const xml =
+      '<page><message><![CDATA[Read <A HREF="/wonder/help/faq.html#Privacy">the FAQ</A>.]]></message></page>';
+    expect(parseMessages(xml)).toEqual([
+      'Read [the FAQ](https://wonder.cdc.gov/wonder/help/faq.html#Privacy).',
+    ]);
+  });
+});
 
 describe('parseMessages', () => {
   it('reads every message on a successful response, not just the first', () => {
@@ -15,7 +141,7 @@ describe('parseMessages', () => {
       <message>Rows with suppressed Deaths are hidden. Use Quick Options above to show suppressed rows.</message>
     </page>`;
     expect(parseMessages(xml)).toEqual([
-      'Totals are not available for these results due to suppression constraints. More Information.',
+      'Totals are not available for these results due to suppression constraints. [More Information.](https://wonder.cdc.gov/wonder/help/faq.html#Privacy)',
       'Rows with zero Deaths are hidden. Use Quick Options above to show zero rows.',
       'Rows with suppressed Deaths are hidden. Use Quick Options above to show suppressed rows.',
     ]);
@@ -201,15 +327,15 @@ describe('parseDataTable', () => {
     expect(rows.every((r) => r.sex === 'Female' || r.sex === 'Male')).toBe(true);
   });
 
-  it('extracts caveats and footnotes with CDATA and HTML stripped', () => {
+  it('extracts caveats and footnotes with CDATA and HTML stripped, keeping link destinations', () => {
     const xml = `<results>
       <data-table><r><c l="1999"/><c v="10"/></r></data-table>
-      <caveats><caveat><![CDATA[Population figures <a href="x">documented here</a>.]]></caveat></caveats>
+      <caveats><caveat><![CDATA[Population figures <b>are</b> <a href="x">documented here</a>.]]></caveat></caveats>
       <footnotes><footnote>Suppressed when fewer than ten deaths.</footnote></footnotes>
     </results>`;
     const { caveats } = parseDataTable(xml, ['year', 'deaths'], 1);
     expect(caveats).toEqual([
-      'Population figures documented here .',
+      'Population figures are [documented here](https://wonder.cdc.gov/x).',
       'Suppressed when fewer than ten deaths.',
     ]);
   });

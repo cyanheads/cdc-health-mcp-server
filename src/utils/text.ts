@@ -74,13 +74,27 @@ export function decodeEntities(text: string): string {
 }
 
 /**
- * Render markup-bearing upstream text as plain text: tags become spaces, entity references
- * are decoded once, and runs of whitespace collapse to a single space.
+ * Replace every tag with a space and decode entity references once, leaving whitespace as
+ * it falls. The building block of `toPlainText`, exported for callers that convert a
+ * document in segments and collapse whitespace over the assembled result.
  *
  * Tags come off *before* decoding, never after. Decoding first would turn an escaped
  * `&lt;script&gt;` into a real tag for the stripper to eat, silently deleting text the
  * publisher intended to show.
  */
+export function stripAndDecode(markup: string): string {
+  return decodeEntities(markup.replace(TAG, ' '));
+}
+
+/** Collapse runs of whitespace to a single space and trim the ends. Decodes nothing. */
+export function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Render markup-bearing upstream text as plain text: tags become spaces, entity references
+ * are decoded once, and runs of whitespace collapse to a single space.
+ */
 export function toPlainText(markup: string): string {
-  return decodeEntities(markup.replace(TAG, ' ')).replace(/\s+/g, ' ').trim();
+  return collapseWhitespace(stripAndDecode(markup));
 }

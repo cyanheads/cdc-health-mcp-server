@@ -1,18 +1,20 @@
 /**
  * @fileoverview Parses a CDC WONDER XML response — the `<data-table>` into keyed row objects,
- * and the `<message>` elements into plain text.
+ * and the `<message>` elements into plain text with Markdown links.
  * The table is HTML-table-like: the leading (outer) dimension cell of each group carries a
  * rowspan (`r="N"`) and is omitted on the group's subsequent rows, so dimension values must
  * be carried forward. Measure values arrive with comma thousands separators, or as a status
  * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number. Dimension labels
  * are CDC's own text with only surrounding whitespace removed (see `dimensionLabel`). Caveat,
- * footnote, and message text goes through the shared single-pass decode in `utils/text` — a
- * per-entity chain resolves `&amp;` first and turns `&amp;lt;` into `<`. Pure module (no
- * framework imports).
+ * footnote, and message text is rendered as plain text with its links kept as Markdown links
+ * (see `toLinkedText`): anchors are found on the raw markup before any tag comes off, and every
+ * segment goes through the shared single-pass decode in `utils/text` exactly once — a
+ * per-entity chain resolves `&amp;` first and turns `&amp;lt;` into `<`, and re-decoding the
+ * assembled string would do the same. Pure module (no framework imports).
  * @module services/wonder/xml-parser
  */
 
-import { decodeEntities, toPlainText } from '@/utils/text.js';
+import { collapseWhitespace, decodeEntities, stripAndDecode } from '@/utils/text.js';
 import { isSuppressedToken, type WonderCellNote, type WonderRow } from './types.js';
 
 /** Read an XML attribute value from a cell's attribute string (anchored to an attr-name start). */
@@ -21,13 +23,71 @@ function attr(attrs: string, name: string): string | undefined {
   return m ? m[1] : undefined;
 }
 
-/** Strip the CDATA wrapper from caveat/footnote inner content, then render it as plain text. */
-function cleanText(inner: string): string {
-  return toPlainText(inner.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, ''));
+/** Root-relative caveat links (`/wonder/help/…`) resolve against the WONDER host. */
+const WONDER_ORIGIN = 'https://wonder.cdc.gov/';
+
+/** One HTML anchor, attributes and inner markup captured. Matched on raw markup only. */
+const ANCHOR = /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi;
+
+/**
+ * The absolute URL a caveat link points at, or undefined when it should not become a link.
+ *
+ * The href is decoded once (an attribute may carry `&amp;`), then resolved against the WONDER
+ * host. A fragment on its own points into CDC's web page, which the caller never sees, and
+ * `URL` passes `javascript:`, `data:` and `mailto:` straight through, so only an `http:` or
+ * `https:` result is kept. `URL` percent-encodes the spaces CDC leaves in its fragments
+ * (`#Assurance of Confidentiality`); parentheses it leaves alone, and a bare `)` would close
+ * the Markdown link early, so those are encoded here.
+ */
+function linkTarget(attrs: string): string | undefined {
+  const quoted = attrs.match(/(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+  const href = decodeEntities(quoted?.[1] ?? quoted?.[2] ?? '').trim();
+  if (href === '' || href.startsWith('#')) return;
+  const url = URL.parse(href, WONDER_ORIGIN);
+  if (url?.protocol !== 'http:' && url?.protocol !== 'https:') return;
+  return url.href.replaceAll('(', '%28').replaceAll(')', '%29');
 }
 
 /**
- * Extract WONDER's `<message>` elements as plain text, in document order.
+ * One anchor as Markdown: `[text](url)` when its href resolves to a web URL, its text alone
+ * otherwise. `target`, `onclick` and every other attribute stay out of the output. Brackets
+ * and backslashes in the text are escaped so the text cannot close the link early.
+ */
+function renderAnchor(attrs: string, inner: string): string {
+  const text = collapseWhitespace(stripAndDecode(inner));
+  const url = linkTarget(attrs);
+  if (!url || text === '') return text;
+  return `[${text.replace(/[\\[\]]/g, '\\$&')}](${url})`;
+}
+
+/**
+ * Render caveat/message markup as plain text that keeps its links.
+ *
+ * Anchors are converted on the raw markup, before any tag is stripped — once the tag is gone
+ * the href is gone with it. The text between anchors and each anchor's own text are decoded
+ * separately, once each, and the assembled string is only whitespace-collapsed, never decoded
+ * again: a second pass would turn the `&lt;` that `&amp;lt;` decodes to into `<`. For the same
+ * reason an anchor CDC entity-escaped (`&lt;a href=…&gt;`) is never matched and stays literal
+ * text. Text outside anchors renders exactly as `toPlainText` renders it.
+ */
+function toLinkedText(markup: string): string {
+  let out = '';
+  let last = 0;
+  for (const match of markup.matchAll(ANCHOR)) {
+    out += stripAndDecode(markup.slice(last, match.index));
+    out += renderAnchor(match[1] ?? '', match[2] ?? '');
+    last = match.index + match[0].length;
+  }
+  return collapseWhitespace(out + stripAndDecode(markup.slice(last)));
+}
+
+/** Strip the CDATA wrapper from caveat/footnote/message content, then render it as linked text. */
+function cleanText(inner: string): string {
+  return toLinkedText(inner.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, ''));
+}
+
+/**
+ * Extract WONDER's `<message>` elements as plain text with links kept, in document order.
  *
  * WONDER uses the same element for two unrelated jobs. On a rejected request the first message
  * states why. On a successful one the messages are notices about the table that came back —
