@@ -20,29 +20,70 @@ const MAX_LIMIT = 5000;
  */
 const MAX_OFFSET = 1_000_000;
 /**
- * Response budget for the returned rows, counted as characters of `JSON.stringify(row)`.
- * A row count is a leaky proxy for response size: 5,000 rows of a 38-column surveillance
- * dataset serialize to ~6 MB, while 5,000 rows of a 3-column summary fit in a fraction of
- * that. Bounding on serialized characters gives one number that holds across the catalog —
- * roughly 50k tokens of `structuredContent`, and less in the narrower `content[]` table.
- * `limit` still means what it says; rows dropped by the budget are disclosed with a
- * `nextOffset` that resumes exactly where the response stopped.
+ * Response budget, in characters of the serialized tool result — `structuredContent` and
+ * `content[]` together, as a caller receives them. Every row reaches the caller twice: as
+ * JSON in `structuredContent` and as a line of the markdown table in `content[]`, so each
+ * row is charged both costs. A row count is a leaky proxy for size: 5,000 rows of a
+ * 38-column surveillance dataset serialize to ~6 MB, while 5,000 rows of a 3-column summary
+ * fit in a fraction of that. `limit` still means what it says; rows dropped by the budget are
+ * disclosed with a `nextOffset` that resumes exactly where the response stopped.
  */
-const MAX_ROW_CHARS = 200_000;
+const MAX_RESPONSE_CHARS = 200_000;
+/**
+ * Characters held back from the row budget for the parts of the response that are not rows:
+ * the result keys, the row-count heading, the table's opening pipes, the schema tip, the
+ * enrichment trailer's labels, and the notice, which reaches both surfaces. The fixed text of
+ * the longest notice combination, doubled, is under 2,000 characters; the query echo is
+ * reserved separately because its length is the caller's.
+ */
+const FRAMING_RESERVE = 4_000;
+
+type Row = Record<string, unknown>;
+
+/** Length of `text` once embedded in a JSON string — the form it takes on the wire. */
+function jsonLength(text: string): number {
+  return JSON.stringify(text).length - 2;
+}
+
+/** One table cell, as `format()` renders it — shared so the budget charges what is rendered. */
+function renderCell(value: unknown): string {
+  const text = typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
+  return escapeTableCell(text);
+}
+
+/** One table line over `columns`, with an empty cell for each column the row omits. */
+function renderTableRow(row: Row, columns: readonly string[]): string {
+  return `| ${columns.map((column) => renderCell(row[column])).join(' | ')} |`;
+}
 
 /**
- * Take rows from the head of the page until the next one would cross the character budget.
- * Always keeps the first row: a single row wider than the whole budget still has to come
- * back as a row, not as an empty page that reads like "nothing matched".
+ * Take rows from the head of the page until the next one would carry the serialized response
+ * past `MAX_RESPONSE_CHARS`. A row costs its JSON plus its table line; a column first seen on
+ * a later row also costs its header and separator cells and one empty cell on every earlier
+ * line, since SODA omits null keys and the table is headed by the union of all rows' keys.
+ * Always keeps the first row: a single row wider than the whole budget still has to come back
+ * as a row, not as an empty page that reads like "nothing matched".
  */
-function withinBudget(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  let used = 0;
+function withinBudget(rows: Row[], reserved: number): Row[] {
+  let used = reserved;
+  const columns: string[] = [];
+  const known = new Set<string>();
   for (const [index, row] of rows.entries()) {
-    used += JSON.stringify(row).length;
-    if (used > MAX_ROW_CHARS) return rows.slice(0, Math.max(index, 1));
+    for (const key of Object.keys(row)) {
+      if (known.has(key)) continue;
+      known.add(key);
+      columns.push(key);
+      used += jsonLength(key) + ' | '.length + ' | ---'.length + ' | '.length * index;
+    }
+    // The row inside the JSON array plus its comma, then its table line plus the newline.
+    used += JSON.stringify(row).length + 1 + jsonLength(`${renderTableRow(row, columns)}\n`);
+    if (used > MAX_RESPONSE_CHARS) return rows.slice(0, Math.max(index, 1));
   }
   return rows;
 }
+
+const NO_MATCH_NOTICE =
+  'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.';
 
 export const queryDataset = tool('cdc_query_dataset', {
   description:
@@ -157,7 +198,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .max(MAX_LIMIT)
       .default(100)
       .describe(
-        `Max rows to return (default 100, max ${MAX_LIMIT}). Fewer come back when the page would cross the ${MAX_ROW_CHARS.toLocaleString('en-US')}-character response budget; the response says so and gives a nextOffset to resume from.`,
+        `Max rows to return (default 100, max ${MAX_LIMIT}). Fewer come back when the page would carry the response past its ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character budget, counted over the whole result — the rows as JSON and as the rendered table together; the response says so and gives a nextOffset to resume from.`,
       ),
     offset: z
       .number()
@@ -206,7 +247,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .string()
       .optional()
       .describe(
-        'Guidance when no rows matched, when further rows remain, or when the response budget cut the page short — how to verify filters, resume paging, or broaden the query.',
+        'Guidance when no rows matched, when offset ran past the end of the result set, when further rows remain, or when the response budget cut the page short — how to verify filters, lower offset, resume paging, or broaden the query.',
       ),
   },
 
@@ -234,7 +275,8 @@ export const queryDataset = tool('cdc_query_dataset', {
 
     ctx.enrich({ effectiveQuery: result.query });
 
-    const rows = withinBudget(result.rows);
+    // The query echo reaches both surfaces — structuredContent and the enrichment trailer.
+    const rows = withinBudget(result.rows, FRAMING_RESERVE + 2 * jsonLength(result.query));
     const budgetCut = rows.length < result.rows.length;
     const hasMore = result.hasMore || budgetCut;
     const nextOffset = input.offset + rows.length;
@@ -246,14 +288,39 @@ export const queryDataset = tool('cdc_query_dataset', {
      */
     const guidance: string[] = [];
 
-    if (result.rows.length === 0) {
+    if (result.rows.length === 0 && input.offset === 0) {
+      guidance.push(NO_MATCH_NOTICE);
+    } else if (result.rows.length === 0) {
       /**
        * The data endpoint reports no total, so an offset paged past the end of a real result
-       * set and a filter that matched nothing come back identically. One branch, no guess.
+       * set and a filter that matched nothing arrive identically. The same query at offset 0
+       * tells them apart for one row's cost, spent only on this branch — an empty page at
+       * offset 0 and every non-empty page issue no extra request. The probe annotates an
+       * answer that is already correct, so its failure names both causes rather than failing
+       * the call.
        */
-      guidance.push(
-        'No rows matched the query. Verify string values are spelled exactly as stored (check with a GROUP BY enumeration), confirm numeric/date filters match the column type from the schema, or broaden the WHERE clause.',
-      );
+      let matchedAtStart: boolean | undefined;
+      try {
+        const probe = await service.query({ ...input, offset: 0, limit: 1 }, ctx.signal);
+        matchedAtStart = probe.rows.length > 0;
+      } catch (err) {
+        ctx.log.warning('Offset probe failed; empty page left undiagnosed', {
+          datasetId: input.datasetId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      if (matchedAtStart === true) {
+        guidance.push(
+          `Offset ${input.offset} is past the end of the result set. The same query returns rows from offset 0, so it matched — the result set holds ${input.offset} rows or fewer. Lower offset to page within it.`,
+        );
+      } else if (matchedAtStart === false) {
+        guidance.push(NO_MATCH_NOTICE);
+      } else {
+        guidance.push(
+          `No rows came back at offset ${input.offset}. Either the offset is past the end of the result set or the query matches nothing — the check at offset 0 that separates the two could not be completed. Call again with offset=0: rows there mean the offset ran past the end; none means the filters need checking against the schema and the stored values.`,
+        );
+      }
     } else if (rows.every((row) => Object.keys(row).length === 0)) {
       /**
        * Socrata answers a chart or map ID with HTTP 200 and a body of empty objects, which is
@@ -289,7 +356,7 @@ export const queryDataset = tool('cdc_query_dataset', {
 
     if (result.rows.length > 0 && hasMore) {
       const cause = budgetCut
-        ? `the ${MAX_ROW_CHARS.toLocaleString('en-US')}-character response size budget cut the page at ${rows.length} of the ${input.limit} rows requested`
+        ? `the ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character response budget, which counts the rows as JSON and as the rendered table together, cut the page at ${rows.length} of the ${input.limit} rows requested`
         : `the requested limit of ${input.limit} was reached`;
       const resume =
         nextOffset <= MAX_OFFSET
@@ -316,19 +383,13 @@ export const queryDataset = tool('cdc_query_dataset', {
 
   format: (result) => {
     if (!result.rows[0]) {
-      return [
-        {
-          type: 'text',
-          text: [
-            'No rows matched the query.',
-            '',
-            'Suggestions:',
-            '- Verify string values are spelled exactly as stored (check with a GROUP BY enumeration)',
-            '- Check that numeric/date filters match the column type from the schema',
-            '- Broaden the WHERE clause or remove filters to confirm data exists',
-          ].join('\n'),
-        },
-      ];
+      /**
+       * An empty page has three possible causes — filters that match nothing, an offset past
+       * the end, or a diagnosis the probe could not complete — and only the handler knows
+       * which. The notice names it and reaches `content[]` through the enrichment trailer, so
+       * this line stays neutral rather than asserting a cause the notice may contradict.
+       */
+      return [{ type: 'text', text: '**0 rows returned**' }];
     }
 
     // Socrata rows are sparse: fields selected by the caller can be omitted on early
@@ -358,14 +419,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       `| ${columns.map(() => '---').join(' | ')} |`,
     ];
 
-    for (const row of result.rows) {
-      const cells = columns.map((c) => {
-        const v = row[c];
-        const s = typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v);
-        return escapeTableCell(s);
-      });
-      lines.push(`| ${cells.join(' | ')} |`);
-    }
+    for (const row of result.rows) lines.push(renderTableRow(row, columns));
 
     lines.push(
       '',

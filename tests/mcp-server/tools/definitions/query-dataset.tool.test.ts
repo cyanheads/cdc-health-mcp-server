@@ -81,20 +81,28 @@ describe('cdc_query_dataset', () => {
     expect(enrichment.effectiveQuery).toBe('$where=x');
   });
 
-  it('keeps the no-rows notice unconditional on a paged-past-the-end offset', async () => {
+  it('keeps the no-match notice at offset > 0 when the same query is empty at offset 0 too', async () => {
     /**
      * The SODA data endpoint reports no total, so an offset past the end of a real result
-     * set and a filter that matched nothing arrive identically. The branch stays one branch.
+     * set and a filter that matched nothing arrive identically. One probe at offset 0 — the
+     * caller's own clauses, one row — tells them apart; empty there means the filters matched
+     * nothing and the no-match guidance stands.
      */
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0, query: '$offset=900', hasMore: false });
     const ctx = createMockContext({ errors: queryDataset.errors });
-    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', offset: 900 });
+    const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', where: 'x=1', offset: 900 });
     await queryDataset.handler(input, ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toContain('No rows matched');
+    expect(enrichment.notice).not.toMatch(/past the end/i);
     expect(enrichment.truncated).toBeUndefined();
     expect(enrichment.nextOffset).toBeUndefined();
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(mockQuery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: 'x=1', offset: 0, limit: 1 }),
+      ctx.signal,
+    );
   });
 
   it('discloses truncation and a usable nextOffset when a further row exists', async () => {
@@ -382,10 +390,15 @@ describe('cdc_query_dataset', () => {
       expect(text).toContain('Texas');
     });
 
-    it('renders empty-state message', () => {
+    it('renders an empty page without asserting a cause the notice may contradict', () => {
+      /**
+       * An empty page is a no-match, an offset past the end, or undiagnosed — only the
+       * handler's notice knows which, and it reaches content[] through the trailer.
+       */
       const blocks = queryDataset.format!({ rows: [], rowCount: 0 });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No rows matched the query');
+      expect(text).toContain('0 rows returned');
+      expect(text).not.toMatch(/No rows matched|spelled|filters/i);
     });
 
     it('renders a null-only projection as a line of text rather than an empty table', () => {

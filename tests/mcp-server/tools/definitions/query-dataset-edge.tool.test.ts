@@ -178,10 +178,11 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(enrichment.shown).toBe(result.rowCount);
       expect(enrichment.cap).toBe(5000);
       expect(enrichment.nextOffset).toBe(result.rowCount);
-      expect(enrichment.notice).toMatch(/response size budget/i);
+      expect(enrichment.notice).toMatch(/200,000-character response budget/);
+      expect(enrichment.notice).toMatch(/as JSON and as the rendered table together/);
     });
 
-    it('bounds content[] alongside structuredContent at the same cut', async () => {
+    it('charges the rows JSON and the rendered table against one budget', async () => {
       const rows = Array.from({ length: 5000 }, (_, i) => wideRow(i));
       mockQuery.mockResolvedValue({
         rows,
@@ -194,7 +195,9 @@ describe('cdc_query_dataset — edge cases', () => {
       const result = await queryDataset.handler(input, ctx);
 
       const text = (queryDataset.format!(result)[0] as { type: 'text'; text: string }).text;
-      expect(new TextEncoder().encode(text).length).toBeLessThan(200_000);
+      expect(JSON.stringify(result.rows).length + JSON.stringify(text).length).toBeLessThan(
+        200_000,
+      );
     });
 
     it('keeps one row when a single row is larger than the whole budget', async () => {
@@ -470,11 +473,12 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(text).toContain('42');
     });
 
-    it('empty-state message includes suggestions', () => {
+    it('empty page renders one block with no table and no schema tip', () => {
       const blocks = queryDataset.format!({ rows: [], rowCount: 0 });
+      expect(blocks).toHaveLength(1);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No rows matched the query');
-      expect(text).toContain('Suggestions');
+      expect(text).not.toContain('|');
+      expect(text).not.toContain('Tip:');
     });
 
     it('non-empty result includes schema tip', () => {

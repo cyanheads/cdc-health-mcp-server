@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 23:22:44
+Generated on: 2026-09-22 18:45:07
 
 ```text
 cdc-health-mcp-server/
@@ -195,6 +195,7 @@ cdc-health-mcp-server/
 │   │           ├── get-dataset-schema.tool.test.ts
 │   │           ├── list-catalog-vocabulary.tool.test.ts
 │   │           ├── query-dataset-edge.tool.test.ts
+│   │           ├── query-dataset-response.tool.test.ts
 │   │           ├── query-dataset.tool.test.ts
 │   │           └── query-wonder.tool.test.ts
 │   ├── prompts/

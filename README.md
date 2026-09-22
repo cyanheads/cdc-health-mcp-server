@@ -96,7 +96,8 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 
 - Full SoQL support — `select`, `where`, `group`, `having`, `order`, plus full-text `search` across text columns
 - Up to 5,000 rows per request (default 100); `offset` capped at 1,000,000
-- `truncated` is measured by an over-fetch probe (one row past the limit), never guessed from the row count; rows are also bounded by a 200,000-character response budget, so a wide page can end short of `limit` with a `nextOffset`
+- `truncated` is measured by an over-fetch probe (one row past the limit), never guessed from the row count; the whole response — `structuredContent` and `content[]` together — is bounded by a 200,000-character budget, so a wide page can end short of `limit` with a `nextOffset`
+- An empty page at `offset > 0` is diagnosed with one probe at offset 0: the `notice` says whether the offset ran past the end or the query matches nothing, and names both causes if the probe fails
 - `effectiveQuery` echoes the SoQL clauses sent in their original text, not URL-encoded, so a clause can be copied back into the parameter it came from
 - Fails with `not_queryable` when every returned row carries no fields and the asset reports no columns — a chart or map ID, which Socrata answers 200 with a body of empty objects. When the asset does have columns, the same shape is a null-only projection and comes back as a success with a notice
 - All response values are strings (SODA v2.1) — parse per the column's `dataType` from the schema
