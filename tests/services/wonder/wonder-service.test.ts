@@ -3,7 +3,7 @@
  * @module tests/services/wonder/wonder-service
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WonderService } from '@/services/wonder/wonder-service.js';
 
 /**
@@ -35,6 +35,11 @@ const HIDDEN_ROWS_TABLE = `<results>
 </data-table><caveats><caveat>A caveat.</caveat></caveats></results>`;
 
 describe('WonderService', () => {
+  beforeEach(() => {
+    // Nothing here may reach the live API; each test installs its own fake over this guard.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unmocked fetch'));
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -125,7 +130,7 @@ describe('WonderService', () => {
     const result = await service.query({ groupBy: ['year'] });
 
     expect(result.messages).toEqual([
-      'Totals are not available for these results due to suppression constraints. More Information.',
+      'Totals are not available for these results due to suppression constraints. [More Information.](https://wonder.cdc.gov/wonder/help/faq.html#Privacy)',
       'Rows with zero Deaths are hidden. Use Quick Options above to show zero rows.',
       'Rows with suppressed Deaths are hidden. Use Quick Options above to show suppressed rows.',
     ]);
@@ -197,6 +202,194 @@ describe('WonderService', () => {
     expect(requestedAt).toHaveLength(2);
     expect(requestedAt[1]! - requestedAt[0]!).toBe(MIN_INTERVAL_MS);
     await expect(second).resolves.toMatchObject({ rowCount: 1 });
+  });
+
+  describe('concurrent calls', () => {
+    /**
+     * WONDER counts its gap per source IP from the end of the previous response, so calls that
+     * overlap must go out one at a time: each waits for the one ahead of it to settle, then for
+     * the interval. Reading one shared stamp on entry sends them together and draws a 429.
+     */
+    const RESPONSE_MS = 2_000;
+
+    /**
+     * A fetch stub that records when each request goes out and answers after `RESPONSE_MS`,
+     * rejecting the requests whose 1-based number is listed in `failing`.
+     */
+    function timedFetch(failing: number[] = []) {
+      const requestedAt: number[] = [];
+      const respondedAt: number[] = [];
+      const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+        requestedAt.push(Date.now());
+        const n = requestedAt.length;
+        return new Promise((resolve, reject) => {
+          setTimeout(() => {
+            respondedAt.push(Date.now());
+            if (failing.includes(n)) reject(new Error('ECONNRESET'));
+            else resolve(new Response(OK_TABLE, { status: 200 }));
+          }, RESPONSE_MS);
+        });
+      });
+      return { requestedAt, respondedAt, spy };
+    }
+
+    it('sends the second of two concurrent calls one interval after the first response', async () => {
+      vi.useFakeTimers();
+      const { requestedAt, respondedAt } = timedFetch();
+      const service = new WonderService();
+
+      const first = service.query({ groupBy: ['year'] });
+      const second = service.query({ groupBy: ['sex'] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestedAt).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS + MIN_INTERVAL_MS - 1);
+      expect(requestedAt).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requestedAt).toHaveLength(2);
+      expect(requestedAt[1]! - respondedAt[0]!).toBe(MIN_INTERVAL_MS);
+
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS);
+      await expect(first).resolves.toMatchObject({ rowCount: 1 });
+      await expect(second).resolves.toMatchObject({ rowCount: 1 });
+    });
+
+    it('spaces concurrent calls that arrive while a previous response is still fresh', async () => {
+      vi.useFakeTimers();
+      const { requestedAt, respondedAt } = timedFetch();
+      const service = new WonderService();
+
+      const warmup = service.query({ groupBy: ['year'] });
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS);
+      await warmup;
+
+      const calls = [
+        service.query({ groupBy: ['year'] }),
+        service.query({ groupBy: ['sex'] }),
+        service.query({ groupBy: ['race'] }),
+      ];
+      await vi.advanceTimersByTimeAsync(3 * (MIN_INTERVAL_MS + RESPONSE_MS));
+      await Promise.all(calls);
+
+      expect(requestedAt).toHaveLength(4);
+      for (let i = 1; i < requestedAt.length; i++) {
+        expect(requestedAt[i]! - respondedAt[i - 1]!).toBe(MIN_INTERVAL_MS);
+      }
+    });
+
+    it('rejects a call aborted while queued without sending it or delaying the call behind it', async () => {
+      vi.useFakeTimers();
+      const { requestedAt, respondedAt, spy } = timedFetch();
+      const service = new WonderService();
+
+      const first = service.query({ groupBy: ['year'] });
+      const controller = new AbortController();
+      const queued = service.query({ groupBy: ['sex'] }, controller.signal);
+      const queuedOutcome = queued.then(
+        () => 'resolved',
+        (err: unknown) => err,
+      );
+      const third = service.query({ groupBy: ['race'] });
+      await vi.advanceTimersByTimeAsync(500);
+
+      const reason = new Error('client went away');
+      controller.abort(reason);
+      await vi.advanceTimersByTimeAsync(0);
+      // Rejected at once, while the first request is still in flight.
+      await expect(queuedOutcome).resolves.toBe(reason);
+      expect(requestedAt).toHaveLength(1);
+
+      // The third call still waits out the request actually in flight, then the interval.
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS - 500 + MIN_INTERVAL_MS - 1);
+      expect(requestedAt).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requestedAt).toHaveLength(2);
+      expect(requestedAt[1]! - respondedAt[0]!).toBe(MIN_INTERVAL_MS);
+
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS);
+      await expect(first).resolves.toMatchObject({ rowCount: 1 });
+      await expect(third).resolves.toMatchObject({ rowCount: 1 });
+      // The aborted call's grouping never reached the wire.
+      const groupings = spy.mock.calls.map(([, init]) => {
+        const xml = ((init as RequestInit).body as URLSearchParams).get('request_xml') ?? '';
+        return xml.match(/<name>B_1<\/name><value>([^<]*)<\/value>/)?.[1];
+      });
+      expect(groupings).toEqual(['D76.V1-level1', 'D76.V8']);
+    });
+
+    it('rejects a call whose signal is already aborted without joining the queue', async () => {
+      vi.useFakeTimers();
+      const { requestedAt } = timedFetch();
+      const service = new WonderService();
+
+      const controller = new AbortController();
+      controller.abort(new Error('gone'));
+      await expect(service.query({ groupBy: ['year'] }, controller.signal)).rejects.toThrow('gone');
+      expect(requestedAt).toHaveLength(0);
+
+      // Nothing was sent, so nothing is waited for.
+      const next = service.query({ groupBy: ['year'] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestedAt).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS);
+      await expect(next).resolves.toMatchObject({ rowCount: 1 });
+    });
+
+    it('serves the calls behind a rejected predecessor, still spaced from its response', async () => {
+      vi.useFakeTimers();
+      const { requestedAt, respondedAt } = timedFetch([1]);
+      const service = new WonderService();
+
+      const first = service.query({ groupBy: ['year'] });
+      const firstOutcome = first.then(
+        () => 'resolved',
+        (err: unknown) => err,
+      );
+      const second = service.query({ groupBy: ['sex'] });
+      const third = service.query({ groupBy: ['race'] });
+
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS);
+      await expect(firstOutcome).resolves.toMatchObject({ data: { reason: 'upstream_error' } });
+      expect(requestedAt).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(2 * (MIN_INTERVAL_MS + RESPONSE_MS));
+      await expect(second).resolves.toMatchObject({ rowCount: 1 });
+      await expect(third).resolves.toMatchObject({ rowCount: 1 });
+      expect(requestedAt).toHaveLength(3);
+      expect(requestedAt[1]! - respondedAt[0]!).toBe(MIN_INTERVAL_MS);
+      expect(requestedAt[2]! - respondedAt[1]!).toBe(MIN_INTERVAL_MS);
+    });
+
+    it('lets the call behind one aborted mid-wait go out on the original schedule', async () => {
+      /**
+       * A call whose turn has come and is sleeping out the interval sent nothing, so aborting
+       * it must not push the next call back — the gap is still measured from the last response.
+       */
+      vi.useFakeTimers();
+      const { requestedAt, respondedAt } = timedFetch();
+      const service = new WonderService();
+
+      const first = service.query({ groupBy: ['year'] });
+      const controller = new AbortController();
+      const sleeping = service.query({ groupBy: ['sex'] }, controller.signal);
+      const sleepingOutcome = sleeping.then(
+        () => 'resolved',
+        (err: unknown) => err,
+      );
+      const third = service.query({ groupBy: ['race'] });
+
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS + 5_000);
+      await first;
+      controller.abort(new Error('stop'));
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(sleepingOutcome).resolves.toMatchObject({ message: 'stop' });
+
+      await vi.advanceTimersByTimeAsync(MIN_INTERVAL_MS - 5_000);
+      expect(requestedAt).toHaveLength(2);
+      expect(requestedAt[1]! - respondedAt[0]!).toBe(MIN_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(RESPONSE_MS);
+      await expect(third).resolves.toMatchObject({ rowCount: 1 });
+    });
   });
 
   it('classifies a 429 as a retryable rate-limit error', async () => {

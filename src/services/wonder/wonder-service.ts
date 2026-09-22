@@ -11,13 +11,19 @@
  *    runs from the end of the previous response, not from when its request was issued — a
  *    request sent 15 s after the previous one *started* is still rejected. It is also per source
  *    IP and shared across databases, so the gate is one instance-level stamp covering every
- *    database rather than a per-database limiter.
+ *    database rather than a per-database limiter. Overlapping calls queue in one instance-level
+ *    lane and go out one at a time, each spaced from the response before it.
  * @module services/wonder/wonder-service
  */
 
 import { rateLimited, serviceUnavailable, validationError } from '@cyanheads/mcp-ts-core/errors';
-import { type WonderQueryOptions, type WonderResult, wonderDatabaseSpec } from './types.js';
-import { buildRequestXml } from './xml-builder.js';
+import {
+  type WonderDatabaseSpec,
+  type WonderQueryOptions,
+  type WonderResult,
+  wonderDatabaseSpec,
+} from './types.js';
+import { type BuiltRequest, buildRequestXml } from './xml-builder.js';
 import { parseDataTable, parseMessages } from './xml-parser.js';
 
 /** WONDER is always this host — not configurable (unlike Socrata's multi-portal reality). */
@@ -31,20 +37,71 @@ const WONDER_BASE_URL = 'https://wonder.cdc.gov';
  */
 const MIN_REQUEST_INTERVAL_MS = 16_000;
 
+/** Resolve when `turn` does, or reject at once with the abort reason if `signal` fires first. */
+function awaitTurn(turn: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return turn;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('Aborted'));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('Aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void turn.then(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+  });
+}
+
 export class WonderService {
   private lastRequestTime = 0;
+  /**
+   * Tail of the request lane: settles once every call queued so far has settled. Never
+   * rejects — each link resolves on its call's settlement, success or not — so a failed or
+   * aborted call can never wedge the calls queued behind it.
+   */
+  private lane: Promise<void> = Promise.resolve();
 
   /**
-   * Run a mortality query against the selected database. Builds the request XML, spaces the
-   * request to respect the WONDER rate limit, POSTs it, and parses the response into keyed rows.
-   * The spacing is instance-level and covers every database — WONDER's limit is per source IP,
-   * not per dataset, so a D77 request 14 s after a D176 response is still rejected.
+   * Run a mortality query against the selected database. Builds the request XML, waits its
+   * turn in the request lane, spaces the request to respect the WONDER rate limit, POSTs it,
+   * and parses the response into keyed rows.
+   *
+   * Calls go through one process-wide lane, one at a time. Reading the shared stamp on entry is
+   * not enough on its own: calls that arrive together all read the same stamp, wait the same
+   * time, and go out in the same instant, and all but one draw a 429. So each call waits for
+   * the one ahead of it to settle before it measures the gap. The lane and the spacing are
+   * instance-level and cover every database — WONDER's limit is per source IP, not per
+   * dataset, so a D77 request 14 s after a D176 response is still rejected.
+   *
+   * A call aborted while it waits rejects at once and sends nothing. Its place in the lane
+   * still resolves only after the call ahead of it settles, so the call behind it keeps
+   * waiting for the request actually in flight.
    */
   async query(options: WonderQueryOptions, signal?: AbortSignal): Promise<WonderResult> {
     const spec = wonderDatabaseSpec(options.database);
-    const { xml, columns, dimensionCount } = buildRequestXml(options);
-    await this.throttle(signal);
+    const request = buildRequestXml(options);
 
+    const turn = this.lane;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.lane = turn.then(() => settled);
+
+    try {
+      await awaitTurn(turn, signal);
+      await this.throttle(signal);
+      return await this.send(spec, request, signal);
+    } finally {
+      settle();
+    }
+  }
+
+  /** POST one request and parse its response. Stamps the gap however the request ends. */
+  private async send(
+    spec: WonderDatabaseSpec,
+    { xml, columns, dimensionCount }: BuiltRequest,
+    signal?: AbortSignal,
+  ): Promise<WonderResult> {
     try {
       const response = await globalThis
         .fetch(`${WONDER_BASE_URL}/controller/datarequest/${spec.id}`, {
