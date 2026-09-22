@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-09-22 18:45:07
+Generated on: 2026-09-22 19:53:32
 
 ```text
 cdc-health-mcp-server/
@@ -170,6 +170,7 @@ cdc-health-mcp-server/
 │   │       └── xml-parser.ts
 │   ├── utils/
 │   │   ├── markdown.ts
+│   │   ├── response-budget.ts
 │   │   ├── text.ts
 │   │   └── vocabulary.ts
 │   └── index.ts
@@ -177,6 +178,13 @@ cdc-health-mcp-server/
 │   ├── config/
 │   │   ├── server-config-edge.test.ts
 │   │   └── server-config.test.ts
+│   ├── fixtures/
+│   │   └── wonder/
+│   │       ├── d158-duplicate-race-group-by.response.xml
+│   │       ├── d158-race-age-c00-2024.response.xml
+│   │       ├── d76-x40-x44-by-year-2018-2019.response.xml
+│   │       ├── d76-year-age-sex-race.response.xml
+│   │       └── d77-overdose-ucd-opioid-mcd-2019.response.xml
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
@@ -197,6 +205,9 @@ cdc-health-mcp-server/
 │   │           ├── query-dataset-edge.tool.test.ts
 │   │           ├── query-dataset-response.tool.test.ts
 │   │           ├── query-dataset.tool.test.ts
+│   │           ├── query-wonder.input-seam.test.ts
+│   │           ├── query-wonder.response-budget.test.ts
+│   │           ├── query-wonder.service-seam.test.ts
 │   │           └── query-wonder.tool.test.ts
 │   ├── prompts/
 │   ├── resources/
