@@ -81,10 +81,7 @@ export class WonderService {
     const request = buildRequestXml(options);
 
     const turn = this.lane;
-    let settle!: () => void;
-    const settled = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
+    const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
     this.lane = turn.then(() => settled);
 
     try {
