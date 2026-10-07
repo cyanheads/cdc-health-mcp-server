@@ -8,6 +8,7 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { datasetDetailResource } from '@/mcp-server/resources/definitions/dataset-detail.resource.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
+import { readResourceError } from '../../../helpers/resource-read.js';
 
 const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
 
@@ -43,6 +44,7 @@ function makeListExtra(): ListExtra {
 describe('cdc://datasets/{datasetId} — edge cases', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   describe('params schema validation', () => {
@@ -99,13 +101,8 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
 
     it('fails as not_queryable rather than returning an empty columns array', async () => {
       mockGetMetadata.mockResolvedValue({ name: 'trailheads', columns: [] });
-      const ctx = createMockContext({ errors: datasetDetailResource.errors });
-      const params = datasetDetailResource.params!.parse({ datasetId: '2g2d-yfx9' });
 
-      const err = (await Promise.resolve(datasetDetailResource.handler(params, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
-      expect(err).toBeInstanceOf(McpError);
+      const err = await readResourceError(datasetDetailResource, 'cdc://datasets/2g2d-yfx9');
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(err.data).toMatchObject({
         reason: 'not_queryable',
@@ -131,14 +128,11 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
         reason: 'dataset_not_found',
       });
       mockGetMetadata.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: datasetDetailResource.errors });
-      const params = datasetDetailResource.params!.parse({ datasetId: 'ab12-cd34' });
 
-      await expect(datasetDetailResource.handler(params, ctx)).rejects.toMatchObject({
-        data: expect.objectContaining({
-          reason: 'dataset_not_found',
-          recovery: { hint: expect.stringContaining('cdc_discover_datasets') },
-        }),
+      const err = await readResourceError(datasetDetailResource, 'cdc://datasets/ab12-cd34');
+      expect(err.data).toMatchObject({
+        reason: 'dataset_not_found',
+        recovery: { hint: expect.stringContaining('cdc_discover_datasets') },
       });
     });
   });

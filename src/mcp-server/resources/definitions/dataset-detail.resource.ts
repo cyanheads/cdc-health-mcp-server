@@ -101,7 +101,7 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
     } catch (err) {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+        throw ctx.fail(reason, err.message);
       }
       throw err;
     }
@@ -115,7 +115,6 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
       throw ctx.fail(
         'not_queryable',
         `Dataset ${params.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.`,
-        { ...ctx.recoveryFor('not_queryable') },
       );
     }
 

@@ -3,11 +3,12 @@
  * @module tests/mcp-server/tools/definitions/query-dataset
  */
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import type { DatasetMetadata, QueryResult } from '@/services/socrata/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockQuery = vi.fn<() => Promise<QueryResult>>();
 const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
@@ -196,18 +197,12 @@ describe('cdc_query_dataset', () => {
        */
       mockQuery.mockResolvedValue(fieldlessPage);
       mockGetMetadata.mockResolvedValue({ name: 'Pfizer Allocations', columns: [] });
-      const ctx = createMockContext({ errors: queryDataset.errors });
-      const input = queryDataset.input.parse({ datasetId: 'sxbq-3sid', limit: 2 });
 
-      const err = (await Promise.resolve(queryDataset.handler(input, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
+      const err = await contractError(queryDataset, { datasetId: 'sxbq-3sid', limit: 2 });
 
-      expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
-      const data = err.data as { reason: string; recovery: { hint: string } };
-      expect(data.reason).toBe('not_queryable');
-      expect(data.recovery.hint).toContain('columnCount');
+      expect(err.data.reason).toBe('not_queryable');
+      expect(err.data.recovery?.hint).toContain('columnCount');
       expect(err.message).toContain('sxbq-3sid');
       expect(err.message).toContain('Pfizer Allocations');
     });

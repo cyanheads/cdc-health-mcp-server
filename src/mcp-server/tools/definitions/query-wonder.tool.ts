@@ -429,14 +429,12 @@ export const queryWonder = tool('cdc_query_wonder', {
       throw ctx.fail(
         'invalid_query',
         `group_by lists "${repeated}" more than once; each dimension can appear only once. Remove the repeat from group_by.`,
-        { ...ctx.recoveryFor('invalid_query') },
       );
     }
     if (input.year_range && input.year_range.from > input.year_range.to) {
       throw ctx.fail(
         'invalid_query',
         `year_range runs backwards: from ${input.year_range.from} is later than to ${input.year_range.to}. Swap them so from is the earlier year.`,
-        { ...ctx.recoveryFor('invalid_query') },
       );
     }
     if (
@@ -446,14 +444,12 @@ export const queryWonder = tool('cdc_query_wonder', {
       throw ctx.fail(
         'invalid_query',
         `${spec.id} (${spec.title}) holds ${spec.firstYear}–${spec.lastYear}; year_range ${input.year_range.from}–${input.year_range.to} falls outside it. Narrow the range or select a database whose span covers those years.`,
-        { ...ctx.recoveryFor('invalid_query') },
       );
     }
     if (mcdCauses.length > 0 && !spec.multipleCause) {
       throw ctx.fail(
         'invalid_query',
         `mcd_icd10 needs a database that records every cause on the death certificate. ${spec.id} (${spec.title}) records only the underlying cause. Use database "multiple_1999_2020", "multiple_2018_2024", or "provisional", or drop mcd_icd10 and filter with cause_icd10 instead.`,
-        { ...ctx.recoveryFor('invalid_query') },
       );
     }
     /**
@@ -469,7 +465,6 @@ export const queryWonder = tool('cdc_query_wonder', {
       throw ctx.fail(
         'invalid_query',
         `"${WONDER_LAG_WITHHELD_CAUSE}" is CDC's marker for causes withheld under the provisional database's six-month reporting lag, and only that database records them. ${spec.id} (${spec.title}) holds settled data with no withheld backlog and rejects the code. Select database "provisional", or filter on an ICD-10 code instead.`,
-        { ...ctx.recoveryFor('invalid_query') },
       );
     }
 
@@ -489,7 +484,7 @@ export const queryWonder = tool('cdc_query_wonder', {
     } catch (err) {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+        throw ctx.fail(reason, err.message);
       }
       throw err;
     }

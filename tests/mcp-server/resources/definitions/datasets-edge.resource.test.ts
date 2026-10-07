@@ -8,6 +8,7 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { datasetsResource } from '@/mcp-server/resources/definitions/datasets.resource.js';
 import type { DiscoverResult } from '@/services/socrata/types.js';
+import { readResourceError } from '../../../helpers/resource-read.js';
 
 const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
 
@@ -43,6 +44,7 @@ function makeListExtra(): ListExtra {
 describe('cdc://datasets — edge cases', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('propagates service errors', async () => {
@@ -129,22 +131,18 @@ describe('cdc://datasets — edge cases', () => {
         },
       );
       mockDiscover.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: datasetsResource.errors });
 
-      const err = (await Promise.resolve(datasetsResource.handler({}, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
+      const err = await readResourceError(datasetsResource, 'cdc://datasets');
 
-      expect(err).toBeInstanceOf(McpError);
       expect(err.data).toMatchObject({
         reason: 'upstream_error',
         recovery: { hint: expect.stringContaining('catalog may be temporarily unavailable') },
       });
       // Raw upstream/debug fields must not leak through the resource error payload.
-      expect(err.data?.url).toBeUndefined();
-      expect(err.data?.status).toBeUndefined();
-      expect(err.data?.statusText).toBeUndefined();
-      expect(err.data?.body).toBeUndefined();
+      expect(err.data.url).toBeUndefined();
+      expect(err.data.status).toBeUndefined();
+      expect(err.data.statusText).toBeUndefined();
+      expect(err.data.body).toBeUndefined();
     });
 
     it('preserves a declared rate_limited reason with its recovery hint', async () => {
@@ -154,13 +152,11 @@ describe('cdc://datasets — edge cases', () => {
         { reason: 'rate_limited', url: 'http://127.0.0.1:39991/api/catalog/v1' },
       );
       mockDiscover.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: datasetsResource.errors });
 
-      await expect(datasetsResource.handler({}, ctx)).rejects.toMatchObject({
-        data: expect.objectContaining({
-          reason: 'rate_limited',
-          recovery: { hint: expect.stringContaining('rate-limited') },
-        }),
+      const err = await readResourceError(datasetsResource, 'cdc://datasets');
+      expect(err.data).toMatchObject({
+        reason: 'rate_limited',
+        recovery: { hint: expect.stringContaining('rate-limited') },
       });
     });
   });

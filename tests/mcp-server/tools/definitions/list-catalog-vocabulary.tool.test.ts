@@ -6,7 +6,6 @@
 import {
   forbidden,
   JsonRpcErrorCode,
-  McpError,
   notFound,
   rateLimited,
   serviceUnavailable,
@@ -16,6 +15,7 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listCatalogVocabulary } from '@/mcp-server/tools/definitions/list-catalog-vocabulary.tool.js';
 import type { VocabularyTerm } from '@/services/socrata/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockListCategories = vi.fn<() => Promise<VocabularyTerm[]>>();
 const mockListTags = vi.fn<() => Promise<VocabularyTerm[]>>();
@@ -417,21 +417,17 @@ describe('cdc_list_catalog_vocabulary', () => {
       },
     ])('re-dispatches $reason with the contract recovery on the wire', async (scenario) => {
       mockListCategories.mockRejectedValue(scenario.throw());
-      const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
 
-      const err = (await Promise.resolve(
-        listCatalogVocabulary.handler(listCatalogVocabulary.input.parse({}), ctx),
-      ).catch((e: unknown) => e)) as McpError;
+      const err = await contractError(listCatalogVocabulary, {});
 
-      expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(scenario.code);
       expect(err.data).toMatchObject({ reason: scenario.reason });
       /**
-       * `recovery` is required on every contract entry but only reaches the client when the
-       * throw site forwards it. Without this the error ships a reason and no next move, and
-       * both client surfaces lose the hint together.
+       * `recovery` is required on every contract entry, and the handler factory fills it onto
+       * a declared reason thrown without one. Without it the error ships a reason and no next
+       * move, and both client surfaces lose the hint together.
        */
-      const hint = (err.data as { recovery?: { hint?: string } }).recovery?.hint;
+      const hint = err.data.recovery?.hint;
       const declared = listCatalogVocabulary.errors?.find((e) => e.reason === scenario.reason);
       expect(hint).toBe(declared?.recovery);
     });

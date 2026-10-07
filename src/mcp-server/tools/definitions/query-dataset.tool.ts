@@ -254,7 +254,7 @@ export const queryDataset = tool('cdc_query_dataset', {
     const asContractError = (err: unknown): unknown => {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        return ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+        return ctx.fail(reason, err.message);
       }
       return err;
     };
@@ -335,7 +335,6 @@ export const queryDataset = tool('cdc_query_dataset', {
         throw ctx.fail(
           'not_queryable',
           `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset — a chart or a map — and the rows it returned carry no fields, so there is no data to page through.`,
-          { ...ctx.recoveryFor('not_queryable') },
         );
       }
 

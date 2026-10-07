@@ -289,7 +289,6 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       throw ctx.fail(
         'page_out_of_range',
         `offset (${input.offset}) plus limit (${input.limit}) is ${input.offset + input.limit}, above the ${CATALOG_PAGE_WINDOW_MAX} ceiling Socrata's catalog allows for a single page.`,
-        { ...ctx.recoveryFor('page_out_of_range') },
       );
     }
 
@@ -300,7 +299,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     } catch (err) {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+        throw ctx.fail(reason, err.message);
       }
       throw err;
     }

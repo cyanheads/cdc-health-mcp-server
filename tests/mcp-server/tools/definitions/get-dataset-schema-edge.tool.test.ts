@@ -8,6 +8,7 @@ import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
 
@@ -50,13 +51,8 @@ describe('cdc_get_dataset_schema — edge cases', () => {
         columns: [],
       };
       mockGetMetadata.mockResolvedValue(meta);
-      const ctx = createMockContext({ errors: getDatasetSchema.errors });
-      const input = getDatasetSchema.input.parse({ datasetId: '235m-gsry' });
 
-      const err = (await Promise.resolve(getDatasetSchema.handler(input, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
-      expect(err).toBeInstanceOf(McpError);
+      const err = await contractError(getDatasetSchema, { datasetId: '235m-gsry' });
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(err.data).toMatchObject({
         reason: 'not_queryable',
@@ -267,19 +263,16 @@ describe('cdc_get_dataset_schema — edge cases', () => {
   });
 
   describe('handler — service error re-throw with recovery', () => {
-    it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {
+    it('re-throws McpError through ctx.fail with the declared recovery filled', async () => {
       const serviceErr = new McpError(JsonRpcErrorCode.NotFound, 'Dataset not found (404).', {
         reason: 'dataset_not_found',
       });
       mockGetMetadata.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: getDatasetSchema.errors });
-      const input = getDatasetSchema.input.parse({ datasetId: 'ab12-cd34' });
 
-      await expect(getDatasetSchema.handler(input, ctx)).rejects.toMatchObject({
-        data: expect.objectContaining({
-          reason: 'dataset_not_found',
-          recovery: { hint: expect.stringContaining('cdc_discover_datasets') },
-        }),
+      const err = await contractError(getDatasetSchema, { datasetId: 'ab12-cd34' });
+      expect(err.data).toMatchObject({
+        reason: 'dataset_not_found',
+        recovery: { hint: expect.stringContaining('cdc_discover_datasets') },
       });
     });
 
@@ -359,18 +352,13 @@ describe('cdc_get_dataset_schema — edge cases', () => {
         { reason: 'access_denied' },
       );
       mockGetMetadata.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: getDatasetSchema.errors });
-      const input = getDatasetSchema.input.parse({ datasetId: '235m-gsry' });
 
-      const err = (await Promise.resolve(getDatasetSchema.handler(input, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
+      const err = await contractError(getDatasetSchema, { datasetId: '235m-gsry' });
       expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
-      const data = err.data as { reason: string; retryable?: boolean; recovery: { hint: string } };
-      expect(data.reason).toBe('access_denied');
-      expect(data.retryable).toBeUndefined();
-      expect(data.recovery.hint).toContain('cdc_discover_datasets');
-      expect(data.recovery.hint).not.toMatch(/temporarily unavailable|retry after/i);
+      expect(err.data.reason).toBe('access_denied');
+      expect(err.data.retryable).toBeUndefined();
+      expect(err.data.recovery?.hint).toContain('cdc_discover_datasets');
+      expect(err.data.recovery?.hint).not.toMatch(/temporarily unavailable|retry after/i);
     });
   });
 

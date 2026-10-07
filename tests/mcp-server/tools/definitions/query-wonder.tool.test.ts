@@ -4,17 +4,23 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
+import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
 import type { WonderResult } from '@/services/wonder/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockQuery = vi.fn<() => Promise<WonderResult>>();
 
 vi.mock('@/services/wonder/wonder-service.js', () => ({
   getWonderService: () => ({ query: mockQuery }),
 }));
+
+const INVALID_QUERY_HINT = queryWonder.errors?.find((e) => e.reason === 'invalid_query')?.recovery;
+
+const contractRejection = (input: Parameters<typeof contractError<typeof queryWonder>>[1]) =>
+  contractError(queryWonder, input);
 
 const sampleResult: WonderResult = {
   rows: [
@@ -228,16 +234,11 @@ describe('cdc_query_wonder', () => {
     mockQuery.mockRejectedValue(
       validationError('CDC WONDER rejected the request: bad code', { reason: 'invalid_query' }),
     );
-    // ctx.fail / ctx.recoveryFor are injected by the tool wrapper from the errors[] contract;
-    // stub them to unit-test the handler's reason-extraction-and-forwarding logic.
-    const ctx = Object.assign(createMockContext({ errors: queryWonder.errors }), {
-      recoveryFor: (reason: string) => ({ recovery: `recover ${reason}` }),
-      fail: (reason: string, message?: string, data?: Record<string, unknown>) =>
-        new McpError(JsonRpcErrorCode.ValidationError, message ?? '', { reason, ...data }),
+    const err = await contractRejection({ group_by: ['year'] });
+    expect(err.data).toMatchObject({
+      reason: 'invalid_query',
+      recovery: { hint: INVALID_QUERY_HINT },
     });
-    await expect(
-      queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx),
-    ).rejects.toMatchObject({ data: { reason: 'invalid_query' } });
   });
 
   describe('database-conditional rejections', () => {
@@ -249,28 +250,19 @@ describe('cdc_query_wonder', () => {
      * cdc_discover_datasets. These cases pin the handler-level behaviour: a declared reason,
      * the contract recovery attached, and a message that names the way out.
      */
-    function failingContext() {
-      return Object.assign(createMockContext({ errors: queryWonder.errors }), {
-        recoveryFor: (reason: string) => ({ recovery: `recover ${reason}` }),
-        fail: (reason: string, message?: string, data?: Record<string, unknown>) =>
-          new McpError(JsonRpcErrorCode.ValidationError, message ?? '', { reason, ...data }),
-      });
+    function passingContext() {
+      return createMockContext({ errors: queryWonder.errors });
     }
 
     it('rejects a year range outside the selected database, naming that database’s span', async () => {
-      const ctx = failingContext();
-      const input = queryWonder.input.parse({
+      const err = await contractRejection({
         group_by: ['year'],
         year_range: { from: 2021, to: 2024 },
       });
-      const err = (await Promise.resolve(queryWonder.handler(input, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
 
-      expect(err).toBeInstanceOf(McpError);
       expect(err.data).toMatchObject({
         reason: 'invalid_query',
-        recovery: 'recover invalid_query',
+        recovery: { hint: INVALID_QUERY_HINT },
       });
       expect(err.message).toContain('1999–2020');
       expect(err.message).toContain('2021–2024');
@@ -279,7 +271,7 @@ describe('cdc_query_wonder', () => {
 
     it('accepts a year range the selected database does hold but the default does not', async () => {
       mockQuery.mockResolvedValue({ ...sampleResult, database: 'D176' });
-      const ctx = failingContext();
+      const ctx = passingContext();
       const input = queryWonder.input.parse({
         database: 'provisional',
         group_by: ['year'],
@@ -292,20 +284,15 @@ describe('cdc_query_wonder', () => {
     it.each(['underlying_1999_2020', 'underlying_2018_2024'] as const)(
       'rejects mcd_icd10 against %s and names the databases that accept it',
       async (database) => {
-        const ctx = failingContext();
-        const input = queryWonder.input.parse({
+        const err = await contractRejection({
           database,
           group_by: ['year'],
           mcd_icd10: 'J00-J98',
         });
-        const err = (await Promise.resolve(queryWonder.handler(input, ctx)).catch(
-          (e: unknown) => e,
-        )) as McpError;
 
-        expect(err).toBeInstanceOf(McpError);
         expect(err.data).toMatchObject({
           reason: 'invalid_query',
-          recovery: 'recover invalid_query',
+          recovery: { hint: INVALID_QUERY_HINT },
         });
         expect(err.message).toContain('multiple_1999_2020');
         expect(err.message).toContain('provisional');
@@ -317,7 +304,7 @@ describe('cdc_query_wonder', () => {
       'accepts mcd_icd10 against %s',
       async (database) => {
         mockQuery.mockResolvedValue(sampleResult);
-        const ctx = failingContext();
+        const ctx = passingContext();
         const input = queryWonder.input.parse({
           database,
           group_by: ['year'],
@@ -340,20 +327,15 @@ describe('cdc_query_wonder', () => {
          * WONDER's own rejection calls `999--999` an invalid ICD-10 code and points at the
          * finder tool, which reads as "no such code" when the code is real on another database.
          */
-        const ctx = failingContext();
-        const input = queryWonder.input.parse({
+        const err = await contractRejection({
           database,
           group_by: ['year'],
           [field]: '999--999',
         });
-        const err = (await Promise.resolve(queryWonder.handler(input, ctx)).catch(
-          (e: unknown) => e,
-        )) as McpError;
 
-        expect(err).toBeInstanceOf(McpError);
         expect(err.data).toMatchObject({
           reason: 'invalid_query',
-          recovery: 'recover invalid_query',
+          recovery: { hint: INVALID_QUERY_HINT },
         });
         // The enum value, not just the word — the message has to be actionable as an input.
         expect(err.message).toContain('database "provisional"');
@@ -365,7 +347,7 @@ describe('cdc_query_wonder', () => {
       'accepts the withheld-cause marker as %s on the provisional database',
       async (field) => {
         mockQuery.mockResolvedValue({ ...sampleResult, database: 'D176' });
-        const ctx = failingContext();
+        const ctx = passingContext();
         const input = queryWonder.input.parse({
           database: 'provisional',
           group_by: ['year'],
@@ -764,19 +746,11 @@ describe('cdc_query_wonder', () => {
        * Rejected at the schema they would fail as `invalid_arguments`, out of reach of the
        * declared `invalid_query` recovery; the handler rejects both before calling the service.
        */
-      const reversed = queryWonder.input.parse({ year_range: { from: 2020, to: 2018 } });
-      const repeated = queryWonder.input.parse({ group_by: ['sex', 'sex'] });
-      const ctx = Object.assign(createMockContext({ errors: queryWonder.errors }), {
-        recoveryFor: (reason: string) => ({ recovery: `recover ${reason}` }),
-        fail: (reason: string, message?: string, data?: Record<string, unknown>) =>
-          new McpError(JsonRpcErrorCode.ValidationError, message ?? '', { reason, ...data }),
-      });
-      await expect(queryWonder.handler(reversed, ctx)).rejects.toMatchObject({
-        data: { reason: 'invalid_query', recovery: 'recover invalid_query' },
-      });
-      await expect(queryWonder.handler(repeated, ctx)).rejects.toMatchObject({
-        data: { reason: 'invalid_query', recovery: 'recover invalid_query' },
-      });
+      const expected = { reason: 'invalid_query', recovery: { hint: INVALID_QUERY_HINT } };
+      const reversed = await contractRejection({ year_range: { from: 2020, to: 2018 } });
+      const repeated = await contractRejection({ group_by: ['sex', 'sex'] });
+      expect(reversed.data).toMatchObject(expected);
+      expect(repeated.data).toMatchObject(expected);
       expect(mockQuery).not.toHaveBeenCalled();
     });
 

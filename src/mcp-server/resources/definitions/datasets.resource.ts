@@ -72,7 +72,7 @@ export const datasetsResource = resource('cdc://datasets', {
     } catch (err) {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        throw ctx.fail(reason, err.message, { ...ctx.recoveryFor(reason) });
+        throw ctx.fail(reason, err.message);
       }
       throw err;
     }

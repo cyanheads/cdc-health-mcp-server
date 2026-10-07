@@ -8,6 +8,7 @@ import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import type { DatasetMetadata, QueryResult } from '@/services/socrata/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockQuery = vi.fn<() => Promise<QueryResult>>();
 const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
@@ -304,20 +305,20 @@ describe('cdc_query_dataset — edge cases', () => {
   });
 
   describe('handler — service error re-throw with recovery', () => {
-    it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {
+    it('re-throws McpError through ctx.fail with the declared recovery filled', async () => {
       const serviceErr = new McpError(-32602, 'No such column "badcol"', {
         reason: 'no_such_column',
         column: 'badcol',
       });
       mockQuery.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: queryDataset.errors });
-      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', where: "badcol='x'" });
 
-      await expect(queryDataset.handler(input, ctx)).rejects.toMatchObject({
-        data: expect.objectContaining({
-          reason: 'no_such_column',
-          recovery: { hint: expect.stringContaining('cdc_get_dataset_schema') },
-        }),
+      const err = await contractError(queryDataset, {
+        datasetId: 'ab12-cd34',
+        where: "badcol='x'",
+      });
+      expect(err.data).toMatchObject({
+        reason: 'no_such_column',
+        recovery: { hint: expect.stringContaining('cdc_get_dataset_schema') },
       });
     });
 
@@ -342,18 +343,13 @@ describe('cdc_query_dataset — edge cases', () => {
         { reason: 'access_denied' },
       );
       mockQuery.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: queryDataset.errors });
-      const input = queryDataset.input.parse({ datasetId: '235m-gsry', limit: 2 });
 
-      const err = (await Promise.resolve(queryDataset.handler(input, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
+      const err = await contractError(queryDataset, { datasetId: '235m-gsry', limit: 2 });
       expect(err.code).toBe(JsonRpcErrorCode.Forbidden);
-      const data = err.data as { reason: string; retryable?: boolean; recovery: { hint: string } };
-      expect(data.reason).toBe('access_denied');
-      expect(data.retryable).toBeUndefined();
-      expect(data.recovery.hint).toContain('cdc_get_dataset_schema');
-      expect(data.recovery.hint).not.toMatch(/temporarily unavailable|retry after/i);
+      expect(err.data.reason).toBe('access_denied');
+      expect(err.data.retryable).toBeUndefined();
+      expect(err.data.recovery?.hint).toContain('cdc_get_dataset_schema');
+      expect(err.data.recovery?.hint).not.toMatch(/temporarily unavailable|retry after/i);
     });
   });
 
@@ -404,15 +400,11 @@ describe('cdc_query_dataset — edge cases', () => {
           reason: 'rate_limited',
         }),
       );
-      const ctx = createMockContext({ errors: queryDataset.errors });
-      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 1 });
-
-      await expect(queryDataset.handler(input, ctx)).rejects.toMatchObject({
-        code: JsonRpcErrorCode.RateLimited,
-        data: expect.objectContaining({
-          reason: 'rate_limited',
-          recovery: { hint: expect.stringContaining('Retry after a brief delay') },
-        }),
+      const err = await contractError(queryDataset, { datasetId: 'ab12-cd34', limit: 1 });
+      expect(err.code).toBe(JsonRpcErrorCode.RateLimited);
+      expect(err.data).toMatchObject({
+        reason: 'rate_limited',
+        recovery: { hint: expect.stringContaining('Retry after a brief delay') },
       });
     });
   });

@@ -8,6 +8,7 @@ import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import type { CatalogDataset, DiscoverResult, VocabularyTerm } from '@/services/socrata/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
 const mockListCategories = vi.fn<() => Promise<VocabularyTerm[]>>();
@@ -639,19 +640,16 @@ describe('cdc_discover_datasets', () => {
       expect(byReason.get('page_out_of_range')?.retryable).toBeUndefined();
     });
 
-    it('re-throws McpError with ctx.fail and recoveryFor when reason is declared', async () => {
+    it('re-throws McpError through ctx.fail with the declared recovery filled', async () => {
       const serviceErr = new McpError(-32602, 'Invalid filter value', {
         reason: 'invalid_query',
       });
       mockDiscover.mockRejectedValue(serviceErr);
-      const ctx = createMockContext({ errors: discoverDatasets.errors });
-      const input = discoverDatasets.input.parse({ category: 'Bad Category!' });
 
-      await expect(discoverDatasets.handler(input, ctx)).rejects.toMatchObject({
-        data: expect.objectContaining({
-          reason: 'invalid_query',
-          recovery: { hint: expect.stringContaining('category names') },
-        }),
+      const err = await contractError(discoverDatasets, { category: 'Bad Category!' });
+      expect(err.data).toMatchObject({
+        reason: 'invalid_query',
+        recovery: { hint: expect.stringContaining('category names') },
       });
     });
 

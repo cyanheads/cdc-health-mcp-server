@@ -3,11 +3,12 @@
  * @module tests/mcp-server/tools/definitions/discover-datasets-edge
  */
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import type { DiscoverResult, VocabularyTerm } from '@/services/socrata/types.js';
+import { contractError } from '../../../helpers/contract-error.js';
 
 const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
 /**
@@ -85,17 +86,11 @@ describe('cdc_discover_datasets — edge cases', () => {
        * the handler keeps the failure typed; a schema-level refine would surface as a
        * raw -32602 with no reachable recovery hint.
        */
-      const ctx = createMockContext({ errors: discoverDatasets.errors });
-      const input = discoverDatasets.input.parse({ offset: 9999, limit: 5 });
-
-      const err = (await Promise.resolve(discoverDatasets.handler(input, ctx)).catch(
-        (e: unknown) => e,
-      )) as McpError;
-      expect(err).toBeInstanceOf(McpError);
+      const err = await contractError(discoverDatasets, { offset: 9999, limit: 5 });
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(err.data).toMatchObject({ reason: 'page_out_of_range' });
       expect(err.message).toContain('10004');
-      expect((err.data as { recovery: { hint: string } }).recovery.hint).toContain('10000');
+      expect(err.data.recovery?.hint).toContain('10000');
       expect(mockDiscover).not.toHaveBeenCalled();
     });
 
