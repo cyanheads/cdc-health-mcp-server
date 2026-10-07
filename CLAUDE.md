@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** cdc-health-mcp-server
-**Version:** 0.9.2
+**Version:** 0.9.3
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.13`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.2.0

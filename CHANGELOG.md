@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.3](changelog/0.9.x/0.9.3.md) — 2026-10-07
+
+Adopts mcp-ts-core 0.13.13: tool errors name their request ID, error data no longer carries stack traces or root causes, and the Docker image installs dependencies in a build-platform stage.
+
 ## [0.9.2](changelog/0.9.x/0.9.2.md) — 2026-09-22
 
 cdc_query_wonder now accepts ICD-10 code lists, bounds every response like cdc_query_dataset, serializes concurrent requests, and validates year_range/group_by before sending; caveat and message links are preserved.

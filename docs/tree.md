@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-09-22 19:53:32
+Generated on: 2026-10-07 11:29:06
 
 ```text
 cdc-health-mcp-server/
@@ -135,9 +135,11 @@ cdc-health-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
@@ -185,6 +187,9 @@ cdc-health-mcp-server/
 │   │       ├── d76-x40-x44-by-year-2018-2019.response.xml
 │   │       ├── d76-year-age-sex-race.response.xml
 │   │       └── d77-overdose-ucd-opioid-mcd-2019.response.xml
+│   ├── helpers/
+│   │   ├── contract-error.ts
+│   │   └── resource-read.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
