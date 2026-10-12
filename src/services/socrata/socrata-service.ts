@@ -15,7 +15,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { httpErrorFromResponse } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
-import { toPlainText } from '@/utils/text.js';
+import { nonBlank, toPlainText } from '@/utils/text.js';
 import type {
   CatalogDataset,
   DatasetColumn,
@@ -31,9 +31,9 @@ const MIN_REQUEST_INTERVAL_MS = 250;
 /**
  * Explicit page size for the tag vocabulary. `domain_tags` answers a request that names no
  * limit with 100 values and reports `resultSetSize: 100` beside them, so the response looks
- * complete at a hundredth of the vocabulary and nothing in it says otherwise. Measured live,
- * `data.cdc.gov` carries 1,583 tags and a larger limit returns the same 1,583 — so this
- * value reaches the whole set rather than trading one silent cap for another.
+ * complete at a small fraction of the vocabulary and nothing in it says otherwise. Measured
+ * live, `data.cdc.gov` carries roughly 1,600 tags and a larger limit returns the same set — so
+ * this value reaches the whole set rather than trading one silent cap for another.
  */
 const TAG_VOCABULARY_LIMIT = 10_000;
 
@@ -70,12 +70,68 @@ export interface QueryOptions {
   where?: string | undefined;
 }
 
+/** The `$limit` a data request sent on the wire beside the one its caller asked for. */
+interface OverFetch {
+  offset: number;
+  requested: number;
+  sent: number;
+}
+
 /**
  * Strip the trailing Scala `; position: Map(...)` debug dump that Socrata appends
  * to SoQL error messages — noise for an agent acting on the error.
  */
 function stripPositionTail(message: string): string {
   return message.replace(/;\s*position:\s*Map\([\s\S]*$/, '').trimEnd();
+}
+
+/**
+ * Socrata's parse errors quote the SoQL it compiled (`data.query`), which ends in the
+ * server-added `limit <sent> offset <n>`. Swap that tail back to the caller's own limit so the
+ * relayed message agrees with `effectiveQuery` — in every copy, since an unexpected-character
+ * error quotes the query twice: inline, and again on its own line above a caret line. Only the
+ * tail moves and every caller clause precedes it, so a `character N` position, and the caret
+ * under the second copy, still point at the same character. A message that quotes no such
+ * query is returned unchanged.
+ */
+function withCallerLimit(message: string, query: unknown, overFetch?: OverFetch): string {
+  if (!overFetch || typeof query !== 'string') return message;
+  const { offset, requested, sent } = overFetch;
+  for (const [limit, offsetKeyword] of [
+    ['limit', 'offset'],
+    ['LIMIT', 'OFFSET'],
+  ] as const) {
+    const tail = ` ${limit} ${sent} ${offsetKeyword} ${offset}`;
+    if (!query.endsWith(tail)) continue;
+    const callerQuery = `${query.slice(0, -tail.length)} ${limit} ${requested} ${offsetKeyword} ${offset}`;
+    return message.replaceAll(query, () => callerQuery);
+  }
+  return message;
+}
+
+/**
+ * Whether the caret of a Socrata error `position` sits in the ORDER BY clause of the query line
+ * it quotes; false when the position carries no line and column. Socrata normalizes that line —
+ * keywords upper-case, identifiers backticked, literals single-quoted — so the clause opens at
+ * the first ` ORDER BY ` outside a quote, and only LIMIT and OFFSET follow it. One pass up to
+ * the caret, since the line is as long as the caller's query.
+ */
+function caretInOrderBy(position: unknown): boolean {
+  const { column, line } = (position ?? {}) as { column?: unknown; line?: unknown };
+  if (typeof line !== 'string' || typeof column !== 'number') return false;
+  const caret = Math.min(column - 1, line.length);
+  let quote: string | undefined;
+  for (let i = 0; i < caret; i++) {
+    const char = line[i];
+    if (quote) {
+      if (char === quote) quote = undefined;
+    } else if (char === "'" || char === '`') {
+      quote = char;
+    } else if (char === ' ' && line.startsWith(' ORDER BY ', i)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -128,10 +184,12 @@ export class SocrataService {
       search_context: domain,
     });
 
-    if (options.query) params.set('q', options.query);
-    if (options.category) params.set('categories', options.category);
-    if (options.tags) {
-      for (const tag of options.tags) params.append('tags', tag);
+    const query = nonBlank(options.query);
+    const category = nonBlank(options.category);
+    if (query) params.set('q', query);
+    if (category) params.set('categories', category);
+    for (const tag of options.tags ?? []) {
+      if (nonBlank(tag)) params.append('tags', tag);
     }
     params.set('limit', String(options.limit ?? 10));
     params.set('offset', String(options.offset ?? 0));
@@ -173,9 +231,9 @@ export class SocrataService {
   /**
    * Every value in the catalog's category vocabulary for a domain, ranked by entry count.
    *
-   * The whole vocabulary arrives in one request: `domain_categories` answers with 55 values
-   * for both CDC hosts and reports the same figure as `resultSetSize`, well inside any page
-   * size the endpoint applies.
+   * The whole vocabulary arrives in one request: `domain_categories` answers with a few dozen
+   * values for both CDC hosts and reports the same figure as `resultSetSize`, well inside any
+   * page size the endpoint applies.
    */
   listCategories(domain?: SocrataDomain, signal?: AbortSignal): Promise<VocabularyTerm[]> {
     return this.fetchVocabulary('domain_categories', 'domain_category', domain, signal);
@@ -337,27 +395,42 @@ export class SocrataService {
    * The wire request asks for one row more than the caller's limit. The SODA data endpoint
    * reports no total, so that extra row is the only evidence that separates a result set
    * whose last page happens to fill the limit from one that was cut short. It is dropped
-   * before returning and recorded as `hasMore`; the echoed `query` keeps the caller's own
-   * `$limit` so it can be replayed without inheriting the probe.
+   * before returning and recorded as `hasMore`; the echoed `query`, and any error Socrata
+   * raises quoting the query it compiled, keep the caller's own `$limit` so neither hands the
+   * probe back.
+   *
+   * A blank or whitespace-only clause is omitted, as an absent one is; a clause with text in
+   * it is sent exactly as given.
    */
   async query(options: QueryOptions, signal?: AbortSignal): Promise<QueryResult> {
     const params = new URLSearchParams();
     const limit = options.limit ?? 100;
+    const offset = options.offset ?? 0;
 
-    if (options.search) params.set('$q', options.search);
-    if (options.select) params.set('$select', options.select);
-    if (options.where) params.set('$where', options.where);
-    if (options.group) params.set('$group', options.group);
-    if (options.having) params.set('$having', options.having);
-    if (options.order) params.set('$order', options.order);
+    const clauses = [
+      ['$q', options.search],
+      ['$select', options.select],
+      ['$where', options.where],
+      ['$group', options.group],
+      ['$having', options.having],
+      ['$order', options.order],
+    ] as const;
+    for (const [key, value] of clauses) {
+      const clause = nonBlank(value);
+      if (clause) params.set(key, clause);
+    }
     params.set('$limit', String(limit));
-    params.set('$offset', String(options.offset ?? 0));
+    params.set('$offset', String(offset));
 
     const query = decodedQueryString(params);
     params.set('$limit', String(limit + 1));
 
     const url = `${this.baseUrlFor(options.domain)}/resource/${options.datasetId}.json?${params}`;
-    const fetched = await this.fetchJson<Record<string, unknown>[]>(url, signal);
+    const fetched = await this.fetchJson<Record<string, unknown>[]>(url, signal, {
+      offset,
+      requested: limit,
+      sent: limit + 1,
+    });
 
     const hasMore = fetched.length > limit;
     const rows = hasMore ? fetched.slice(0, limit) : fetched;
@@ -365,7 +438,7 @@ export class SocrataService {
     return { rows, rowCount: rows.length, query, hasMore };
   }
 
-  private throwBadRequest(body: string, url: string): never {
+  private throwBadRequest(body: string, url: string, overFetch?: OverFetch): never {
     let parsed: Record<string, unknown> | undefined;
     try {
       parsed = JSON.parse(body) as Record<string, unknown>;
@@ -377,7 +450,9 @@ export class SocrataService {
     // but `code` for query.compiler.* (parse) errors — check both.
     const code = (parsed?.errorCode ?? parsed?.code) as string | undefined;
     const data = parsed?.data as Record<string, unknown> | undefined;
-    const rawMessage = (parsed?.message ?? parsed?.error) as string | undefined;
+    const message = (parsed?.message ?? parsed?.error) as string | undefined;
+    const rawMessage =
+      typeof message === 'string' ? withCallerLimit(message, data?.query, overFetch) : message;
 
     if (code === 'query.soql.no-such-column') {
       const col = data?.column ?? 'unknown';
@@ -395,6 +470,17 @@ export class SocrataService {
     }
     if (code === 'query.soql.column-not-in-group-bys') {
       const col = data?.column ?? 'unknown';
+      /**
+       * In ORDER BY, adding the column to `group` makes Socrata accept the query and silently
+       * splits every aggregate into finer rows — so that advice is given only for the SELECT
+       * and HAVING positions, where it is one of two real fixes.
+       */
+      if (caretInOrderBy(data?.position)) {
+        throw validationError(
+          `Column "${col}" in the order clause is neither grouped nor aggregated, so it cannot order grouped rows. Order by the grouped columns or by aggregate aliases from select instead.`,
+          { reason: 'invalid_query', column: col, url },
+        );
+      }
       throw validationError(
         `Column "${col}" must appear in GROUP BY or be wrapped in an aggregate (e.g. sum()). Add group="${col}" or aggregate it in select.`,
         { reason: 'invalid_query', column: col, url },
@@ -424,9 +510,14 @@ export class SocrataService {
     });
   }
 
+  /**
+   * @param overFetch - The data endpoint's over-fetch, so a 400 that quotes the compiled query
+   *   relays the caller's `$limit` rather than the probe's.
+   */
   private async fetchJson<T = Record<string, unknown>>(
     url: string,
     signal?: AbortSignal,
+    overFetch?: OverFetch,
   ): Promise<T> {
     await this.throttle();
     const config = getServerConfig();
@@ -464,7 +555,7 @@ export class SocrataService {
         );
       }
       if (response.status === 400) {
-        this.throwBadRequest(body, url);
+        this.throwBadRequest(body, url, overFetch);
       }
       if (response.status === 403) {
         const detail = socrataMessage(body);

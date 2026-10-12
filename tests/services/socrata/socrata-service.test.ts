@@ -76,6 +76,7 @@ describe('SocrataService', () => {
 
   beforeEach(() => {
     service = new SocrataService();
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unmocked fetch'));
   });
 
   afterEach(() => {
@@ -229,6 +230,36 @@ describe('SocrataService', () => {
 
       const url = firstUrl(spy);
       expect(url).not.toContain('order=');
+    });
+
+    it('sends a whitespace-only query or category exactly as it sends an omitted one', async () => {
+      /**
+       * `q=%20%20` matches nothing upstream, while an omitted `q` browses the whole catalog,
+       * so forwarding whitespace turned "no filter" into "no results".
+       */
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(() => Promise.resolve(jsonResponse({ results: [], resultSetSize: 0 })));
+      await service.discover({ query: '  ', category: ' \t ' });
+      await service.discover({});
+
+      const [blank, omitted] = spy.mock.calls.map((c) => c[0] as string);
+      expect(blank).toBe(omitted);
+    });
+
+    it('drops blank tag entries and keeps the rest exactly as sent', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({ tags: ['', '  ', ' covid19', 'surveillance'] });
+
+      const params = new URL(firstUrl(spy)).searchParams;
+      expect(params.getAll('tags')).toEqual([' covid19', 'surveillance']);
+    });
+
+    it('sends no tags parameter when every tag entry is blank', async () => {
+      const spy = mockFetch({ results: [], resultSetSize: 0 });
+      await service.discover({ tags: ['', ' '] });
+
+      expect(new URL(firstUrl(spy)).searchParams.has('tags')).toBe(false);
     });
   });
 
@@ -822,6 +853,44 @@ describe('SocrataService', () => {
 
       expect(result.rows).toEqual([]);
       expect(result.hasMore).toBe(false);
+    });
+
+    it('sends and echoes whitespace-only clauses exactly as omitted ones', async () => {
+      /**
+       * `$select= ` projects nothing, so every row came back fieldless; `$where=   ` and
+       * `$order=\t` were echoed as if they were applied.
+       */
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(() => Promise.resolve(jsonResponse([])));
+      const blank = await service.query({
+        datasetId: 'bi63-dtpu',
+        search: ' ',
+        select: ' ',
+        where: '   ',
+        group: '\n',
+        having: ' ',
+        order: '\t',
+        limit: 3,
+      });
+      const omitted = await service.query({ datasetId: 'bi63-dtpu', limit: 3 });
+
+      expect(blank.query).toBe('$limit=3&$offset=0');
+      expect(blank.query).toBe(omitted.query);
+      const [blankUrl, omittedUrl] = spy.mock.calls.map((c) => c[0] as string);
+      expect(blankUrl).toBe(omittedUrl);
+    });
+
+    it('keeps a non-blank clause byte-for-byte, surrounding whitespace included', async () => {
+      const spy = mockFetch([]);
+      const result = await service.query({
+        datasetId: 'bi63-dtpu',
+        where: ' year=2020 ',
+        limit: 3,
+      });
+
+      expect(result.query).toBe('$where= year=2020 &$limit=3&$offset=0');
+      expect(new URL(firstUrl(spy)).searchParams.get('$where')).toBe(' year=2020 ');
     });
   });
 });
