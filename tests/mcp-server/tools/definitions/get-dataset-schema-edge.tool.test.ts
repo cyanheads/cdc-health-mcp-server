@@ -157,8 +157,9 @@ describe('cdc_get_dataset_schema — edge cases', () => {
     it('rejects out-of-range column_limit and column_offset', () => {
       const bad = [
         { column_limit: 0 },
-        { column_limit: 501 },
         { column_limit: 1.5 },
+        { column_limit: '5' },
+        { full_description: 'yes' },
         { column_offset: -1 },
         { column_offset: 1.5 },
       ];
@@ -176,6 +177,34 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       expect(
         getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 500 }).column_limit,
       ).toBe(500);
+    });
+
+    it('returns every column of the widest schema at column_limit 501, with no truncation', async () => {
+      /**
+       * column_limit only slices a schema already fetched whole, so a value past the widest
+       * schema in the catalog (322 columns) costs nothing upstream and is no longer rejected.
+       */
+      mockGetMetadata.mockResolvedValue({
+        name: 'Weekly Hospital Respiratory Data',
+        columns: Array.from({ length: 322 }, (_, i) => ({ fieldName: `c${i}`, dataType: 'text' })),
+      });
+      const ctx = createMockContext({ errors: getDatasetSchema.errors });
+      const result = await getDatasetSchema.handler(
+        getDatasetSchema.input.parse({ datasetId: 'ua7e-t2fy', column_limit: 501 }),
+        ctx,
+      );
+
+      expect(result.columns).toHaveLength(322);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.totalCount).toBe(322);
+      expect(enrichment.truncated).toBeUndefined();
+      expect(enrichment.notice).toBeUndefined();
+    });
+
+    it('quotes no column_limit maximum in the input description', () => {
+      const description = getDatasetSchema.input.shape.column_limit.description ?? '';
+      expect(description).not.toMatch(/\bmax\b/i);
+      expect(description).toContain('default 100');
     });
 
     it('describes both selectors and names the other as the way to continue', () => {

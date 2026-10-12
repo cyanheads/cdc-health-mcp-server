@@ -113,6 +113,73 @@ describe('cdc_query_dataset — whole response', () => {
       expect(header).toContain('late_column_0');
     });
 
+    it('charges each table line as rendered, Markdown escapes included', async () => {
+      /**
+       * Every character of these values is one `content[]` escapes, so each rendered table
+       * line runs to about twice its raw length. A budget that charged the raw value while
+       * the table carried the escaped one would ship well past the stated figure.
+       */
+      const rows = Array.from({ length: 5001 }, (_, i) => ({
+        _id_: String(i),
+        markup: '*_[]`\\<b>'.repeat(40),
+      }));
+      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
+
+      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 5000 });
+      const sc = structured(result);
+
+      expect(sc.truncated).toBe(true);
+      expect(text(result)).toContain(`| \\_id\\_ | markup |`);
+      expect(text(result)).toContain(`| 0 | ${'\\*\\_\\[\\]\\`\\\\\\<b>'.repeat(40)} |`);
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
+    });
+
+    it('charges each header key as rendered, Markdown escapes included', async () => {
+      /**
+       * A key appears once in the table header but in every row's JSON, so a wide escaped key on
+       * the first row alone puts most of its cost in the header: `*` is one character raw,
+       * three once escaped and JSON-encoded. Charged raw, the header under-counts by twice the
+       * key's length and the small rows that follow fill the page past the budget.
+       */
+      const key = '*'.repeat(25_000);
+      const rows = Array.from({ length: 5001 }, (_, i) =>
+        i === 0 ? { id: '0', [key]: 'v' } : { id: String(i) },
+      );
+      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
+
+      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 5000 });
+      const sc = structured(result);
+
+      expect(text(result)).toContain(`| id | ${'\\*'.repeat(25_000)} |`);
+      expect(sc.truncated).toBe(true);
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
+    });
+
+    it('charges the query echo as rendered in the trailer, code-span fence included', async () => {
+      /**
+       * The echo reaches structuredContent as a JSON string and the trailer as a code span
+       * whose fence outgrows the longest backtick run inside it, so a backtick-heavy clause
+       * costs far more rendered than raw; reserving the raw echo twice lets the rows run past
+       * the budget.
+       */
+      const where = '`'.repeat(30_000);
+      const rows = Array.from({ length: 5001 }, (_, i) => ({ id: String(i) }));
+      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
+
+      const result = await runToolContract(queryDataset, {
+        datasetId: 'ab12-cd34',
+        where,
+        order: ':id',
+        limit: 5000,
+      });
+      const sc = structured(result);
+
+      expect(sc.effectiveQuery).toContain(`$where=${where}`);
+      expect(text(result)).toContain('`'.repeat(30_001));
+      expect(sc.truncated).toBe(true);
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
+    });
+
     it('resumes exactly at nextOffset across budget-cut pages', async () => {
       const rows = Array.from({ length: 5001 }, (_, i) => surveillanceRow(i));
       http.route({ match: /\/resource\/4va6-ph5s\.json/, respond: sodaEndpoint(rows) });
@@ -134,6 +201,48 @@ describe('cdc_query_dataset — whole response', () => {
       expect(seen).toEqual(Array.from({ length: seen.length }, (_, i) => `${i}-${'x'.repeat(18)}`));
     });
 
+    it('charges the caller select the fieldless-rows notice quotes, as rendered', async () => {
+      /**
+       * The notice quotes `select` on both surfaces, escaped in content[] — every `*` is two
+       * characters there and three once the text is a JSON string. Left uncharged, a long
+       * select carried the response past the budget the rows were trimmed to.
+       */
+      const select = '*'.repeat(31_000);
+      http.route({
+        match: /\/api\/views\/ab12-cd34\.json/,
+        respond: () => Response.json({ name: 'Real', columns: [{ fieldName: 'state' }] }),
+      });
+      http.route({
+        match: /\/resource\/ab12-cd34\.json/,
+        respond: sodaEndpoint(Array.from({ length: 5001 }, () => ({}))),
+      });
+
+      const result = await runToolContract(queryDataset, {
+        datasetId: 'ab12-cd34',
+        select,
+        limit: 5000,
+      });
+      const sc = structured(result);
+
+      expect(sc.notice).toContain(`the select clause "${select}"`);
+      expect(sc.truncated).toBe(true);
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
+    });
+
+    it('clamps limit past 5,000 to the cap on the wire and in the echo', async () => {
+      const rows = Array.from({ length: 6000 }, (_, i) => ({ id: String(i) }));
+      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
+
+      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 6000 });
+      const sc = structured(result);
+
+      expect(new URL(http.calls[0]!.request.url).searchParams.get('$limit')).toBe('5001');
+      expect(sc.effectiveQuery).toBe('$limit=5000&$offset=0');
+      expect(sc.rows).toHaveLength(5000);
+      expect(sc).toMatchObject({ truncated: true, shown: 5000, cap: 5000, nextOffset: 5000 });
+      expect(text(result)).toContain('limit=6000 is above the 5,000 rows one call returns');
+    });
+
     it('still returns a single row wider than the whole budget', async () => {
       http.route({
         match: /\/resource\/ab12-cd34\.json/,
@@ -146,6 +255,37 @@ describe('cdc_query_dataset — whole response', () => {
       expect(sc.rows).toHaveLength(1);
       expect(sc.truncated).toBe(true);
       expect(sc.nextOffset).toBe(1);
+    });
+  });
+
+  describe('whitespace-only clauses', () => {
+    it('answers exactly as the omitted form does, on both surfaces and on the wire', async () => {
+      /**
+       * `select:" "` reached Socrata as `$select= `, which projects nothing: every row came
+       * back fieldless, a metadata request was spent to explain it, and the notice blamed the
+       * select clause " ".
+       */
+      http.route({
+        match: /\/resource\/bi63-dtpu\.json/,
+        respond: sodaEndpoint([{ state: 'Alabama', year: '2017' }]),
+      });
+
+      const blank = await runToolContract(queryDataset, {
+        datasetId: 'bi63-dtpu',
+        select: ' ',
+        where: '   ',
+        order: '\t',
+        group: ' ',
+        having: ' ',
+        search: ' ',
+        limit: 1,
+      });
+      const omitted = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit: 1 });
+
+      expect(blank).toEqual(omitted);
+      expect(structured(blank).effectiveQuery).toBe('$limit=1&$offset=0');
+      expect(http.calls).toHaveLength(2);
+      expect(http.calls[0]!.request.url).toBe(http.calls[1]!.request.url);
     });
   });
 

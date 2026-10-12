@@ -74,9 +74,28 @@ describe('cdc_query_wonder — response budget', () => {
     expect(sc.shown).toBe(100);
     expect(sc.cap).toBe(100);
     expect(sc.nextOffset).toBe(100);
-    expect(sc.notice).toContain('Showing rows 1–100 of 2014');
+    expect(sc.notice).toContain('Showing rows 1–100 of 2,014.');
     expect(sc.notice).not.toMatch(/budget/);
     expect(size(result)).toBeLessThan(RESPONSE_BUDGET);
+  });
+
+  it('formats every row count in the page notices and keeps parameter values bare', async () => {
+    /**
+     * Row counts read as numbers (`2,014`), the way the budget reads as `200,000`; the values a
+     * caller passes back (`offset=1100`, `limit=100`) stay in the form the input takes.
+     */
+    const middle = structured(await call({ offset: 1000, limit: 100 }));
+    expect(middle.notice).toContain(
+      'Showing rows 1,001–1,100 of 2,014. Call again with offset=1100',
+    );
+
+    const end = structured(await call({ offset: 1900 }));
+    expect(end.notice).toContain('Showing rows 1,901–2,014 of 2,014 — the end of the table.');
+
+    const past = structured(await call({ offset: 5000 }));
+    expect(past.notice).toContain(
+      'offset 5000 is past the end of this table, which holds 2,014 row(s) — the query itself matched. Lower offset below 2,014',
+    );
   });
 
   it('keeps the four-dimension call without a limit inside the budget, on both surfaces', async () => {
@@ -94,7 +113,10 @@ describe('cdc_query_wonder — response budget', () => {
     expect(sc.nextOffset).toBe(sc.rowCount);
     expect(sc.notice).toMatch(/200,000-character response budget/);
     expect(sc.notice).not.toMatch(/raise limit/);
-    expect(sc.notice).toContain(`at ${sc.rowCount} of the 2014 rows left in the table`);
+    expect(sc.notice).toContain(
+      `Showing rows 1–${sc.rowCount.toLocaleString('en-US')} of 2,014. The 200,000-character response budget cut the page at ${sc.rowCount.toLocaleString('en-US')} of the 2,014 rows left in the table from this offset`,
+    );
+    expect(sc.notice).toContain(`Call again with offset=${sc.rowCount} for the next page`);
 
     // content[] carries the same page: one table line per row, one itemized line per note.
     const lines = text(result).split('\n');
@@ -118,8 +140,28 @@ describe('cdc_query_wonder — response budget', () => {
     expect(sc.nextOffset).toBe(sc.rowCount);
     expect(sc.notice).toMatch(/200,000-character response budget/);
     expect(sc.notice).toContain(
-      `at ${sc.rowCount} of the 2014 rows limit=5000 would have returned`,
+      `at ${sc.rowCount.toLocaleString('en-US')} of the 2,014 rows limit=5000 would have returned`,
     );
+  });
+
+  it.each([
+    [5001, 5001],
+    [1_000_000, 1_000_000],
+    ['6000', 6000],
+  ])('takes limit %j, past any former ceiling, and cuts it at the budget', async (limit, cap) => {
+    /** `limit` slices a table fetched whole, so only the response budget bounds the page. */
+    const result = await call({ limit });
+    const sc = structured(result);
+
+    expect(result.isError).toBeFalsy();
+    expect(size(result)).toBeLessThanOrEqual(RESPONSE_BUDGET);
+    expect(sc.truncated).toBe(true);
+    expect(sc.cap).toBe(cap);
+    expect(sc.nextOffset).toBe(sc.rowCount);
+    expect(sc.notice).toContain(
+      `at ${sc.rowCount.toLocaleString('en-US')} of the 2,014 rows limit=${cap} would have returned`,
+    );
+    expect(text(result)).toContain(`limit=${cap} would have returned`);
   });
 
   it('walks every row by nextOffset, without gaps or repeats, each page inside the budget', async () => {

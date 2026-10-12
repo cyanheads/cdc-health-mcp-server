@@ -7,6 +7,11 @@ import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
+import {
+  DATASET_DESCRIPTION_CAP,
+  DATASET_DESCRIPTION_CAP_TEXT,
+  truncatePlainText,
+} from '@/utils/text.js';
 
 /**
  * Columns carried per read, matching `cdc_get_dataset_schema`'s default window so both
@@ -23,7 +28,7 @@ const COLUMN_WINDOW = 100;
 
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   name: 'CDC Dataset Detail',
-  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window. The row count and its rowCountSource ("live" or "cached") match what cdc_get_dataset_schema reports for the same ID.`,
+  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters, with descriptionTruncated and descriptionLength set when cut; call cdc_get_dataset_schema with full_description: true for the whole text. The row count and its rowCountSource ("live" or "cached") match what cdc_get_dataset_schema reports for the same ID.`,
   mimeType: 'application/json',
 
   errors: [
@@ -121,25 +126,40 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
     const columnCount = metadata.columns.length;
     const columns = metadata.columns.slice(0, COLUMN_WINDOW);
     const truncated = columns.length < columnCount;
+    const { description } = metadata;
+    const cut = description ? truncatePlainText(description, DATASET_DESCRIPTION_CAP) : description;
+    const descriptionTruncated = cut !== description;
 
     ctx.log.info('Dataset detail resource accessed', {
       datasetId: params.datasetId,
       name: metadata.name,
       columnCount,
       columnsShown: columns.length,
+      descriptionTruncated,
       rowCountSource: metadata.rowCountSource,
     });
 
+    const notices: string[] = [];
+    if (truncated) {
+      notices.push(
+        `Showing the first ${columns.length} of ${columnCount} columns. Call cdc_get_dataset_schema with datasetId="${params.datasetId}" and column_offset=${columns.length} for the rest; every column is reachable that way.`,
+      );
+    }
+    if (descriptionTruncated && description) {
+      notices.push(
+        `The dataset description is shortened to at most ${DATASET_DESCRIPTION_CAP_TEXT} of its ${description.length.toLocaleString('en-US')} characters. Call cdc_get_dataset_schema with datasetId="${params.datasetId}" and full_description: true for the whole text.`,
+      );
+    }
+
     return {
       ...metadata,
+      ...(descriptionTruncated && description
+        ? { description: cut, descriptionTruncated, descriptionLength: description.length }
+        : {}),
       columns,
       columnCount,
       truncated,
-      ...(truncated
-        ? {
-            notice: `Showing the first ${columns.length} of ${columnCount} columns. Call cdc_get_dataset_schema with datasetId="${params.datasetId}" and column_offset=${columns.length} for the rest; every column is reachable that way.`,
-          }
-        : {}),
+      ...(notices.length > 0 ? { notice: notices.join(' ') } : {}),
     };
   },
 });

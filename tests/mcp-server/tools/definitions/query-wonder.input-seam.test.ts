@@ -11,6 +11,11 @@ import { readFileSync } from 'node:fs';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
+import {
+  WONDER_AGE_GROUPS,
+  WONDER_DATABASES,
+  type WonderAgeGroup,
+} from '@/services/wonder/types.js';
 import { initWonderService } from '@/services/wonder/wonder-service.js';
 
 function fixture(name: string): string {
@@ -190,6 +195,61 @@ describe('cdc_query_wonder input handling over the real service', () => {
       expect(structured.effectiveQuery).toContain('ages 25-34, ');
       expect(structured.effectiveQuery).not.toContain('25-34,25-34');
       expect(textOf(result)).not.toContain('age_adjusted_rate');
+    });
+
+    describe('"NS" beside only some of the known age groups', () => {
+      /** CDC refuses Not Stated combined with a partial list of known groups. */
+      const KNOWN = WONDER_AGE_GROUPS.filter((group) => group !== 'NS');
+
+      it.each<[string, WonderAgeGroup[]]>([
+        ['one known group', ['25-34', 'NS']],
+        ['ten known groups', [...KNOWN.filter((group) => group !== '85+'), 'NS']],
+        ['a repeated NS beside one group', ['NS', '25-34', 'NS']],
+      ])(
+        'fails %s as invalid_query naming the three fixes, without a request',
+        async (_label, ageGroups) => {
+          respondWith(FOUR_MEASURE_TABLE);
+          const result = await runToolContract(queryWonder, {
+            group_by: ['year'],
+            age_groups: ageGroups,
+            year_range: { from: 2020, to: 2020 },
+          });
+          const { message } = expectInvalidQueryBeforeRequest(result);
+          expect(message).toBe(
+            'age_groups combines "NS" (age not stated) with only some of the known age groups, which CDC WONDER refuses. List "NS" on its own to count deaths with no recorded age, drop "NS" to keep the listed groups, or omit age_groups for all ages, deaths with no recorded age included.',
+          );
+        },
+      );
+
+      it.each(WONDER_DATABASES)('applies on %s', async (database) => {
+        respondWith(FOUR_MEASURE_TABLE);
+        const result = await runToolContract(queryWonder, {
+          database,
+          group_by: ['year'],
+          age_groups: ['25-34', 'NS'],
+        });
+        const { message } = expectInvalidQueryBeforeRequest(result);
+        expect(message).toMatch(/^age_groups combines "NS"/);
+      });
+
+      it.each<[string, WonderAgeGroup[] | undefined, string[] | undefined]>([
+        ['NS alone', ['NS'], ['NS']],
+        ['a repeated NS', ['NS', 'NS'], ['NS']],
+        ['all twelve values', [...KNOWN, 'NS'], [...KNOWN, 'NS']],
+        ['known groups only', ['25-34', '35-44'], ['25-34', '35-44']],
+        ['an empty list', [], undefined],
+        ['an omitted age_groups', undefined, undefined],
+      ])('still queries %s, in one request', async (_label, ageGroups, sent) => {
+        respondWith(FOUR_MEASURE_TABLE);
+        const result = await runToolContract(queryWonder, {
+          group_by: ['year'],
+          ...(ageGroups ? { age_groups: ageGroups } : {}),
+          year_range: { from: 2020, to: 2020 },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(values(sentRequests()[0]!, 'V_D76.V5')).toEqual(sent ?? ['*All*']);
+      });
     });
 
     it('keeps the age-adjusted rate for two distinct age groups', async () => {
@@ -379,7 +439,42 @@ describe('cdc_query_wonder input handling over the real service', () => {
     });
 
     it.each([
-      ['an empty list', []],
+      ['cause_icd10', 'underlying_1999_2020'],
+      ['cause_icd10', 'multiple_1999_2020'],
+      ['mcd_icd10', 'multiple_1999_2020'],
+      ['mcd_icd10', 'underlying_1999_2020'],
+    ] as const)(
+      'sends an empty %s list on %s exactly as it sends an omitted one',
+      async (field, database) => {
+        /**
+         * An empty union filters nothing, as `age_groups: []` already read. On an
+         * underlying-cause database an empty mcd_icd10 is no multiple-cause filter, so it
+         * passes the check that rejects a real one there.
+         */
+        respondWith(FOUR_MEASURE_TABLE);
+        const fromEmpty = await runToolContract(queryWonder, {
+          database,
+          group_by: ['year'],
+          [field]: [],
+          year_range: { from: 2019, to: 2019 },
+        });
+        initWonderService();
+        const omitted = await runToolContract(queryWonder, {
+          database,
+          group_by: ['year'],
+          year_range: { from: 2019, to: 2019 },
+        });
+
+        expect(fromEmpty.isError).toBeFalsy();
+        const [emptyXml, omittedXml] = sentRequests();
+        expect(sentRequests()).toHaveLength(2);
+        expect(emptyXml).toBe(omittedXml);
+        expect(structuredOf(fromEmpty).effectiveQuery).toBe(structuredOf(omitted).effectiveQuery);
+        expect(textOf(fromEmpty)).toBe(textOf(omitted));
+      },
+    );
+
+    it.each([
       ['a list one past the maximum', Array.from({ length: 51 }, (_, i) => `X${i + 10}`)],
       ['a list holding an empty string', ['X40', '']],
       ['a list holding a malformed code', ['X40', 'overdose']],

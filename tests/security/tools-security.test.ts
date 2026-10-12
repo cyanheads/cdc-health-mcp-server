@@ -148,9 +148,24 @@ describe('Security — input validation', () => {
   });
 
   describe('listCatalogVocabulary — input bounds', () => {
-    it('rejects tag_limit of 0 and above 500', () => {
+    it('rejects tag_limit of 0', () => {
       expect(() => listCatalogVocabulary.input.parse({ tag_limit: 0 })).toThrow();
-      expect(() => listCatalogVocabulary.input.parse({ tag_limit: 501 })).toThrow();
+    });
+
+    it('bounds what a huge tag_limit returns by the vocabulary fetched, with no extra request', async () => {
+      /** tag_limit slices a vocabulary already fetched whole, so its size reaches no URL. */
+      const tags = Array.from({ length: 3 }, (_, i) => ({ value: `t${i}`, datasetCount: 3 - i }));
+      mockListCategories.mockResolvedValue([]);
+      mockListTags.mockResolvedValue(tags);
+      const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
+      const result = await listCatalogVocabulary.handler(
+        listCatalogVocabulary.input.parse({ tag_limit: Number.MAX_SAFE_INTEGER }),
+        ctx,
+      );
+
+      expect(result.tags).toEqual(tags);
+      expect(mockListTags).toHaveBeenCalledTimes(1);
+      expect(mockListTags).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
     });
 
     it('rejects a negative and a pathological tag_offset', () => {
@@ -184,8 +199,8 @@ describe('Security — input validation', () => {
       expect(() => discoverDatasets.input.parse({ limit: 0 })).toThrow();
     });
 
-    it('rejects limit above 100', () => {
-      expect(() => discoverDatasets.input.parse({ limit: 101 })).toThrow();
+    it('rejects limit above 10,000', () => {
+      expect(() => discoverDatasets.input.parse({ limit: 10_001 })).toThrow();
     });
 
     it('rejects negative offset', () => {
@@ -216,8 +231,10 @@ describe('Security — input validation', () => {
       expect(() => queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 0 })).toThrow();
     });
 
-    it('rejects limit above 5000', () => {
-      expect(() => queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 5001 })).toThrow();
+    it('rejects limit above 1,000,000, past which no paging reaches', () => {
+      expect(() =>
+        queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 1_000_001 }),
+      ).toThrow();
     });
 
     it('accepts limit of 1 (minimum boundary)', () => {
@@ -225,7 +242,7 @@ describe('Security — input validation', () => {
       expect(input.limit).toBe(1);
     });
 
-    it('accepts limit of 5000 (maximum boundary)', () => {
+    it('accepts limit of 5000 (the per-call cap)', () => {
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 5000 });
       expect(input.limit).toBe(5000);
     });
@@ -239,12 +256,6 @@ describe('Security — input validation', () => {
     it('rejects column_limit of 0', () => {
       expect(() =>
         getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 0 }),
-      ).toThrow();
-    });
-
-    it('rejects column_limit above 500', () => {
-      expect(() =>
-        getDatasetSchema.input.parse({ datasetId: 'ab12-cd34', column_limit: 501 }),
       ).toThrow();
     });
 
@@ -721,22 +732,31 @@ describe('Security — input validation', () => {
       },
     );
 
-    it.each([0, -1, 5001, 2.5, '10', Number.NaN])('rejects limit %j', (limit) => {
-      /**
-       * `limit` slices a table already held in memory, so an out-of-range value costs no
-       * upstream call — but it is still the one place a caller sizes the response, and a
-       * non-integer or negative value would reach Array.prototype.slice unchecked.
-       */
-      expect(() => queryWonder.input.parse({ limit })).toThrow();
-    });
+    it.each([0, -1, 2.5, '10', Number.NaN, Number.POSITIVE_INFINITY])(
+      'rejects limit %j',
+      (limit) => {
+        /**
+         * `limit` slices a table already held in memory, so an out-of-range value costs no
+         * upstream call — but a non-integer or non-positive value would reach
+         * Array.prototype.slice unchecked.
+         */
+        expect(() => queryWonder.input.parse({ limit })).toThrow();
+      },
+    );
 
     it.each([-1, 10_001, 1.5, '0'])('rejects offset %j', (offset) => {
       expect(() => queryWonder.input.parse({ offset })).toThrow();
     });
 
-    it('accepts the ends of the limit and offset ranges', () => {
-      expect(queryWonder.input.parse({ limit: 1 }).limit).toBe(1);
-      expect(queryWonder.input.parse({ limit: 5000 }).limit).toBe(5000);
+    it.each([1, 5000, 5001, 1_000_000, Number.MAX_SAFE_INTEGER])(
+      'accepts limit %j, which only slices a table already fetched whole',
+      (limit) => {
+        /** The response budget, not limit, bounds what one page can carry. */
+        expect(queryWonder.input.parse({ limit }).limit).toBe(limit);
+      },
+    );
+
+    it('accepts the ends of the offset range', () => {
       expect(queryWonder.input.parse({ offset: 0 }).offset).toBe(0);
       expect(queryWonder.input.parse({ offset: 10_000 }).offset).toBe(10_000);
     });
@@ -805,8 +825,11 @@ describe('Security — input validation', () => {
       });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       const dataRow = text.split('\n').find((l) => l.includes('NYC'));
-      // The whole object renders in one cell, and the row keeps its two columns.
-      expect(dataRow).toBe('| {"type":"Point","coordinates":[-73.93,40.73]} | NYC |');
+      /**
+       * The whole object renders in one cell, and the row keeps its two columns. Its brackets
+       * are escaped like any other cell's, so the JSON reads back verbatim on render.
+       */
+      expect(dataRow).toBe('| {"type":"Point","coordinates":\\[-73.93,40.73\\]} | NYC |');
     });
 
     it('queryDataset format renders null and undefined cells as blanks, not literals', () => {

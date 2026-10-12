@@ -8,7 +8,7 @@ import type { VocabularyTerm } from '@/services/socrata/types.js';
 
 /**
  * Shortest filter worth matching on, counted in alphanumeric characters. Below it a
- * containment test stops discriminating: "a" is a substring of most of the 1,583 tags, so
+ * containment test stops discriminating: "a" is a substring of most of the ~1,600 tags, so
  * every value would qualify and the ranking would carry no signal.
  */
 export const MIN_FILTER_LENGTH = 3;

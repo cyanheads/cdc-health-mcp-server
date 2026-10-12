@@ -71,15 +71,66 @@ describe('cdc://datasets/{datasetId}', () => {
     expect(result.rowCountSource).toBe('cached');
   });
 
-  it('returns the dataset description whole, however long', async () => {
-    /** Only discovery truncates; the detail surfaces carry the full decoded text. */
+  it('returns a description under the cap whole, with no cut fields or notice', async () => {
     const description = `${'Long prose. '.repeat(60)}end.`;
     mockGetMetadata.mockResolvedValue({ ...sampleMetadata, description });
     const ctx = createMockContext({ errors: datasetDetailResource.errors });
     const params = datasetDetailResource.params!.parse({ datasetId: 'bi63-dtpu' });
-    const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
+    const result = (await datasetDetailResource.handler(params, ctx)) as Record<string, unknown>;
 
     expect(result.description).toBe(description);
+    expect(result).not.toHaveProperty('descriptionTruncated');
+    expect(result).not.toHaveProperty('descriptionLength');
+    expect(result).not.toHaveProperty('notice');
+  });
+
+  describe('description cap', () => {
+    const LONG = `${'Weekly hospital respiratory reporting. '.repeat(830)}End of notes.`;
+    const descriptionNotice =
+      'The dataset description is shortened to at most 4,000 of its ' +
+      `${LONG.length.toLocaleString('en-US')} characters. Call cdc_get_dataset_schema with ` +
+      'datasetId="ua7e-t2fy" and full_description: true for the whole text.';
+
+    it('caps a long description with the same fields cdc_get_dataset_schema sets', async () => {
+      mockGetMetadata.mockResolvedValue({ ...sampleMetadata, description: LONG });
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
+      const params = datasetDetailResource.params!.parse({ datasetId: 'ua7e-t2fy' });
+      const result = (await datasetDetailResource.handler(params, ctx)) as Record<string, unknown>;
+
+      const description = result.description as string;
+      expect(description.length).toBeLessThanOrEqual(4001);
+      expect(description.endsWith('…')).toBe(true);
+      expect(result.descriptionTruncated).toBe(true);
+      expect(result.descriptionLength).toBe(LONG.length);
+      expect(result.columns).toEqual(sampleMetadata.columns);
+      expect(result.notice).toBe(descriptionNotice);
+    });
+
+    it('composes the description notice with the column-window notice into one', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'Weekly Hospital Respiratory Data',
+        description: LONG,
+        columns: Array.from({ length: 322 }, (_, i) => ({
+          fieldName: `col_${i}`,
+          dataType: 'number',
+        })),
+      });
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
+      const params = datasetDetailResource.params!.parse({ datasetId: 'ua7e-t2fy' });
+      const result = (await datasetDetailResource.handler(params, ctx)) as Record<string, unknown>;
+
+      expect(result.truncated).toBe(true);
+      expect(result.descriptionTruncated).toBe(true);
+      expect(result.notice).toBe(
+        'Showing the first 100 of 322 columns. Call cdc_get_dataset_schema with datasetId="ua7e-t2fy" and column_offset=100 for the rest; every column is reachable that way. ' +
+          descriptionNotice,
+      );
+    });
+
+    it('names the cap and the tool that returns the whole text in its description', () => {
+      expect(datasetDetailResource.description).toContain('4,000');
+      expect(datasetDetailResource.description).toContain('full_description: true');
+    });
   });
 
   describe('column window', () => {

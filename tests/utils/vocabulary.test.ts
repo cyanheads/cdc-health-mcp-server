@@ -84,7 +84,7 @@ describe('matchVocabulary', () => {
 
   it('ignores a filter too short to discriminate', () => {
     /**
-     * "a" is inside most of the 1,583 live tags, so containment on it returns the whole
+     * "a" is inside most of the ~1,600 live tags, so containment on it returns the whole
      * vocabulary dressed as a match — a result that reads as signal and carries none.
      */
     expect(matchVocabulary(CATEGORIES, 'a', 3)).toEqual([]);

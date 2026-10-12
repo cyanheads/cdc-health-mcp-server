@@ -16,6 +16,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listCatalogVocabulary } from '@/mcp-server/tools/definitions/list-catalog-vocabulary.tool.js';
 import type { VocabularyTerm } from '@/services/socrata/types.js';
 import { contractError } from '../../../helpers/contract-error.js';
+import {
+  contentText,
+  readBack,
+  renderedCells,
+  renderMarkdown,
+  strayElements,
+} from '../../../helpers/markdown-render.js';
 
 const mockListCategories = vi.fn<() => Promise<VocabularyTerm[]>>();
 const mockListTags = vi.fn<() => Promise<VocabularyTerm[]>>();
@@ -142,13 +149,16 @@ describe('cdc_list_catalog_vocabulary', () => {
       expect(enrichment.nextOffset).toBe(2);
       // Ranked by count, so nothing left out is carried by more than the last one shown.
       expect(enrichment.truncationCeiling).toBe(176);
-      expect(enrichment.notice).toContain('Showing tags 1–2 of 6');
-      expect(enrichment.notice).toContain('tag_offset=2');
-      expect(enrichment.notice).toContain('raise tag_limit (max 500)');
+      expect(enrichment.notice).toBe(
+        'Showing tags 1–2 of 6, ranked by entry count. Call again with tag_offset=2 for the next page, raise tag_limit to pull more per call, or pass filter to narrow the vocabulary instead of paging it.',
+      );
     });
 
-    it('stops offering a bigger page once tag_limit is already at the ceiling', async () => {
-      /** Advice the caller cannot take reads as a dead end at the moment they need the next move. */
+    it('offers a larger tag_limit whenever tags remain, however large the page already is', async () => {
+      /**
+       * `tag_limit` only slices a vocabulary fetched whole, so no page size is out of reach
+       * and the advice holds at any size.
+       */
       mockListTags.mockResolvedValue(
         Array.from({ length: 600 }, (_, i) => ({ value: `tag-${i}`, datasetCount: 600 - i })),
       );
@@ -161,12 +171,35 @@ describe('cdc_list_catalog_vocabulary', () => {
       const notice = getEnrichment(ctx).notice as string;
       expect(notice).toContain('Showing tags 1–500 of 600');
       expect(notice).toContain('tag_offset=500');
-      expect(notice).not.toContain('raise tag_limit');
+      expect(notice).toContain('raise tag_limit to pull more per call');
+      expect(notice).not.toMatch(/max \d/);
+    });
+
+    it('returns the whole vocabulary with no truncation when tag_limit exceeds it', async () => {
+      /** The live vocabulary's size; any tag_limit at or above it is one call. */
+      const vocabulary = Array.from({ length: 1582 }, (_, i) => ({
+        value: `tag-${i}`,
+        datasetCount: 1582 - i,
+      }));
+      mockListTags.mockResolvedValue(vocabulary);
+      const result = await runToolContract(listCatalogVocabulary, { tag_limit: 2000 });
+
+      const wire = result.structuredContent as {
+        tags: VocabularyTerm[];
+        truncated?: boolean;
+        nextOffset?: number;
+        notice?: string;
+      };
+      expect(wire.tags).toHaveLength(1582);
+      expect(wire.truncated).toBeUndefined();
+      expect(wire.nextOffset).toBeUndefined();
+      expect(wire.notice).toBeUndefined();
+      expect(contentText(result)).toContain('### Tags (1582)');
     });
 
     it('leaves the categories whole however tight the tag window is', async () => {
       /**
-       * 55 categories cost roughly 3 KB while 1,583 tags cost roughly 66 KB, so the page
+       * 56 categories cost roughly 3 KB while 1,582 tags cost roughly 66 KB, so the page
        * bounds one vocabulary and not the other. A tag_limit that also trimmed categories
        * would hide the smaller vocabulary behind the larger one's cost.
        */
@@ -204,6 +237,71 @@ describe('cdc_list_catalog_vocabulary', () => {
       expect(enrichment.nextOffset).toBeUndefined();
       // No page was shown, so there is no smallest-shown value to bound the omitted ones by.
       expect(enrichment.truncationCeiling).toBeUndefined();
+    });
+
+    describe('truncationCeiling scope', () => {
+      /** The head of the live `data.cdc.gov` ranking: two tags tie at the top. */
+      const HEAD: VocabularyTerm[] = [
+        { value: 'nndss', datasetCount: 294 },
+        { value: 'wonder', datasetCount: 294 },
+        { value: 'covid-19', datasetCount: 293 },
+        { value: 'surveillance', datasetCount: 120 },
+        { value: 'policy', datasetCount: 39 },
+        { value: 'sdoh-employment', datasetCount: 39 },
+        { value: 'zoster', datasetCount: 1 },
+      ];
+
+      it('says in its schema description that the bound covers only the tags after the page', () => {
+        const description = listCatalogVocabulary.enrichment?.truncationCeiling?.description ?? '';
+        expect(description).toBe(
+          'Upper bound on the entry count of every tag after this page — the tags from nextOffset on. Tags are ranked by entry count, so none of those is carried by more entries than the last tag shown. It does not bound the tags before tag_offset: those rank at or above the first tag shown.',
+        );
+      });
+
+      it('bounds the tags after a later page by its last tag, under a label carrying that scope', async () => {
+        /** `nndss` and `wonder` (294) sit before the window, above the ceiling it reports. */
+        mockListTags.mockResolvedValue(HEAD);
+        const result = await runToolContract(listCatalogVocabulary, {
+          tag_limit: 1,
+          tag_offset: 2,
+        });
+
+        expect(result.structuredContent).toMatchObject({
+          tags: [{ value: 'covid-19', datasetCount: 293 }],
+          truncationCeiling: 293,
+          nextOffset: 3,
+        });
+        const rendered = contentText(result);
+        expect(rendered).toContain('**Max Entries per Tag from nextOffset On:** 293');
+        expect(rendered).not.toContain('truncationCeiling');
+      });
+
+      it('keeps an inclusive bound across a tie at the page boundary', async () => {
+        /** `policy` ends the page and `sdoh-employment`, the next tag, carries the same 39. */
+        mockListTags.mockResolvedValue(HEAD);
+        const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
+        const result = await listCatalogVocabulary.handler(
+          listCatalogVocabulary.input.parse({ tag_limit: 5 }),
+          ctx,
+        );
+
+        expect(result.tags.at(-1)).toEqual({ value: 'policy', datasetCount: 39 });
+        expect(getEnrichment(ctx).truncationCeiling).toBe(39);
+      });
+
+      it('emits no ceiling on a later page that reaches the last matching tag', async () => {
+        mockListTags.mockResolvedValue(HEAD);
+        const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
+        await listCatalogVocabulary.handler(
+          listCatalogVocabulary.input.parse({ tag_limit: 3, tag_offset: 4 }),
+          ctx,
+        );
+
+        const enrichment = getEnrichment(ctx);
+        expect(enrichment.truncated).toBe(true);
+        expect(enrichment.truncationCeiling).toBeUndefined();
+        expect(enrichment.nextOffset).toBeUndefined();
+      });
     });
   });
 
@@ -261,7 +359,7 @@ describe('cdc_list_catalog_vocabulary', () => {
 
     describe('too short to discriminate', () => {
       /**
-       * A one- or two-character filter is a substring of most of the 1,583 live tags, so a
+       * A one- or two-character filter is a substring of most of the 1,582 live tags, so a
        * containment test on it carries no signal and the matcher answers nothing. Reporting
        * that as "no match" sends the caller after a spelling problem that does not exist —
        * the filter is ignored instead and the unfiltered vocabulary comes back.
@@ -369,7 +467,6 @@ describe('cdc_list_catalog_vocabulary', () => {
 
     it.each([
       { tag_limit: 0 },
-      { tag_limit: 501 },
       { tag_limit: 2.5 },
       { tag_limit: '50' },
       { tag_offset: -1 },
@@ -383,8 +480,20 @@ describe('cdc_list_catalog_vocabulary', () => {
 
     it('accepts the ends of the tag window ranges', () => {
       expect(listCatalogVocabulary.input.parse({ tag_limit: 1 }).tag_limit).toBe(1);
-      expect(listCatalogVocabulary.input.parse({ tag_limit: 500 }).tag_limit).toBe(500);
       expect(listCatalogVocabulary.input.parse({ tag_offset: 10_000 }).tag_offset).toBe(10_000);
+    });
+
+    it.each([500, 501, 2000])(
+      'accepts tag_limit %j, which only slices a vocabulary fetched whole',
+      (tag_limit) => {
+        expect(listCatalogVocabulary.input.parse({ tag_limit }).tag_limit).toBe(tag_limit);
+      },
+    );
+
+    it('quotes no tag_limit maximum in the input description', () => {
+      const description = listCatalogVocabulary.input.shape.tag_limit.description ?? '';
+      expect(description).not.toMatch(/\bmax\b/i);
+      expect(description).toContain('default 50');
     });
   });
 
@@ -479,13 +588,58 @@ describe('cdc_list_catalog_vocabulary', () => {
       expect(listCatalogVocabulary.description).toContain('categories come back whole');
     });
 
+    it('names no exact category count, which the catalog can outgrow', () => {
+      /**
+       * The live category count moves over time; vocabularySize reports it per call instead.
+       * The tag vocabulary is named only as a rounded figure.
+       */
+      const surfaces = [
+        listCatalogVocabulary.description,
+        listCatalogVocabulary.input.shape.tag_limit.description ?? '',
+      ];
+      for (const surface of surfaces) expect(surface).not.toMatch(/\b5[56]\b/);
+    });
+
     it('renders the structured vocabularySize enrichment as markdown, not a JSON blob', () => {
       const rendered = listCatalogVocabulary.enrichmentTrailer?.vocabularySize?.render?.({
-        categories: 55,
-        tags: 1583,
+        categories: 56,
+        tags: 1582,
       });
 
-      expect(rendered).toBe('**Vocabulary:** 55 categories · 1583 tags');
+      expect(rendered).toBe('**Vocabulary:** 56 categories · 1582 tags');
+    });
+  });
+
+  describe('content[] Markdown rendering', () => {
+    it('renders a filter-quoting notice escaped, as a blockquote', async () => {
+      const filter = 'qqzzxx *qqv* <i>qqw</i>';
+      const result = await runToolContract(listCatalogVocabulary, { filter });
+
+      expect((result.structuredContent as { notice: string }).notice).toContain(
+        `No category or tag matches "${filter}".`,
+      );
+      const html = renderMarkdown(contentText(result));
+      const quote = html.match(/<blockquote>([\s\S]*?)<\/blockquote>/)?.[1] ?? '';
+      expect(strayElements(quote, ['p'])).toEqual([]);
+      expect(readBack(quote)).toContain(`No category or tag matches "${filter}".`);
+    });
+
+    it('renders the paging notice that enrich.truncated writes as a blockquote too', async () => {
+      const result = await runToolContract(listCatalogVocabulary, { tag_limit: 2 });
+
+      const html = renderMarkdown(contentText(result));
+      const quote = html.match(/<blockquote>([\s\S]*?)<\/blockquote>/)?.[1] ?? '';
+      expect(readBack(quote)).toContain('Showing tags 1–2 of 6');
+    });
+
+    it('renders vocabulary values as the literal text in their cells', async () => {
+      const hostile = { value: '<b>Bold</b> *x* _y_ [z](https://e.com)', datasetCount: 3 };
+      mockListCategories.mockResolvedValue([hostile]);
+      const result = await runToolContract(listCatalogVocabulary, {});
+
+      const cells = renderedCells(renderMarkdown(contentText(result)));
+      expect(cells.map(readBack)).toContain(hostile.value);
+      expect(strayElements(cells[0] ?? '', [])).toEqual([]);
     });
   });
 });

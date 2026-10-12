@@ -21,7 +21,7 @@ import {
   wonderDatabaseSpec,
 } from '@/services/wonder/types.js';
 import { getWonderService } from '@/services/wonder/wonder-service.js';
-import { escapeTableCell } from '@/utils/markdown.js';
+import { escapeTableCell, markdownCodeSpan } from '@/utils/markdown.js';
 import { jsonLength, MAX_RESPONSE_CHARS } from '@/utils/response-budget.js';
 
 /**
@@ -42,9 +42,11 @@ const MAX_ICD10_CODES = 50;
 
 /**
  * One cause filter: `''` (every cause), the withheld-cause marker, an ICD-10 code or tree-node
- * range, or a list of the last two matched as a union. The single-value branches sit flat in
- * the top-level union — a nested union emits an `anyOf` branch with no `type`, which some
- * clients reject.
+ * range, or a list of the last two matched as a union. An empty list filters nothing, so it
+ * reads as omitted, as `age_groups: []` does; a `''` inside a list stays rejected, since
+ * "every cause" beside a code has no single reading. The single-value branches sit flat in the
+ * top-level union — a nested union emits an `anyOf` branch with no `type`, which some clients
+ * reject.
  */
 const icd10Filter = (codeDescription: string) => {
   const code = z.string().regex(ICD10_CODE_OR_RANGE).describe(codeDescription);
@@ -59,28 +61,23 @@ const icd10Filter = (codeDescription: string) => {
           .union([marker, code])
           .describe('One list entry: an ICD-10 code or range, or the withheld-cause marker.'),
       )
-      .min(1)
       .max(MAX_ICD10_CODES)
       .describe(
-        `A list of 1–${MAX_ICD10_CODES} entries, each in the single-value form, matched as a union: a death counts once when it matches any of them, so a code set such as X40–X44 plus X60–X64 is one series with one set of rates. Repeated entries are ignored.`,
+        `A list of up to ${MAX_ICD10_CODES} entries, each in the single-value form, matched as a union: a death counts once when it matches any of them, so a code set such as X40–X44 plus X60–X64 is one series with one set of rates. Repeated entries are ignored. An empty list reads as omitted.`,
       ),
   ]);
 };
 
-/** Normalize a cause filter to a deduplicated list; empty when the filter is absent or `''`. */
+/** Normalize a cause filter to a deduplicated list; empty when the filter is absent, `''`, or `[]`. */
 function causeCodes(value: string | string[] | undefined): string[] {
   if (value === undefined || value === '') return [];
   return [...new Set(Array.isArray(value) ? value : [value])];
 }
 
 /**
- * Ceiling on `limit`, matching the shape `cdc_query_dataset` uses. It never binds ahead of
- * the table itself: the widest grouping WONDER can be asked for — 22 years × 12 age groups ×
- * 2 sexes × 4 race groups on D76 — tops out near 2,100 combinations before CDC hides the
- * zero-death and suppressed-death rows.
+ * Ceiling on `offset`, comfortably past the largest table any grouping can produce. `limit`
+ * has none: it slices a table already fetched whole, and the response budget bounds the page.
  */
-const MAX_LIMIT = 5000;
-/** Ceiling on `offset`, comfortably past the largest table any grouping can produce. */
 const MAX_OFFSET = 10_000;
 /**
  * Characters held back from the `MAX_RESPONSE_CHARS` row budget for the parts of the response
@@ -92,6 +89,12 @@ const MAX_OFFSET = 10_000;
  * messages, the notices that quote them, the query echo — is measured per call in the handler.
  */
 const FRAMING_RESERVE = 4_000;
+
+/**
+ * A row count as the notices print it (`2,014`). Values a caller passes back — `offset=N`,
+ * `limit=N` — stay bare, in the form the input takes.
+ */
+const count = (n: number) => n.toLocaleString('en-US');
 
 type CellTokens = ReadonlyMap<string, string>;
 
@@ -180,9 +183,12 @@ function gloss(token: string): string {
   return meaning ? `: ${meaning}` : '';
 }
 
-/** Render one cell note as ``row 3, `crude_rate` — `Unreliable`: <meaning>``. */
+/**
+ * Render one cell note as ``row 3, `crude_rate` — `Unreliable`: <meaning>``. The token is
+ * CDC's own text, so its span is sized to hold any backtick in it.
+ */
 function describeCellNote(note: WonderCellNote): string {
-  return `row ${note.row}, \`${note.column}\` — \`${note.token}\`${gloss(note.token)}`;
+  return `row ${note.row}, \`${note.column}\` — ${markdownCodeSpan(note.token)}${gloss(note.token)}`;
 }
 
 /**
@@ -208,9 +214,9 @@ export const queryWonder = tool('cdc_query_wonder', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The request contradicts itself — a year_range whose from is later than its to, or a group_by dimension listed twice — or does not fit the selected database — a year_range outside the years it holds, mcd_icd10 against a database that records only the underlying cause, or the withheld-cause marker against one that keeps no withheld backlog — or WONDER itself rejected it, e.g. an ICD-10 code or range its tree does not hold, or a filter/grouping combination it does not allow.',
+      when: 'The request contradicts itself — a year_range whose from is later than its to, or a group_by dimension listed twice — or asks for a combination CDC refuses — age_groups holding "NS" beside only some of the known age groups — or does not fit the selected database — a year_range outside the years it holds, mcd_icd10 against a database that records only the underlying cause, or the withheld-cause marker against one that keeps no withheld backlog — or WONDER itself rejected it, e.g. an ICD-10 code or range its tree does not hold, or a filter/grouping combination it does not allow.',
       recovery:
-        'Read the returned message: it names the input at fault, the span the selected database holds, the databases that accept mcd_icd10 or the withheld-cause marker, or the part WONDER rejected. Fix year_range or group_by, switch database, drop the filter, or correct the ICD-10 code, then retry.',
+        'Read the returned message: it names the input at fault, the span the selected database holds, the databases that accept mcd_icd10 or the withheld-cause marker, or the part WONDER rejected. Fix year_range, group_by, or age_groups, switch database, drop the filter, or correct the ICD-10 code, then retry.',
     },
     {
       reason: 'rate_limited',
@@ -263,7 +269,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .array(z.enum(WONDER_AGE_GROUPS))
       .optional()
       .describe(
-        'Restrict to deaths in any of the listed age groups — e.g. ["25-34","35-44"] covers both; a repeated group counts once. "1" is the under-1-year group. "NS" is the group CDC puts a death in when the age was not recorded; it is not covered by any of the ten-year groups, so a filter listing all eleven of those still leaves those deaths out and returns fewer deaths than the same query unfiltered. List "NS" alongside them to match an unfiltered total, or on its own to count them. Omit for all ages, which includes them.',
+        'Restrict to deaths in any of the listed age groups — e.g. ["25-34","35-44"] covers both; a repeated group counts once. "1" is the under-1-year group. "NS" is the group CDC puts a death in when the age was not recorded; it is not covered by any of the ten-year groups, so a filter listing all eleven of those still leaves those deaths out and returns fewer deaths than the same query unfiltered. CDC refuses "NS" beside only some of the other groups: list it on its own to count those deaths, or list all twelve values — the same as omitting age_groups — to include them. Omit for all ages, which includes them.',
       ),
     year_range: z
       .object({
@@ -292,10 +298,9 @@ export const queryWonder = tool('cdc_query_wonder', {
       .number()
       .int()
       .min(1)
-      .max(MAX_LIMIT)
       .optional()
       .describe(
-        `Rows to return from the table CDC sent (1–${MAX_LIMIT}). Omit to take as many as fit. Either way fewer come back when the page would carry the response past its ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character budget, counted over the whole result — the rows, their cell notes, and the caveats and messages, as JSON and as the rendered table together; the response says so and gives a nextOffset to resume from. WONDER's request carries no limit of its own, so this pages a table already fetched in full rather than narrowing the query: the deaths, rates, caveats and hidden-row notices are the same whichever page is read.`,
+        `Rows to return from the table CDC sent — any positive integer. Omit to take as many as fit. Either way fewer come back when the page would carry the response past its ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character budget, counted over the whole result — the rows, their cell notes, and the caveats and messages, as JSON and as the rendered table together; the response says so and gives a nextOffset to resume from. WONDER's request carries no limit of its own, so this pages a table already fetched in full rather than narrowing the query: the deaths, rates, caveats and hidden-row notices are the same whichever page is read.`,
       ),
     offset: z
       .number()
@@ -446,6 +451,16 @@ export const queryWonder = tool('cdc_query_wonder', {
         `${spec.id} (${spec.title}) holds ${spec.firstYear}–${spec.lastYear}; year_range ${input.year_range.from}–${input.year_range.to} falls outside it. Narrow the range or select a database whose span covers those years.`,
       );
     }
+    if (
+      ageGroups?.includes('NS') &&
+      ageGroups.length > 1 &&
+      ageGroups.length < WONDER_AGE_GROUPS.length
+    ) {
+      throw ctx.fail(
+        'invalid_query',
+        'age_groups combines "NS" (age not stated) with only some of the known age groups, which CDC WONDER refuses. List "NS" on its own to count deaths with no recorded age, drop "NS" to keep the listed groups, or omit age_groups for all ages, deaths with no recorded age included.',
+      );
+    }
     if (mcdCauses.length > 0 && !spec.multipleCause) {
       throw ctx.fail(
         'invalid_query',
@@ -569,19 +584,19 @@ export const queryWonder = tool('cdc_query_wonder', {
       );
     } else if (input.offset >= total) {
       notices.push(
-        `offset ${input.offset} is past the end of this table, which holds ${total} row(s) — the query itself matched. Lower offset below ${total} to see rows.`,
+        `offset ${input.offset} is past the end of this table, which holds ${count(total)} row(s) — the query itself matched. Lower offset below ${count(total)} to see rows.`,
       );
     } else if (budgetCut) {
       notices.push(
-        `Showing rows ${input.offset + 1}–${consumed} of ${total}. The ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character response budget cut the page at ${rows.length} of the ${requested.length} rows ${input.limit === undefined ? 'left in the table from this offset' : `limit=${input.limit} would have returned`} — it counts the rows, their cell notes, and the caveats and messages that come back whole on every page, as JSON and as the rendered table together. Call again with offset=${consumed} for the next page; a higher limit does not return more per call. Every page is a slice of the one table CDC sent, so the figures, caveats and messages do not change between them.`,
+        `Showing rows ${count(input.offset + 1)}–${count(consumed)} of ${count(total)}. The ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character response budget cut the page at ${count(rows.length)} of the ${count(requested.length)} rows ${input.limit === undefined ? 'left in the table from this offset' : `limit=${input.limit} would have returned`} — it counts the rows, their cell notes, and the caveats and messages that come back whole on every page, as JSON and as the rendered table together. Call again with offset=${consumed} for the next page; a higher limit does not return more per call. Every page is a slice of the one table CDC sent, so the figures, caveats and messages do not change between them.`,
       );
     } else if (hasMore) {
       notices.push(
-        `Showing rows ${input.offset + 1}–${consumed} of ${total}. Call again with offset=${consumed} for the next page, or raise limit (max ${MAX_LIMIT}) to pull more per call — every page is a slice of the one table CDC sent, so the figures, caveats and messages do not change between them.`,
+        `Showing rows ${count(input.offset + 1)}–${count(consumed)} of ${count(total)}. Call again with offset=${consumed} for the next page, or raise limit to pull more per call — every page is a slice of the one table CDC sent, so the figures, caveats and messages do not change between them.`,
       );
     } else if (rows.length < total) {
       notices.push(
-        `Showing rows ${input.offset + 1}–${consumed} of ${total} — the end of the table. The earlier rows are at lower offset values.`,
+        `Showing rows ${count(input.offset + 1)}–${count(consumed)} of ${count(total)} — the end of the table. The earlier rows are at lower offset values.`,
       );
     }
     if (suppressedCount > 0) {
@@ -636,17 +651,18 @@ export const queryWonder = tool('cdc_query_wonder', {
   format: (result) => {
     // The database heads every render, rows or not — the same query against a different
     // database returns a different series, so a table that does not name its source is
-    // ambiguous the moment two results sit side by side.
+    // ambiguous the moment two results sit side by side. An empty page renders the heading
+    // alone: a page past the end and a query that matched nothing look the same from here, so
+    // the cause reaches content[] only through the handler's notice.
     const lines: string[] = [
       `**${result.database} — ${result.databaseTitle} — ${result.rowCount} rows**`,
-      '',
     ];
     const firstRow = result.rows[0];
 
     if (firstRow) {
       const columns = Object.keys(firstRow);
       const tokens = tokensByRow(result.cellNotes);
-      lines.push(...renderTableHeader(columns));
+      lines.push('', ...renderTableHeader(columns));
       result.rows.forEach((row, index) => {
         lines.push(renderTableRow(row, columns, tokens.get(index)));
       });
@@ -665,14 +681,6 @@ export const queryWonder = tool('cdc_query_wonder', {
           ...flagged.map((n) => `- ${describeCellNote(n)}`),
         );
       }
-    } else if (result.messages.some(isHiddenRowsMessage)) {
-      lines.push(
-        'No rows came back, and CDC reported withholding rows from this table — an empty result here is not evidence that nothing matched. Widen the query (more years, a broader cause or age range) so counts clear the suppression threshold.',
-      );
-    } else {
-      lines.push(
-        'No rows matched. Broaden the filters (cause_icd10, sex, age_groups, year_range) or confirm the ICD-10 code covers the years selected.',
-      );
     }
 
     // Rendered for every result, not just the hidden-row case: a withheld row leaves no trace

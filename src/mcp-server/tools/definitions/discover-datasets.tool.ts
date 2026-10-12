@@ -12,7 +12,13 @@ import {
   type SocrataDomain,
   type VocabularyTerm,
 } from '@/services/socrata/types.js';
-import { toPlainText } from '@/utils/text.js';
+import { escapeMarkdownText, markdownBlockquote, markdownCodeSpan } from '@/utils/markdown.js';
+import {
+  DATASET_DESCRIPTION_CAP_TEXT,
+  nonBlank,
+  toPlainText,
+  truncatePlainText,
+} from '@/utils/text.js';
 import { matchVocabulary } from '@/utils/vocabulary.js';
 
 /**
@@ -24,28 +30,26 @@ const DESCRIPTION_MAX = 300;
 /** Max column field names listed in the discovery sample. */
 const COLUMN_SAMPLE_MAX = 8;
 /**
- * Socrata's Discovery API rejects any request whose `offset + limit` exceeds this ceiling
- * with a 400 pointing at its deep-scrolling API. Both CDC portals hold far fewer entries
- * than this, so the ceiling is unreachable by legitimate paging and every request that
- * crosses it is a caller error worth catching before the round trip.
+ * Socrata's Discovery API rejects a request with a nonzero `offset` whose `offset + limit`
+ * exceeds this ceiling, with a 400 pointing at its deep-scrolling API; at `offset=0` it
+ * answers any `limit` (measured live: `limit=50000` returns 200). Both CDC portals hold far
+ * fewer entries than this, so the ceiling is unreachable by legitimate paging and every
+ * request that crosses it is a caller error worth catching before the round trip. It also
+ * bounds `limit`, which no page can usefully exceed.
  */
 const CATALOG_PAGE_WINDOW_MAX = 10_000;
+/**
+ * Most entries one call returns. `limit` sizes the Discovery API `limit`, so it is a workload
+ * cap: a full page of 100 already serializes to about 158,000 characters, and a larger
+ * `limit` is clamped to it and the clamp disclosed, rather than the call rejected.
+ */
+const MAX_LIMIT = 100;
 /**
  * Vocabulary values named per dimension when a filter matched nothing. Three keeps the
  * notice readable while covering the case where several values share a stem — "Vaccination"
  * is close to "Vaccinations", "Child Vaccinations", and "Flu Vaccinations".
  */
 const NEAR_MISS_MAX = 3;
-
-/**
- * Render a catalog description as plain text, then truncate to DESCRIPTION_MAX chars with an
- * ellipsis when cut. Conversion runs before the cut, never after: markup left in place spends
- * the budget on tags and puts the ellipsis before the first word about the dataset.
- */
-function truncateDescription(description: string): string {
-  const text = toPlainText(description);
-  return text.length > DESCRIPTION_MAX ? `${text.slice(0, DESCRIPTION_MAX)}…` : text;
-}
 
 /** `"Vaccinations" (89 datasets), "Child Vaccinations" (15 datasets)` */
 function renderTerms(terms: VocabularyTerm[]): string {
@@ -145,8 +149,8 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     {
       reason: 'page_out_of_range',
       code: JsonRpcErrorCode.ValidationError,
-      when: `offset plus limit exceeds ${CATALOG_PAGE_WINDOW_MAX}, which Socrata's catalog rejects outright.`,
-      recovery: `Lower offset, limit, or both so their sum is at most ${CATALOG_PAGE_WINDOW_MAX}; each portal holds well under two thousand entries, so a much smaller offset already reaches the end.`,
+      when: `offset is above 0 and offset plus limit, after the ${MAX_LIMIT}-entry cap, exceeds ${CATALOG_PAGE_WINDOW_MAX}, which Socrata's catalog rejects outright.`,
+      recovery: `Lower offset so it plus the capped limit is at most ${CATALOG_PAGE_WINDOW_MAX}; a limit above ${MAX_LIMIT} already counts as ${MAX_LIMIT}, so only a limit below that shrinks the sum. Each portal holds well under two thousand entries, so a much smaller offset already reaches the end.`,
     },
     {
       reason: 'invalid_query',
@@ -186,10 +190,10 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .number()
       .int()
       .min(1)
-      .max(100)
+      .max(CATALOG_PAGE_WINDOW_MAX)
       .default(10)
       .describe(
-        `Results to return (default 10, max 100). offset plus limit must not exceed ${CATALOG_PAGE_WINDOW_MAX}.`,
+        `Results to return (default 10). One call returns at most ${MAX_LIMIT}: a larger limit, up to ${CATALOG_PAGE_WINDOW_MAX.toLocaleString('en-US')}, is capped at ${MAX_LIMIT}, and the response says so and gives the offset to continue from while more datasets match. offset plus limit must not exceed ${CATALOG_PAGE_WINDOW_MAX} once limit is capped.`,
       ),
     offset: z
       .number()
@@ -198,7 +202,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .max(9999)
       .default(0)
       .describe(
-        `Pagination offset for browsing beyond first page (max 9999). offset plus limit must not exceed ${CATALOG_PAGE_WINDOW_MAX}; both CDC portals hold well under two thousand entries, so offsets near that ceiling page past the end of the catalog.`,
+        `Pagination offset for browsing beyond first page (max 9999). offset plus limit must not exceed ${CATALOG_PAGE_WINDOW_MAX} once limit is capped; both CDC portals hold well under two thousand entries, so offsets near that ceiling page past the end of the catalog.`,
       ),
     order: z
       .enum(['dataset_id', 'relevance'])
@@ -223,7 +227,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
               .string()
               .optional()
               .describe(
-                `Dataset description when provided by the catalog, as plain text — markup stripped and entity references decoded — then truncated to ${DESCRIPTION_MAX} characters, so the limit bounds visible text. Fetch the full text via cdc_get_dataset_schema.`,
+                `Dataset description when provided by the catalog, as plain text — markup stripped and entity references decoded — then truncated to ${DESCRIPTION_MAX} characters, so the limit bounds visible text. Fetch the full text via cdc_get_dataset_schema with full_description: true; without it, that tool caps the description at ${DATASET_DESCRIPTION_CAP_TEXT} characters.`,
               ),
             assetType: z
               .string()
@@ -274,28 +278,51 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     appliedFilters: {
       render: (f) => {
         const parts: string[] = [];
-        if (f.query) parts.push(`- **Query:** "${f.query}"`);
-        if (f.category) parts.push(`- **Category:** "${f.category}"`);
-        if (f.tags?.length) parts.push(`- **Tags (any of):** ${f.tags.join(', ')}`);
+        if (f.query) parts.push(`- **Query:** "${escapeMarkdownText(f.query)}"`);
+        if (f.category) parts.push(`- **Category:** "${escapeMarkdownText(f.category)}"`);
+        if (f.tags?.length) {
+          parts.push(`- **Tags (any of):** ${f.tags.map((t) => escapeMarkdownText(t)).join(', ')}`);
+        }
         return parts.length > 0
           ? `**Applied Filters:**\n${parts.join('\n')}`
           : '**Applied Filters:** none';
       },
     },
+    notice: { render: markdownBlockquote },
   },
 
   async handler(input, ctx) {
-    if (input.offset + input.limit > CATALOG_PAGE_WINDOW_MAX) {
+    /** `limit` past the cap is clamped here — before the window check — and disclosed below. */
+    const limit = Math.min(input.limit, MAX_LIMIT);
+    const clamped = input.limit > MAX_LIMIT;
+    if (input.offset + limit > CATALOG_PAGE_WINDOW_MAX) {
+      const limitText = clamped
+        ? `${limit}, the per-call cap applied to the ${input.limit} requested`
+        : `${limit}`;
       throw ctx.fail(
         'page_out_of_range',
-        `offset (${input.offset}) plus limit (${input.limit}) is ${input.offset + input.limit}, above the ${CATALOG_PAGE_WINDOW_MAX} ceiling Socrata's catalog allows for a single page.`,
+        `offset (${input.offset}) plus limit (${limitText}) is ${input.offset + limit}, above the ${CATALOG_PAGE_WINDOW_MAX} ceiling Socrata's catalog allows for a page that starts past the first entry.`,
       );
     }
+
+    /**
+     * A whitespace-only filter is unset, as a blank one already was, and a blank tag entry is
+     * dropped: none of them reaches the request, the `appliedFilters` echo, or a notice. A
+     * value with text in it is kept exactly as sent.
+     */
+    const tags = input.tags?.filter((tag) => nonBlank(tag));
+    const filters = {
+      ...input,
+      limit,
+      query: nonBlank(input.query),
+      category: nonBlank(input.category),
+      tags: tags?.length ? tags : undefined,
+    };
 
     const service = getSocrataService();
     let result: DiscoverResult;
     try {
-      result = await service.discover(input, ctx.signal);
+      result = await service.discover(filters, ctx.signal);
     } catch (err) {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
@@ -305,25 +332,25 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
     }
 
     const appliedFilters = {
-      ...(input.query ? { query: input.query } : {}),
-      ...(input.category ? { category: input.category } : {}),
-      ...(input.tags?.length ? { tags: input.tags } : {}),
+      ...(filters.query ? { query: filters.query } : {}),
+      ...(filters.category ? { category: filters.category } : {}),
+      ...(filters.tags ? { tags: filters.tags } : {}),
     };
 
     ctx.enrich({ totalCount: result.totalCount, appliedFilters });
 
+    /**
+     * Guidance accumulates here and is flushed through a single `ctx.enrich.notice` call:
+     * `notice` is last-wins, so a second writer would silently destroy the first message.
+     */
+    const segments: string[] = [];
+
     if (result.datasets.length === 0) {
       const filterParts: string[] = [];
-      if (input.query) filterParts.push(`query "${input.query}"`);
-      if (input.category) filterParts.push(`category "${input.category}"`);
-      if (input.tags?.length) filterParts.push(`any of tags [${input.tags.join(', ')}]`);
+      if (filters.query) filterParts.push(`query "${filters.query}"`);
+      if (filters.category) filterParts.push(`category "${filters.category}"`);
+      if (filters.tags) filterParts.push(`any of tags [${filters.tags.join(', ')}]`);
       const criteria = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
-
-      /**
-       * Guidance accumulates here and is flushed through a single `ctx.enrich.notice` call:
-       * `notice` is last-wins, so a second writer would silently destroy the first message.
-       */
-      const segments: string[] = [];
 
       /**
        * An offset at or past totalCount empties the page even though the search itself
@@ -341,11 +368,16 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
          * cost nothing extra. The lookup annotates an answer that is already correct, so its
          * failure is absorbed rather than allowed to fail a discovery that already succeeded.
          */
-        const wantsNearMiss = Boolean(input.category) || Boolean(input.tags?.length);
+        const wantsNearMiss = Boolean(filters.category || filters.tags);
         let nearMiss: string[] = [];
         if (wantsNearMiss) {
           try {
-            nearMiss = await nearMissSegments(input.domain, input.category, input.tags, ctx.signal);
+            nearMiss = await nearMissSegments(
+              input.domain,
+              filters.category,
+              filters.tags,
+              ctx.signal,
+            );
           } catch {
             ctx.log.debug('Near-miss vocabulary lookup failed', { domain: input.domain });
           }
@@ -365,7 +397,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
            * Tags union, so an empty page under a tag filter means no dataset carries any of
            * them — a misspelled tag is indistinguishable from a real one that matched nothing.
            */
-          if (input.tags?.length) {
+          if (filters.tags) {
             segments.push(
               'Tags match the catalog vocabulary rather than free text, so a tag no dataset carries contributes nothing.',
             );
@@ -377,22 +409,36 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
           }
         }
       }
-
-      ctx.enrich.notice(segments.join(' '));
     }
+
+    // A clamp that still returned every remaining match changed nothing the caller can see.
+    const next = input.offset + limit;
+    if (clamped && result.totalCount > next) {
+      segments.push(
+        `More datasets match beyond this page — limit=${input.limit} is above the ${MAX_LIMIT} datasets one call returns, so the page stopped at ${MAX_LIMIT}. Call again with offset=${next} to continue.`,
+      );
+    }
+
+    if (segments.length > 0) ctx.enrich.notice(segments.join(' '));
 
     ctx.log.info('Dataset discovery completed', {
       domain: input.domain,
-      query: input.query,
-      category: input.category,
+      query: filters.query,
+      category: filters.category,
       resultCount: result.datasets.length,
       totalCount: result.totalCount,
     });
 
     const datasets = result.datasets.map((d) => {
-      // A description that is markup all the way down renders to nothing — omit it rather
-      // than shipping an empty string as if the catalog had supplied one.
-      const description = d.description ? truncateDescription(d.description) : '';
+      /**
+       * Converted to plain text before the cut, never after: markup left in place spends the
+       * budget on tags and puts the ellipsis before the first word about the dataset. A
+       * description that is markup all the way down renders to nothing — omit it rather than
+       * shipping an empty string as if the catalog had supplied one.
+       */
+      const description = d.description
+        ? truncatePlainText(toPlainText(d.description), DESCRIPTION_MAX)
+        : '';
       return {
         id: d.id,
         name: d.name,
@@ -424,21 +470,26 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       ];
     }
 
+    // Every string below except the server's own labels comes from the catalog, so each one
+    // goes through the escaper for the slot it sits in.
+    const field = (value: string | undefined) => (value ? escapeMarkdownText(value) : '—');
     const lines: string[] = [`**${result.datasets.length} datasets returned**\n`];
     for (const d of result.datasets) {
-      lines.push(`### ${d.name}`);
+      lines.push(`### ${escapeMarkdownText(d.name, 'heading')}`);
       const views = typeof d.pageViews === 'number' ? d.pageViews.toLocaleString() : '—';
       lines.push(
-        `**ID:** \`${d.id}\` | **Type:** ${d.assetType ?? '—'} | **Category:** ${d.category ?? '—'} | **Updated:** ${d.updatedAt ?? '—'} | **Views:** ${views}`,
+        `**ID:** ${markdownCodeSpan(d.id)} | **Type:** ${field(d.assetType)} | **Category:** ${field(d.category)} | **Updated:** ${field(d.updatedAt)} | **Views:** ${views}`,
       );
-      if (d.description) lines.push(d.description);
-      if (d.tags && d.tags.length > 0) lines.push(`**Tags:** ${d.tags.join(', ')}`);
+      if (d.description) lines.push(escapeMarkdownText(d.description, 'line'));
+      if (d.tags && d.tags.length > 0) {
+        lines.push(`**Tags:** ${d.tags.map((t) => escapeMarkdownText(t)).join(', ')}`);
+      }
       if (d.columnCount === 0) {
         lines.push(
           '**Columns:** none — not a tabular asset; cdc_get_dataset_schema and cdc_query_dataset return no data for this ID.',
         );
       } else if (typeof d.columnCount === 'number') {
-        const sample = d.columnSample?.map((name) => `\`${name}\``).join(', ');
+        const sample = d.columnSample?.map(markdownCodeSpan).join(', ');
         const preview =
           sample && d.columnCount > (d.columnSample?.length ?? 0)
             ? ` (e.g. ${sample}, …)`

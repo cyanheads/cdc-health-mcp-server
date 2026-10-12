@@ -94,14 +94,44 @@ describe('cdc_discover_datasets — edge cases', () => {
       expect(mockDiscover).not.toHaveBeenCalled();
     });
 
+    it('checks the window against the capped limit, not the one sent', async () => {
+      /** 9900 + 250 crosses the window, but the 100 the call actually requests does not. */
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 1084 });
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      const input = discoverDatasets.input.parse({ offset: 9900, limit: 250 });
+
+      await expect(discoverDatasets.handler(input, ctx)).resolves.toBeDefined();
+      expect(mockDiscover).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 9900, limit: 100 }),
+        ctx.signal,
+      );
+    });
+
+    it('fails page_out_of_range when the capped limit still crosses the window', async () => {
+      const err = await contractError(discoverDatasets, { offset: 9950, limit: 250 });
+      expect(err.data).toMatchObject({ reason: 'page_out_of_range' });
+      expect(err.message).toBe(
+        "offset (9950) plus limit (100, the per-call cap applied to the 250 requested) is 10050, above the 10000 ceiling Socrata's catalog allows for a page that starts past the first entry.",
+      );
+      expect(mockDiscover).not.toHaveBeenCalled();
+    });
+
     it('names the sum constraint in the offset and limit descriptions', () => {
       /**
        * A cross-field check contributes nothing to the emitted JSON Schema, so the field
        * descriptions are the only place a client can read the constraint before calling.
        */
       const shape = discoverDatasets.input.shape;
-      expect(shape.offset.description).toContain('offset plus limit must not exceed 10000');
-      expect(shape.limit.description).toContain('offset plus limit must not exceed 10000');
+      const rule = 'offset plus limit must not exceed 10000 once limit is capped';
+      expect(shape.offset.description).toContain(rule);
+      expect(shape.limit.description).toContain(rule);
+    });
+
+    it('recovers from page_out_of_range by offset, since a limit past the cap already counts as 100', () => {
+      const declared = discoverDatasets.errors?.find((e) => e.reason === 'page_out_of_range');
+      expect(declared?.recovery).toBe(
+        'Lower offset so it plus the capped limit is at most 10000; a limit above 100 already counts as 100, so only a limit below that shrinks the sum. Each portal holds well under two thousand entries, so a much smaller offset already reaches the end.',
+      );
     });
 
     it('accepts empty tags array', () => {

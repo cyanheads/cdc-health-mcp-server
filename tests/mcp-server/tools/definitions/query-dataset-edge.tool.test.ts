@@ -121,8 +121,9 @@ describe('cdc_query_dataset — edge cases', () => {
 
       const enrichment = getEnrichment(ctx);
       expect(enrichment.notice).toContain('More rows');
-      expect(enrichment.notice).toContain('offset=1');
-      expect(enrichment.notice).toContain('order');
+      // No order: the page is no prefix of the advised one, so the walk restarts at 0.
+      expect(enrichment.notice).toContain('call again from offset=0 with order=":id"');
+      expect(enrichment.nextOffset).toBe(1);
     });
 
     it('does not emit a truncation notice when no further row exists', async () => {
@@ -381,7 +382,7 @@ describe('cdc_query_dataset — edge cases', () => {
       const notice = enrichment.notice as string;
       expect(notice).toContain('null on all 2 matched rows');
       expect(notice).toContain('More rows exist beyond this response');
-      expect(notice).toContain('offset=2');
+      expect(notice).toContain('call again from offset=0 with order=":id"');
       expect(enrichment.truncated).toBe(true);
       expect(enrichment.shown).toBe(2);
       expect(enrichment.cap).toBe(2);
@@ -534,6 +535,27 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(desc).toMatch(/deterministic|stable/i);
       expect(desc).toContain(':id');
     });
+
+    it('scopes :id to ungrouped rows and names the grouped columns as the grouped tie-breaker', () => {
+      /** Socrata rejects `:id` once rows are grouped, and answers it with HTTP 500 on a distinct select. */
+      const desc = queryDataset.input.shape.order.description ?? '';
+      expect(desc).toContain('on ungrouped rows, the system field `:id`');
+      expect(desc).toContain('on a grouped query, the grouped columns (order="total DESC, state")');
+      expect(desc).toContain('on a distinct select, the selected columns');
+    });
+
+    it('asks for the order from the first page and keeps it for the whole walk', () => {
+      const desc = queryDataset.input.shape.order.description ?? '';
+      expect(desc).toContain(
+        'Set one from the first page whenever paging with offset, and keep it for the whole walk',
+      );
+      expect(desc).toContain('or under a changed one, can skip or repeat rows');
+    });
+
+    it('select description enumerates distinct values with a tie-broken order', () => {
+      const desc = queryDataset.input.shape.select.description ?? '';
+      expect(desc).toContain('order="count DESC, {column}"');
+    });
   });
 
   describe('enrichment schema — nextOffset', () => {
@@ -541,6 +563,12 @@ describe('cdc_query_dataset — edge cases', () => {
       const desc = queryDataset.enrichment?.nextOffset.description ?? '';
       expect(desc).toContain('offset');
       expect(desc).toMatch(/only when|present only/i);
+    });
+
+    it('scopes nextOffset to the same order and names the restart when that order lacks a tie-breaker', () => {
+      const desc = queryDataset.enrichment?.nextOffset.description ?? '';
+      expect(desc).toContain('Offset to pass on the next call, under the same order,');
+      expect(desc).toContain('the notice says to restart from offset 0 with one');
     });
   });
 });

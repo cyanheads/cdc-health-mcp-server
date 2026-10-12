@@ -7,22 +7,30 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import { CDC_SOCRATA_DOMAINS, type DatasetMetadata } from '@/services/socrata/types.js';
-import { escapeTableCell } from '@/utils/markdown.js';
+import {
+  escapeMarkdownText,
+  escapeTableCell,
+  markdownBlockquote,
+  markdownTableCodeSpan,
+} from '@/utils/markdown.js';
+import {
+  DATASET_DESCRIPTION_CAP,
+  DATASET_DESCRIPTION_CAP_TEXT,
+  truncatePlainText,
+} from '@/utils/text.js';
 
 /**
  * Columns returned per call when the caller names no window. Catalog schemas run from 3 to
  * 322 columns; at 100 every dataset in the ordinary range arrives whole, while the widest
  * outlier's column payload drops by roughly two thirds. Descriptions carry the field
  * semantics needed to write a correct query, so the count of columns returned is the knob —
- * never their content.
+ * never their content. `column_limit` has no ceiling: it slices a schema already fetched
+ * whole, so the full schema is the most any call can return.
  */
 const DEFAULT_COLUMN_LIMIT = 100;
-/** Ceiling on `column_limit`, comfortably above the widest schema in the catalog. */
-const MAX_COLUMN_LIMIT = 500;
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
-  description:
-    'Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Returns the first 100 columns by default; wide datasets continue via column_offset. Get dataset IDs from cdc_discover_datasets.',
+  description: `Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Returns the first 100 columns by default; wide datasets continue via column_offset. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default; pass full_description: true for the whole text. Get dataset IDs from cdc_discover_datasets.`,
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -87,10 +95,9 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .number()
       .int()
       .min(1)
-      .max(MAX_COLUMN_LIMIT)
       .default(DEFAULT_COLUMN_LIMIT)
       .describe(
-        `Columns to return in this call (default ${DEFAULT_COLUMN_LIMIT}, max ${MAX_COLUMN_LIMIT}). Every dataset under the default arrives whole; past it the response reports totalCount and a nextOffset to pass back as column_offset. Raise this to pull a wide schema in one call.`,
+        `Columns to return in this call (default ${DEFAULT_COLUMN_LIMIT}). Every dataset under the default arrives whole; past it the response reports totalCount and a nextOffset to pass back as column_offset. Raise this to pull a wide schema in one call — a value at or above the column count returns every column.`,
       ),
     column_offset: z
       .number()
@@ -100,6 +107,12 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .default(0)
       .describe(
         'Index of the first column to return, for continuing past a previous call (default 0). Columns keep the order the dataset declares, so column_offset plus column_limit walks the schema without gaps or repeats. An offset at or past the column count returns an empty window rather than an error.',
+      ),
+    full_description: z
+      .boolean()
+      .default(false)
+      .describe(
+        `Return the dataset description whole (default false). By default a description longer than ${DATASET_DESCRIPTION_CAP_TEXT} characters is cut there, and the response sets descriptionTruncated and descriptionLength. Column descriptions are never shortened either way.`,
       ),
   }),
 
@@ -113,7 +126,19 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .string()
       .optional()
       .describe(
-        'Dataset description when provided, in full as plain text — markup stripped and entity references decoded. Never truncated here; cdc_discover_datasets is the surface that shortens it.',
+        `Dataset description when provided, as plain text — markup stripped and entity references decoded. Capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default and ending in "…" when cut, with descriptionTruncated and descriptionLength set; pass full_description: true for the whole text. Column descriptions are never shortened.`,
+      ),
+    descriptionTruncated: z
+      .boolean()
+      .optional()
+      .describe(
+        `True when description was cut at the ${DATASET_DESCRIPTION_CAP_TEXT}-character cap. Absent means description is the whole text.`,
+      ),
+    descriptionLength: z
+      .number()
+      .optional()
+      .describe(
+        'Character count of the whole description, present only when description was cut. Call again with full_description: true to read all of it.',
       ),
     rowCount: z
       .number()
@@ -172,6 +197,10 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       ),
   },
 
+  enrichmentTrailer: {
+    notice: { render: markdownBlockquote },
+  },
+
   async handler(input, ctx) {
     const service = getSocrataService();
     let metadata: DatasetMetadata;
@@ -216,7 +245,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
         input.column_offset >= total
           ? `column_offset ${input.column_offset} is past the end of this schema, which holds ${total} columns. Lower column_offset below ${total} to see columns.`
           : consumed < total
-            ? `Showing columns ${input.column_offset + 1}–${consumed} of ${total}. Call again with column_offset=${consumed} for the next window, or raise column_limit (max ${MAX_COLUMN_LIMIT}) to pull more per call.`
+            ? `Showing columns ${input.column_offset + 1}–${consumed} of ${total}. Call again with column_offset=${consumed} for the next window, or raise column_limit to pull more per call.`
             : `Showing columns ${input.column_offset + 1}–${consumed} of ${total} — the end of the schema. The earlier columns are at lower column_offset values.`;
       ctx.enrich.truncated({ shown: columns.length, cap: input.column_limit, guidance });
       if (consumed < total) ctx.enrich({ nextOffset: consumed });
@@ -233,12 +262,29 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       rowCountSource: metadata.rowCountSource,
     });
 
-    return { ...metadata, columns };
+    const { description } = metadata;
+    const cut =
+      description && !input.full_description
+        ? truncatePlainText(description, DATASET_DESCRIPTION_CAP)
+        : description;
+    return {
+      ...metadata,
+      ...(description && cut !== description
+        ? { description: cut, descriptionTruncated: true, descriptionLength: description.length }
+        : {}),
+      columns,
+    };
   },
 
   format: (result) => {
-    const lines = [`## ${result.name}`, ''];
-    if (result.description) lines.push(result.description, '');
+    const lines = [`## ${escapeMarkdownText(result.name, 'heading')}`, ''];
+    if (result.description) lines.push(escapeMarkdownText(result.description, 'line'), '');
+    if (result.descriptionTruncated && result.descriptionLength !== undefined) {
+      lines.push(
+        `**Description:** shortened to at most ${DATASET_DESCRIPTION_CAP_TEXT} of its ${result.descriptionLength.toLocaleString('en-US')} characters — call again with full_description: true for the whole text.`,
+        '',
+      );
+    }
     const rows = typeof result.rowCount === 'number' ? result.rowCount.toLocaleString() : '—';
     const provenance =
       result.rowCountSource === 'live'
@@ -256,7 +302,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     for (const col of result.columns) {
       const description = escapeTableCell(col.description ?? '') || '—';
       lines.push(
-        `| \`${escapeTableCell(col.fieldName)}\` | ${escapeTableCell(col.dataType)} | ${description} |`,
+        `| ${markdownTableCodeSpan(col.fieldName)} | ${escapeTableCell(col.dataType)} | ${description} |`,
       );
     }
 

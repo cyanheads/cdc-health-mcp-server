@@ -7,19 +7,20 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import { CDC_SOCRATA_DOMAINS, type VocabularyTerm } from '@/services/socrata/types.js';
-import { escapeTableCell } from '@/utils/markdown.js';
+import { escapeTableCell, markdownBlockquote } from '@/utils/markdown.js';
 import { isDiscriminatingFilter, MIN_FILTER_LENGTH, matchVocabulary } from '@/utils/vocabulary.js';
 
 /**
  * Tags returned per call when the caller names no window. The tag vocabulary is a long tail:
- * of the 1,583 values on `data.cdc.gov`, 33 carry 50 or more catalog entries and 637 carry
- * exactly one. A count-ranked page of 50 reaches down to around 39 entries — the part of the
- * distribution a caller is choosing a filter from — for roughly 3 KB, where the whole set
- * costs about 66 KB of structuredContent and 36 KB of rendered text in a single response.
+ * of the roughly 1,600 values on `data.cdc.gov`, about 33 carry 50 or more catalog entries and
+ * over 600 carry exactly one. A count-ranked page of 50 reaches down to around 39 entries — the
+ * part of the distribution a caller is choosing a filter from — for roughly 3 KB, where the
+ * whole set costs about 66 KB of structuredContent and 36 KB of rendered text in one response.
+ *
+ * `tag_limit` has no ceiling: it slices a vocabulary already fetched whole, so a larger page
+ * costs no upstream work, and the whole vocabulary is the most any call can return.
  */
 const DEFAULT_TAG_LIMIT = 50;
-/** Ceiling on `tag_limit`, enough to pull the whole useful head of the distribution at once. */
-const MAX_TAG_LIMIT = 500;
 
 const VocabularyTermSchema = z
   .object({
@@ -39,7 +40,7 @@ const VocabularyTermSchema = z
 export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
   title: 'List CDC Catalog Vocabulary',
   description:
-    "List the controlled vocabularies cdc_discover_datasets' category and tags filters are matched against — every domain category and domain tag the CDC catalog publishes, each with the number of entries carrying it. Call it before filtering a search: a value the catalog does not carry matches nothing and returns an empty page, which is indistinguishable from a real value with no results. All 55 categories come back whole; the tag vocabulary runs to roughly 1,600 values, so tags are ranked by entry count and returned one page at a time via tag_limit and tag_offset. Pass filter to narrow both vocabularies to the values whose words contain it.",
+    "List the controlled vocabularies cdc_discover_datasets' category and tags filters are matched against — every domain category and domain tag the CDC catalog publishes, each with the number of entries carrying it. Call it before filtering a search: a value the catalog does not carry matches nothing and returns an empty page, which is indistinguishable from a real value with no results. All categories come back whole; the tag vocabulary runs to roughly 1,600 values, so tags are ranked by entry count and returned one page at a time via tag_limit and tag_offset. Pass filter to narrow both vocabularies to the values whose words contain it.",
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -97,10 +98,9 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
       .number()
       .int()
       .min(1)
-      .max(MAX_TAG_LIMIT)
       .default(DEFAULT_TAG_LIMIT)
       .describe(
-        `Tags to return in this call (default ${DEFAULT_TAG_LIMIT}, max ${MAX_TAG_LIMIT}). Tags are ranked by entry count, so the default page is the most-used end of the vocabulary; the response reports how many matched and a nextOffset while more remain. Categories are never paged — all 55 arrive whole.`,
+        `Tags to return in this call (default ${DEFAULT_TAG_LIMIT}). Tags are ranked by entry count, so the default page is the most-used end of the vocabulary; the response reports how many matched and a nextOffset while more remain. A tag_limit at or above the number of matching tags returns all of them in one call. Categories are never paged — every one arrives whole.`,
       ),
     tag_offset: z
       .number()
@@ -153,7 +153,7 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
       .number()
       .optional()
       .describe(
-        'Upper bound on the entry count of every tag not returned. Tags are ranked by entry count, so no omitted tag is carried by more entries than the last one shown.',
+        'Upper bound on the entry count of every tag after this page — the tags from nextOffset on. Tags are ranked by entry count, so none of those is carried by more entries than the last tag shown. It does not bound the tags before tag_offset: those rank at or above the first tag shown.',
       ),
     nextOffset: z
       .number()
@@ -175,6 +175,10 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
     },
     categoryCount: { label: 'Categories Matching' },
     tagCount: { label: 'Tags Matching' },
+    // Scoped like the field: a later page's earlier tags outrank the value.
+    truncationCeiling: { label: 'Max Entries per Tag from nextOffset On' },
+    // The notice quotes the caller's filter.
+    notice: { render: markdownBlockquote },
   },
 
   async handler(input, ctx) {
@@ -238,11 +242,8 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
         `tag_offset ${input.tag_offset} is past the end of the ${matchedTags.length} matching tags. Lower tag_offset below ${matchedTags.length} to see tags.`,
       );
     } else if (consumed < matchedTags.length) {
-      // Offering a bigger page to a caller already at the ceiling is advice they cannot take.
-      const raise =
-        input.tag_limit < MAX_TAG_LIMIT ? ` raise tag_limit (max ${MAX_TAG_LIMIT}),` : '';
       guidance.push(
-        `Showing tags ${input.tag_offset + 1}–${consumed} of ${matchedTags.length}, ranked by entry count. Call again with tag_offset=${consumed} for the next page,${raise} or pass filter to narrow the vocabulary instead of paging it.`,
+        `Showing tags ${input.tag_offset + 1}–${consumed} of ${matchedTags.length}, ranked by entry count. Call again with tag_offset=${consumed} for the next page, raise tag_limit to pull more per call, or pass filter to narrow the vocabulary instead of paging it.`,
       );
     }
 
@@ -257,7 +258,10 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
       ctx.enrich.truncated({
         shown: page.length,
         cap: input.tag_limit,
-        // Ranked by entry count, so the smallest count shown bounds every tag left out.
+        /**
+         * Ranked by entry count, so the smallest count shown bounds every tag after the page.
+         * Only those: on a page past tag_offset 0, the tags before it rank higher.
+         */
         ...(hasMore && last ? { ceiling: last.datasetCount } : {}),
         guidance: guidance.join(' '),
       });

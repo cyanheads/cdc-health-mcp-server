@@ -4,11 +4,17 @@
  */
 
 import { type ErrorContract, JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import type { CatalogDataset, DiscoverResult, VocabularyTerm } from '@/services/socrata/types.js';
 import { contractError } from '../../../helpers/contract-error.js';
+import {
+  contentText,
+  readBack,
+  renderMarkdown,
+  strayElements,
+} from '../../../helpers/markdown-render.js';
 
 const mockDiscover = vi.fn<() => Promise<DiscoverResult>>();
 const mockListCategories = vi.fn<() => Promise<VocabularyTerm[]>>();
@@ -122,6 +128,14 @@ describe('cdc_discover_datasets', () => {
     expect(fields.assetType.description).toContain('Read columnCount, not this field');
     expect(fields.columnCount.description).toContain('A count of 0 means the entry is not tabular');
     expect(fields.columnCount.description).toContain('cdc_get_dataset_schema');
+  });
+
+  it('points the description field at the call that returns the whole text', () => {
+    /** cdc_get_dataset_schema caps descriptions by default, so naming the tool alone is not enough. */
+    const fields = discoverDatasets.output.shape.datasets.element.shape;
+    expect(fields.description.description).toContain(
+      'Fetch the full text via cdc_get_dataset_schema with full_description: true',
+    );
   });
 
   it('trims discovery output: columnCount + capped columnSample, no full column arrays', async () => {
@@ -254,6 +268,60 @@ describe('cdc_discover_datasets', () => {
     expect(enrichment.notice).toContain('No datasets found');
     expect(enrichment.notice).toContain('nonexistent');
     expect(enrichment.totalCount).toBe(0);
+  });
+
+  describe('blank filters', () => {
+    /** Call the tool and return the service options it sent alongside the whole result. */
+    const call = async (input: Record<string, unknown>) => {
+      mockDiscover.mockClear();
+      const result = await runToolContract(discoverDatasets, input);
+      const [options] = mockDiscover.mock.calls[0] as unknown as [Record<string, unknown>];
+      return { result, options };
+    };
+
+    it.each([
+      ['whitespace query and category, on a page', sampleServiceResult],
+      ['whitespace query and category, on an empty page', { datasets: [], totalCount: 0 }],
+    ])('reads %s as omitted', async (_label, page) => {
+      mockDiscover.mockResolvedValue(page);
+      const blank = await call({ query: '  ', category: ' \t ' });
+      const omitted = await call({});
+
+      expect(blank.options.query).toBeUndefined();
+      expect(blank.options.category).toBeUndefined();
+      expect(blank.result).toEqual(omitted.result);
+      expect(mockListCategories).not.toHaveBeenCalled();
+    });
+
+    it('drops blank tag entries before the request and the echo', async () => {
+      mockDiscover.mockResolvedValue(sampleServiceResult);
+      const blank = await call({ tags: ['', 'covid19', '  '] });
+      const clean = await call({ tags: ['covid19'] });
+
+      expect(blank.options.tags).toEqual(['covid19']);
+      expect(blank.result).toEqual(clean.result);
+      expect(contentText(blank.result)).toMatch(/^- \*\*Tags \(any of\):\*\* covid19$/m);
+    });
+
+    it('reads a tag list of blanks alone as no tag filter, near-miss lookup included', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      const blank = await call({ tags: ['', ' '] });
+      const omitted = await call({});
+
+      expect(blank.options.tags).toBeUndefined();
+      expect(blank.result).toEqual(omitted.result);
+      expect(mockListTags).not.toHaveBeenCalled();
+    });
+
+    it('keeps a non-blank value exactly as sent, surrounding whitespace included', async () => {
+      mockDiscover.mockResolvedValue(sampleServiceResult);
+      const { result, options } = await call({ query: ' flu ', tags: [' covid19'] });
+
+      expect(options).toMatchObject({ query: ' flu ', tags: [' covid19'] });
+      expect(result.structuredContent).toMatchObject({
+        appliedFilters: { query: ' flu ', tags: [' covid19'] },
+      });
+    });
   });
 
   describe('tag semantics', () => {
@@ -566,8 +634,97 @@ describe('cdc_discover_datasets', () => {
     expect(() => discoverDatasets.input.parse({ order: 'last_modified' })).toThrow();
   });
 
-  it('rejects limit above 100', () => {
-    expect(() => discoverDatasets.input.parse({ limit: 101 })).toThrow();
+  describe('limit past the 100-entry cap', () => {
+    /** A full page of 100 entries out of the live catalog's 1,084. */
+    const fullPage = (n: number): DiscoverResult => ({
+      datasets: Array.from({ length: n }, (_, i) => ({
+        ...sampleDataset,
+        id: `ab${String(i).padStart(2, '0')}-cd34`,
+      })),
+      totalCount: 1084,
+    });
+    const notice = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.structuredContent as { notice?: string }).notice;
+    const expectCappedRequest = () =>
+      expect(mockDiscover).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 100 }),
+        expect.anything(),
+      );
+
+    it.each([101, 10_000])(
+      'clamps limit %i to 100 and names the cap and the offset to continue from',
+      async (limit) => {
+        mockDiscover.mockResolvedValue(fullPage(100));
+        const result = await runToolContract(discoverDatasets, { limit, offset: 200 });
+
+        expectCappedRequest();
+        expect((result.structuredContent as { datasets: unknown[] }).datasets).toHaveLength(100);
+        expect(notice(result)).toBe(
+          `More datasets match beyond this page — limit=${limit} is above the 100 datasets one call returns, so the page stopped at 100. Call again with offset=300 to continue.`,
+        );
+        const html = renderMarkdown(contentText(result));
+        const quote = html.match(/<blockquote>([\s\S]*?)<\/blockquote>/)?.[1] ?? '';
+        expect(readBack(quote)).toContain(`limit=${limit} is above the 100 datasets`);
+      },
+    );
+
+    it('clamps a limit the framework repaired from a string ("6000")', async () => {
+      mockDiscover.mockResolvedValue(fullPage(100));
+      const args = { limit: '6000' } as unknown as Record<string, unknown>;
+      const result = await runToolContract(discoverDatasets, args);
+
+      expect(result.isError).toBeFalsy();
+      expectCappedRequest();
+      expect(notice(result)).toContain('limit=6000 is above the 100 datasets one call returns');
+    });
+
+    it('rejects limit above 10,000, the catalog window no page can cross', async () => {
+      const result = await runToolContract(discoverDatasets, { limit: 10_001 });
+      expect(result.isError).toBe(true);
+      expect(
+        (result.structuredContent as { error: { data: { reason: string } } }).error.data.reason,
+      ).toBe('invalid_arguments');
+      expect(mockDiscover).not.toHaveBeenCalled();
+    });
+
+    it('says nothing of the cap when the clamped page holds the rest of the matches', async () => {
+      mockDiscover.mockResolvedValue({ ...fullPage(84), totalCount: 1084 });
+      const result = await runToolContract(discoverDatasets, { limit: 500, offset: 1000 });
+
+      expectCappedRequest();
+      expect(notice(result)).toBeUndefined();
+    });
+
+    it('adds no clamp notice for a limit at or below the cap', async () => {
+      mockDiscover.mockResolvedValue(fullPage(100));
+      const result = await runToolContract(discoverDatasets, { limit: 100 });
+
+      expect(mockDiscover).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 100 }),
+        expect.anything(),
+      );
+      expect(notice(result)).toBeUndefined();
+    });
+
+    it('delivers an empty-page notice and the clamp notice as one notice', async () => {
+      /**
+       * The catalog reports more matches than the window holds and returns none of them: both
+       * facts apply, and a second notice write would silently replace the first.
+       */
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 1084 });
+      const result = await runToolContract(discoverDatasets, { query: 'flu', limit: 250 });
+
+      expect(notice(result)).toBe(
+        'No datasets found for query "flu". Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters. More datasets match beyond this page — limit=250 is above the 100 datasets one call returns, so the page stopped at 100. Call again with offset=100 to continue.',
+      );
+    });
+
+    it('states the cap and the window in the limit description', () => {
+      const description = discoverDatasets.input.shape.limit.description ?? '';
+      expect(description).toBe(
+        'Results to return (default 10). One call returns at most 100: a larger limit, up to 10,000, is capped at 100, and the response says so and gives the offset to continue from while more datasets match. offset plus limit must not exceed 10000 once limit is capped.',
+      );
+    });
   });
 
   describe('format', () => {
@@ -614,6 +771,141 @@ describe('cdc_discover_datasets', () => {
       // The full inventory is gone — no 100+ column names dumped into the text.
       expect(text).not.toContain('col_14');
       expect(text).not.toContain('col_9');
+    });
+  });
+
+  describe('content[] Markdown rendering', () => {
+    const HOSTILE_ENTRY: CatalogDataset = {
+      id: 'ab12-cd34',
+      name: '**Bold** <i>x</i> Cases #',
+      description: '2000. # [x](http://e.com) *y* _z_',
+      category: '*Cat* <b>',
+      tags: ['<b>t</b>', 'a_b', '_x_'],
+      assetType: 'dataset',
+      columnNames: ['_c_', 'data_value_type'],
+      updatedAt: '2024-01-15T00:00:00.000Z',
+    };
+    const HOSTILE_FILTERS = {
+      query: 'qq *zz* <i>w</i>',
+      category: '*Cat* <b>',
+      tags: ['<b>t</b>'],
+    };
+    const ALLOWED = ['h3', 'p', 'strong', 'code', 'ul', 'li', 'blockquote'];
+
+    it('renders every upstream and caller string as the literal text structuredContent carries', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [HOSTILE_ENTRY], totalCount: 1 });
+      const result = await runToolContract(discoverDatasets, HOSTILE_FILTERS);
+
+      const structured = result.structuredContent as {
+        datasets: Record<string, unknown>[];
+        appliedFilters: unknown;
+      };
+      expect(structured.datasets[0]).toMatchObject({
+        name: HOSTILE_ENTRY.name,
+        description: HOSTILE_ENTRY.description,
+        category: HOSTILE_ENTRY.category,
+        tags: HOSTILE_ENTRY.tags,
+        columnSample: HOSTILE_ENTRY.columnNames,
+      });
+      expect(structured.appliedFilters).toEqual(HOSTILE_FILTERS);
+
+      const html = renderMarkdown(contentText(result));
+      expect(strayElements(html, ALLOWED)).toEqual([]);
+      expect(readBack(html.match(/<h3>([\s\S]*?)<\/h3>/)?.[1] ?? '')).toBe(HOSTILE_ENTRY.name);
+      const text = readBack(html);
+      expect(text).toContain('Category: *Cat* <b> |');
+      expect(text).toContain(`\n${HOSTILE_ENTRY.description}\n`);
+      expect(text).toContain('Tags: <b>t</b>, a_b, _x_');
+      expect(text).toContain('Columns: 2 (_c_, data_value_type)');
+      const items = [...html.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((m) => readBack(m[1] ?? ''));
+      expect(items).toEqual([
+        'Query: "qq *zz* <i>w</i>"',
+        'Category: "*Cat* <b>"',
+        'Tags (any of): <b>t</b>',
+      ]);
+    });
+
+    it.each(['# Heading', '-|-|-|-|-', '===', '---', '1. Item', '> Quote'])(
+      'keeps a description opening %j a line of text under the metadata line',
+      async (description) => {
+        mockDiscover.mockResolvedValue({
+          datasets: [{ ...HOSTILE_ENTRY, name: 'Plain', description }],
+          totalCount: 1,
+        });
+        const result = await runToolContract(discoverDatasets, {});
+
+        const html = renderMarkdown(contentText(result));
+        expect(strayElements(html, ALLOWED)).toEqual([]);
+        expect(html.match(/<blockquote>/g) ?? []).toHaveLength(0);
+        expect(readBack(html)).toContain(`\n${description}\n`);
+      },
+    );
+
+    it('renders an empty-page notice quoting the caller as one escaped blockquote', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      const query = 'qq *zz* <i>w</i>\n\n# injected';
+      const result = await runToolContract(discoverDatasets, { query });
+
+      expect((result.structuredContent as { notice: string }).notice).toContain(`query "${query}"`);
+      const html = renderMarkdown(contentText(result));
+      expect(html).not.toContain('<h1>');
+      const quote = html.match(/<blockquote>([\s\S]*?)<\/blockquote>/)?.[1] ?? '';
+      expect(strayElements(quote, ['p'])).toEqual([]);
+      expect(readBack(quote).replace(/\s+/g, ' ')).toContain(
+        'No datasets found for query "qq *zz* <i>w</i> # injected"',
+      );
+    });
+  });
+
+  describe('description cut', () => {
+    const describeAs = async (description: string) => {
+      mockDiscover.mockResolvedValue({
+        datasets: [{ id: 'ab12-cd34', name: 'Cut', description }],
+        totalCount: 1,
+      });
+      const result = await runToolContract(discoverDatasets, {});
+      const cut = (result.structuredContent as { datasets: { description?: string }[] }).datasets[0]
+        ?.description;
+      return { cut, html: renderMarkdown(contentText(result)) };
+    };
+
+    it('drops a URL the cut lands inside rather than linking to a truncated address', async () => {
+      const lead = `${'x'.repeat(280)} see`;
+      const { cut, html } = await describeAs(
+        `${lead} https://www.iqvia.com/insights/the-iqvia-institute for details`,
+      );
+      expect(cut).toBe(`${lead}…`);
+      expect(html).not.toContain('<a ');
+    });
+
+    it('keeps a URL the cut lands right after and sets the ellipsis off from it', async () => {
+      const lead = `${'x'.repeat(274)} see `;
+      const url = 'https://www.iqvia.com';
+      expect(lead.length + url.length).toBe(300);
+      const { cut, html } = await describeAs(`${lead}${url} and more text after it.`);
+
+      expect(cut).toBe(`${lead}${url} …`);
+      expect(html).toContain(`<a href="${url}">${url}</a>`);
+      expect(html).not.toContain('%E2%80%A6');
+    });
+
+    it('drops a trailing tag the catalog cut open, before the description is measured', async () => {
+      /** The Discovery API returns `jgk8-6dpn` cut mid-anchor at about 4,000 characters. */
+      const { cut, html } = await describeAs(
+        'The archived datasets can be found here: <a href="https://data.cdc.gov/Public-Health-Surveillance/United-States-COVID-19-County-Level-of-Community-T',
+      );
+      expect(cut).toBe('The archived datasets can be found here:');
+      expect(html).not.toContain('href');
+    });
+
+    it('never splits a surrogate pair at the cut', async () => {
+      const { cut } = await describeAs(`${'x'.repeat(299)}💩${'y'.repeat(50)}`);
+      expect(cut).toBe(`${'x'.repeat(299)}…`);
+    });
+
+    it('cuts ordinary prose at the limit, as before', async () => {
+      const { cut } = await describeAs('D'.repeat(500));
+      expect(cut).toBe(`${'D'.repeat(300)}…`);
     });
   });
 

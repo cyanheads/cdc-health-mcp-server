@@ -5,11 +5,17 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
 import type { WonderResult } from '@/services/wonder/types.js';
 import { contractError } from '../../../helpers/contract-error.js';
+import {
+  readBack,
+  renderedCells,
+  renderMarkdown,
+  strayElements,
+} from '../../../helpers/markdown-render.js';
 
 const mockQuery = vi.fn<() => Promise<WonderResult>>();
 
@@ -479,6 +485,37 @@ describe('cdc_query_wonder', () => {
       expect(enrichment.nextOffset).toBe(3);
       expect(enrichment.notice).toContain('rows 1–3 of 6');
       expect(enrichment.notice).toContain('offset=3');
+      expect(enrichment.notice).toContain('or raise limit to pull more per call');
+      expect(enrichment.notice).not.toContain('(max');
+    });
+
+    it('takes a limit past the table on both surfaces, publishing no maximum for it', async () => {
+      mockQuery.mockResolvedValue(pagedResult);
+      const result = await runToolContract(queryWonder, {
+        group_by: ['year', 'sex'],
+        limit: 1_000_000,
+      });
+      const structured = result.structuredContent as { rowCount: number; truncated?: boolean };
+      expect(result.isError).toBeFalsy();
+      expect(structured.rowCount).toBe(6);
+      expect(structured.truncated).toBeUndefined();
+
+      const text = (result.content as { type: string; text: string }[])
+        .map((c) => c.text)
+        .join('\n');
+      expect(text).toContain('— 6 rows');
+      expect(text.split('\n').filter((l) => /^\| 20\d\d \|/.test(l))).toHaveLength(6);
+      expect(text).not.toMatch(/nextOffset|truncated/i);
+
+      const schema = z.toJSONSchema(queryWonder.input) as unknown as {
+        properties: { limit: { minimum?: number; maximum?: number; description?: string } };
+      };
+      // Zod publishes an integer's safe-integer bound; nothing tighter.
+      expect(schema.properties.limit.maximum ?? Number.MAX_SAFE_INTEGER).toBe(
+        Number.MAX_SAFE_INTEGER,
+      );
+      expect(schema.properties.limit.minimum).toBe(1);
+      expect(schema.properties.limit.description).not.toMatch(/5000|5,000/);
     });
 
     it('continues from an explicit offset', async () => {
@@ -786,7 +823,6 @@ describe('cdc_query_wonder', () => {
         '999--999',
       ]);
       expect(queryWonder.input.parse({ cause_icd10: 'X40' }).cause_icd10).toBe('X40');
-      expect(() => queryWonder.input.parse({ cause_icd10: [] })).toThrow();
       expect(() => queryWonder.input.parse({ cause_icd10: [''] })).toThrow();
     });
 
@@ -794,12 +830,14 @@ describe('cdc_query_wonder', () => {
       const schema = z.toJSONSchema(queryWonder.input) as unknown as {
         properties: Record<
           string,
-          { anyOf: { type?: string; minItems?: number; maxItems?: number }[] }
+          { anyOf: { type?: string; minItems?: number; maxItems?: number; description?: string }[] }
         >;
       };
       for (const field of ['cause_icd10', 'mcd_icd10']) {
         const list = schema.properties[field]?.anyOf.find((branch) => branch.type === 'array');
-        expect(list).toMatchObject({ minItems: 1, maxItems: 50 });
+        expect(list).toMatchObject({ maxItems: 50 });
+        expect(list?.minItems).toBeUndefined();
+        expect(list?.description).toContain('An empty list reads as omitted');
       }
     });
 
@@ -853,6 +891,10 @@ describe('cdc_query_wonder', () => {
       expect(description).toContain('NS');
       expect(description).toContain('not recorded');
       expect(description).toContain('fewer deaths');
+      expect(description).toContain('CDC refuses "NS" beside only some of the other groups');
+      const invalidQuery = queryWonder.errors?.find((e) => e.reason === 'invalid_query');
+      expect(invalidQuery?.when).toContain('age_groups holding "NS" beside only some');
+      expect(invalidQuery?.recovery).toContain('age_groups');
     });
 
     it('accepts the withheld-cause marker on both cause inputs, which no ICD-10 form allows', () => {
@@ -947,31 +989,173 @@ describe('cdc_query_wonder', () => {
       for (const message of HIDDEN_ROW_MESSAGES) expect(text).toContain(message);
     });
 
-    it('says rows were withheld rather than "no rows matched" on an empty filtered result', () => {
+    it('renders an empty page as its heading, the CDC notices, and the caveats, stating no cause', () => {
+      /**
+       * `format()` cannot tell an exhausted page from a query that matched nothing, so it says
+       * neither — the cause reaches content[] through the notice the handler writes.
+       */
       const blocks = queryWonder.format!({
         ...sampleResult,
         rows: [],
         rowCount: 0,
         messages: HIDDEN_ROW_MESSAGES,
+        caveats: ['Population figures are bridged-race estimates.', 'Deaths are national totals.'],
       });
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('not evidence that nothing matched');
-      expect(text).not.toContain('No rows matched');
-      expect(text).toContain('Rows with suppressed Deaths are hidden.');
+      expect((blocks[0] as { type: 'text'; text: string }).text).toBe(
+        [
+          '**D76 — Underlying Cause of Death, 1999-2020 — 0 rows**',
+          '',
+          '**CDC notices on this table — rows may have been withheld before it was sent:**',
+          `- ${HIDDEN_ROW_MESSAGES[0]}`,
+          `- ${HIDDEN_ROW_MESSAGES[1]}`,
+          '',
+          '**Caveats:**',
+          '- Population figures are bridged-race estimates.',
+          '- Deaths are national totals.',
+        ].join('\n'),
+      );
     });
 
-    it('renders an empty-state message and still carries the caveats when there are no rows', () => {
+    it('renders an empty page with no notices or caveats as its heading alone', () => {
       const blocks = queryWonder.format!({
         ...sampleResult,
         rows: [],
         rowCount: 0,
-        caveats: ['Population figures are bridged-race estimates.', 'Deaths are national totals.'],
+        caveats: [],
       });
-      const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('No rows matched');
-      expect(text).toContain('**Caveats:**');
-      expect(text).toContain('Population figures are bridged-race estimates.');
-      expect(text).toContain('Deaths are national totals.');
+      expect((blocks[0] as { type: 'text'; text: string }).text).toBe(
+        '**D76 — Underlying Cause of Death, 1999-2020 — 0 rows**',
+      );
+    });
+  });
+
+  describe('empty pages on both surfaces', () => {
+    /** Text the caller reads in content[], every block joined. */
+    const contentOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.content as { type: string; text: string }[]).map((c) => c.text).join('\n');
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.structuredContent as { notice?: string }).notice ?? '';
+    const occurrences = (text: string, phrase: string) => text.split(phrase).length - 1;
+
+    const NO_CAUSE_CLAIMS = ['No rows matched', 'No rows came back', 'Broaden', 'Widen'];
+
+    it.each([
+      ['without hidden-row messages', []],
+      ['with hidden-row messages', HIDDEN_ROW_MESSAGES],
+    ])('says only that an offset past the end ran out of rows, %s', async (_label, messages) => {
+      mockQuery.mockResolvedValue({ ...sampleResult, messages });
+      const result = await runToolContract(queryWonder, { group_by: ['year', 'sex'], offset: 2 });
+
+      expect(result.isError).toBeFalsy();
+      const text = contentOf(result);
+      for (const claim of NO_CAUSE_CLAIMS) {
+        expect(text).not.toContain(claim);
+        expect(noticeOf(result)).not.toContain(claim);
+      }
+      const pastTheEnd = 'offset 2 is past the end of this table, which holds 2 row(s)';
+      expect(noticeOf(result)).toContain(pastTheEnd);
+      expect(occurrences(text, pastTheEnd)).toBe(1);
+      expect(text).toContain('**D76 — Underlying Cause of Death, 1999-2020 — 0 rows**');
+      expect(occurrences(text, '**CDC notices on this table')).toBe(messages.length > 0 ? 1 : 0);
+    });
+
+    it('carries "no rows matched" once, through the notice, when the table is empty', async () => {
+      mockQuery.mockResolvedValue({ ...sampleResult, rows: [], rowCount: 0 });
+      const result = await runToolContract(queryWonder, { group_by: ['year'] });
+
+      expect(noticeOf(result)).toContain('No rows matched. Broaden the filters');
+      expect(occurrences(contentOf(result), 'No rows matched')).toBe(1);
+    });
+
+    it('carries the withheld-rows wording once, through the notice, when CDC hid every row', async () => {
+      mockQuery.mockResolvedValue({
+        ...sampleResult,
+        rows: [],
+        rowCount: 0,
+        messages: HIDDEN_ROW_MESSAGES,
+      });
+      const result = await runToolContract(queryWonder, { group_by: ['year'] });
+
+      expect(noticeOf(result)).toContain('not evidence that nothing matched');
+      expect(occurrences(contentOf(result), 'No rows came back')).toBe(1);
+      expect(occurrences(contentOf(result), 'No rows matched')).toBe(0);
+    });
+  });
+
+  describe('content[] Markdown rendering', () => {
+    const CAVEAT_LINK =
+      'Age-adjusted rates are standardized. [More information.](https://wonder.cdc.gov/wonder/help/ucd.html#Age-Adjusted%20Rates)';
+
+    const rendered = (result: WonderResult) =>
+      renderMarkdown((queryWonder.format!(result)[0] as { type: 'text'; text: string }).text);
+
+    it('keeps CDC caveat and message links live', () => {
+      const html = rendered({
+        ...sampleResult,
+        caveats: [CAVEAT_LINK],
+        messages: [
+          `${HIDDEN_ROW_MESSAGES[0]} [Details.](https://wonder.cdc.gov/wonder/help/faq.html#Privacy)`,
+        ],
+      });
+      expect(html).toContain(
+        '<a href="https://wonder.cdc.gov/wonder/help/ucd.html#Age-Adjusted%20Rates">More information.</a>',
+      );
+      expect(html).toContain(
+        '<a href="https://wonder.cdc.gov/wonder/help/faq.html#Privacy">Details.</a>',
+      );
+    });
+
+    it('renders an age label and a signed figure in a cell exactly as CDC wrote them', () => {
+      const html = rendered({
+        ...sampleResult,
+        rows: [{ age_group: '< 1 year', deaths: -5, population: null, crude_rate: null }],
+        rowCount: 1,
+      });
+      expect(renderedCells(html).map(readBack)).toEqual(['< 1 year', '-5', '', '']);
+      expect(
+        strayElements(html, [
+          'p',
+          'strong',
+          'table',
+          'thead',
+          'tbody',
+          'tr',
+          'th',
+          'td',
+          'ul',
+          'li',
+        ]),
+      ).toEqual([]);
+    });
+
+    it('renders a dimension label and a status token as the literal text CDC sent', () => {
+      const label = '<b>*2025*</b> [prov](https://e.com) _x_';
+      const token = '`Not *Ready*`';
+      const html = rendered({
+        ...sampleResult,
+        rows: [{ year: label, deaths: 1, population: 2, crude_rate: null }],
+        rowCount: 1,
+        cellNotes: [{ row: 0, column: 'crude_rate', token }],
+      });
+
+      expect(renderedCells(html).map(readBack)).toEqual([label, '1', '2', token]);
+      const item = html.match(/<li>([\s\S]*?)<\/li>/)?.[1] ?? '';
+      expect(readBack(item)).toBe(`row 0, crude_rate — ${token}`);
+      expect(
+        strayElements(html, [
+          'p',
+          'strong',
+          'table',
+          'thead',
+          'tbody',
+          'tr',
+          'th',
+          'td',
+          'ul',
+          'li',
+          'code',
+        ]),
+      ).toEqual([]);
     });
   });
 });
