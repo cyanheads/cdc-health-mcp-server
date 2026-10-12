@@ -10,7 +10,9 @@
  * (see `toLinkedText`): anchors are found on the raw markup before any tag comes off, and every
  * segment goes through the shared single-pass decode in `utils/text` exactly once — a
  * per-entity chain resolves `&amp;` first and turns `&amp;lt;` into `<`, and re-decoding the
- * assembled string would do the same. Pure module (no framework imports).
+ * assembled string would do the same. Elements are found by forward scans that pair tags as
+ * lazy regexes would, in time linear in the body (see `elementContents`). Pure module (no
+ * framework imports).
  * @module services/wonder/xml-parser
  */
 
@@ -26,8 +28,10 @@ function attr(attrs: string, name: string): string | undefined {
 /** Root-relative caveat links (`/wonder/help/…`) resolve against the WONDER host. */
 const WONDER_ORIGIN = 'https://wonder.cdc.gov/';
 
-/** One HTML anchor, attributes and inner markup captured. Matched on raw markup only. */
-const ANCHOR = /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi;
+/** Where an anchor opens: `<a` as a whole tag name, in any case. Matched on raw markup only. */
+const ANCHOR_OPEN = /<a\b/gi;
+/** Where an anchor closes. */
+const ANCHOR_CLOSE = /<\/a\s*>/gi;
 
 /**
  * The absolute URL a caveat link points at, or undefined when it should not become a link.
@@ -69,14 +73,29 @@ function renderAnchor(attrs: string, inner: string): string {
  * again: a second pass would turn the `&lt;` that `&amp;lt;` decodes to into `<`. For the same
  * reason an anchor CDC entity-escaped (`&lt;a href=…&gt;`) is never matched and stays literal
  * text. Text outside anchors renders exactly as `toPlainText` renders it.
+ *
+ * An anchor runs from `<a` through the first `>` (its attributes) and on to the first `</a>`
+ * after that. The scan reads the markup once: when an opener finds no `>` or no closer after
+ * it, no later opener can find one either, so everything from there on is text and is left to
+ * `stripAndDecode`. Linear in the length of the markup.
  */
 function toLinkedText(markup: string): string {
   let out = '';
   let last = 0;
-  for (const match of markup.matchAll(ANCHOR)) {
-    out += stripAndDecode(markup.slice(last, match.index));
-    out += renderAnchor(match[1] ?? '', match[2] ?? '');
-    last = match.index + match[0].length;
+  ANCHOR_OPEN.lastIndex = 0;
+  for (let open = ANCHOR_OPEN.exec(markup); open; open = ANCHOR_OPEN.exec(markup)) {
+    const tagEnd = markup.indexOf('>', ANCHOR_OPEN.lastIndex);
+    if (tagEnd === -1) break;
+    ANCHOR_CLOSE.lastIndex = tagEnd + 1;
+    const close = ANCHOR_CLOSE.exec(markup);
+    if (!close) break;
+    out += stripAndDecode(markup.slice(last, open.index));
+    out += renderAnchor(
+      markup.slice(ANCHOR_OPEN.lastIndex, tagEnd),
+      markup.slice(tagEnd + 1, close.index),
+    );
+    last = ANCHOR_CLOSE.lastIndex;
+    ANCHOR_OPEN.lastIndex = last;
   }
   return collapseWhitespace(out + stripAndDecode(markup.slice(last)));
 }
@@ -84,6 +103,75 @@ function toLinkedText(markup: string): string {
 /** Strip the CDATA wrapper from caveat/footnote/message content, then render it as linked text. */
 function cleanText(inner: string): string {
   return toLinkedText(inner.replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, ''));
+}
+
+/**
+ * What may follow an element's name inside its opening tag. `exact` is `<name>` alone (a
+ * `<caveat code="…">` definition is not a `<caveat>`); `word` is `<name\b[^>]*>`, where the
+ * name must end (`<footnotes>` is not a `<footnote>`); `prefix` is `<name[^>]*>`, which also
+ * opens on a longer name that starts with it.
+ */
+type OpenerShape = 'exact' | 'prefix' | 'word';
+
+/** A character that continues a name past a regex `\b` — `\w`, ASCII letters, digits and `_`. */
+const NAME_CHAR = /\w/;
+
+/**
+ * The next opening tag of `name` at or after `from`, as the offsets where its attributes start
+ * and where its `>` sits — or undefined once no opener with a `>` after it remains. A tag runs
+ * to its first `>`; when an opener finds none, no later opener can either.
+ */
+function nextOpeningTag(
+  markup: string,
+  name: string,
+  shape: OpenerShape,
+  from: number,
+): { attrsStart: number; tagEnd: number } | undefined {
+  const open = `<${name}`;
+  for (let at = markup.indexOf(open, from); at !== -1; at = markup.indexOf(open, at + 1)) {
+    const attrsStart = at + open.length;
+    const next = markup.charAt(attrsStart);
+    if (shape === 'exact' ? next !== '>' : shape === 'word' && NAME_CHAR.test(next)) continue;
+    const tagEnd = markup.indexOf('>', attrsStart);
+    return tagEnd === -1 ? undefined : { attrsStart, tagEnd };
+  }
+  return;
+}
+
+/**
+ * The content of every `<name…>…</name>` element in `markup`, in document order, read in one
+ * forward pass. Pairs as the lazy `<name…>([\s\S]*?)</name>` regex does: the content runs from
+ * the opening tag's `>` to the first `</name>` after it, and the scan resumes past that closer.
+ * When an opener finds no closer, no later opener can, so the scan stops there. Linear in the
+ * length of the markup.
+ */
+function elementContents(markup: string, name: string, shape: OpenerShape): string[] {
+  const close = `</${name}>`;
+  const contents: string[] = [];
+  let tag = nextOpeningTag(markup, name, shape, 0);
+  while (tag) {
+    const end = markup.indexOf(close, tag.tagEnd + 1);
+    if (end === -1) break;
+    contents.push(markup.slice(tag.tagEnd + 1, end));
+    tag = nextOpeningTag(markup, name, shape, end + close.length);
+  }
+  return contents;
+}
+
+/**
+ * The attribute string of every `<c …>` cell in a row, in order, read in one forward pass.
+ * Pairs as `<c\b([^>]*?)\/?>` does: the tag runs to its first `>`, and the `/` of a
+ * self-closing cell is not part of its attributes.
+ */
+function cellAttributes(row: string): string[] {
+  const cells: string[] = [];
+  let tag = nextOpeningTag(row, 'c', 'word', 0);
+  while (tag) {
+    const attrs = row.slice(tag.attrsStart, tag.tagEnd);
+    cells.push(attrs.endsWith('/') ? attrs.slice(0, -1) : attrs);
+    tag = nextOpeningTag(row, 'c', 'word', tag.tagEnd + 1);
+  }
+  return cells;
 }
 
 /**
@@ -95,8 +183,8 @@ function cleanText(inner: string): string {
  * was sent. Reading only the first would drop those, so every message comes back.
  */
 export function parseMessages(body: string): string[] {
-  return [...body.matchAll(/<message[^>]*>([\s\S]*?)<\/message>/g)]
-    .map((m) => cleanText(m[1] ?? ''))
+  return elementContents(body, 'message', 'prefix')
+    .map(cleanText)
     .filter((m) => m.length > 0);
 }
 
@@ -161,22 +249,21 @@ export function parseDataTable(
   const measureCount = columns.length - dimensionCount;
 
   const caveats = [
-    ...[...body.matchAll(/<caveat>([\s\S]*?)<\/caveat>/g)].map((m) => cleanText(m[1] ?? '')),
-    ...[...body.matchAll(/<footnote\b[^>]*>([\s\S]*?)<\/footnote>/g)].map((m) =>
-      cleanText(m[1] ?? ''),
-    ),
-  ].filter((c) => c.length > 0 && !UNRESOLVED_TEMPLATE.test(c));
+    ...elementContents(body, 'caveat', 'exact'),
+    ...elementContents(body, 'footnote', 'word'),
+  ]
+    .map(cleanText)
+    .filter((c) => c.length > 0 && !UNRESOLVED_TEMPLATE.test(c));
 
-  const tableMatch = body.match(/<data-table\b[^>]*>([\s\S]*?)<\/data-table>/);
-  const tableInner = tableMatch?.[1];
+  const tableInner = elementContents(body, 'data-table', 'word')[0];
   if (!tableInner) return { rows: [], caveats, cellNotes: [], suppressedCount: 0 };
 
   const rows: WonderRow[] = [];
   const cellNotes: WonderCellNote[] = [];
   const carried: string[] = new Array<string>(dimensionCount).fill('');
 
-  for (const rowMatch of tableInner.matchAll(/<r>([\s\S]*?)<\/r>/g)) {
-    const cells = [...(rowMatch[1] ?? '').matchAll(/<c\b([^>]*?)\/?>/g)].map((m) => m[1] ?? '');
+  for (const rowInner of elementContents(tableInner, 'r', 'exact')) {
+    const cells = cellAttributes(rowInner);
     // Skip subtotal/total rows (defensive — absent when O_show_totals=false):
     // they carry a `dt` cell or a leading `c=` colspan marker.
     const first = cells[0];
