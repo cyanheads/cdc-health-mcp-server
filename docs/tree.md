@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-10-07 11:29:06
+Generated on: 2026-10-12 23:23:58
 
 ```text
 cdc-health-mcp-server/
@@ -25,6 +25,7 @@ cdc-health-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.10.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
@@ -189,6 +190,8 @@ cdc-health-mcp-server/
 │   │       └── d77-overdose-ucd-opioid-mcd-2019.response.xml
 │   ├── helpers/
 │   │   ├── contract-error.ts
+│   │   ├── cpu-cost.ts
+│   │   ├── markdown-render.ts
 │   │   └── resource-read.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -232,6 +235,7 @@ cdc-health-mcp-server/
 │   │       └── xml-parser.test.ts
 │   ├── tools/
 │   └── utils/
+│       ├── markdown.test.ts
 │       ├── text.test.ts
 │       └── vocabulary.test.ts
 ├── .dockerignore

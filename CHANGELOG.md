@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-10-12 · ⚠️ Breaking
+
+Tool output renders caller and upstream text as literal Markdown, paging advice stays valid for grouped and distinct queries, oversized limits clamp instead of rejecting, and dataset descriptions cap at 4,000 characters unless full_description is set.
+
 ## [0.9.3](changelog/0.9.x/0.9.3.md) — 2026-10-07
 
 Adopts mcp-ts-core 0.13.13: tool errors name their request ID, error data no longer carries stack traces or root causes, and the Docker image installs dependencies in a build-platform stage.
