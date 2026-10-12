@@ -26,8 +26,7 @@ function attr(attrs: string, name: string): string | undefined {
 /** Root-relative caveat links (`/wonder/help/…`) resolve against the WONDER host. */
 const WONDER_ORIGIN = 'https://wonder.cdc.gov/';
 
-/** One HTML anchor, attributes and inner markup captured. Matched on raw markup only. */
-const ANCHOR = /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi;
+const ANCHOR_CLOSE = /<\/a\s*>/gi;
 
 /**
  * The absolute URL a caveat link points at, or undefined when it should not become a link.
@@ -71,12 +70,28 @@ function renderAnchor(attrs: string, inner: string): string {
  * text. Text outside anchors renders exactly as `toPlainText` renders it.
  */
 function toLinkedText(markup: string): string {
+  // Each opening tag pairs with the first closing tag after it. Both cursors only move forward,
+  // so a link that is never closed costs one scan of the rest of the markup, not one per opener.
+  const closers = [...markup.matchAll(ANCHOR_CLOSE)];
+  const openers = /<a\b/gi;
   let out = '';
   let last = 0;
-  for (const match of markup.matchAll(ANCHOR)) {
-    out += stripAndDecode(markup.slice(last, match.index));
-    out += renderAnchor(match[1] ?? '', match[2] ?? '');
-    last = match.index + match[0].length;
+  let nextCloser = 0;
+  let tagEnd = -2; // the first '>' at or after the current opener; -1 once there is none
+  for (let open = openers.exec(markup); open !== null; open = openers.exec(markup)) {
+    const start = open.index;
+    if (tagEnd !== -1 && tagEnd < start + 2) tagEnd = markup.indexOf('>', start + 2);
+    if (tagEnd === -1) break;
+    const bodyStart = tagEnd + 1;
+    while (nextCloser < closers.length && (closers[nextCloser]?.index ?? 0) < bodyStart)
+      nextCloser++;
+    const close = closers[nextCloser];
+    if (close === undefined) break;
+    nextCloser++;
+    out += stripAndDecode(markup.slice(last, start));
+    out += renderAnchor(markup.slice(start + 2, tagEnd), markup.slice(bodyStart, close.index));
+    last = close.index + close[0].length;
+    openers.lastIndex = last;
   }
   return collapseWhitespace(out + stripAndDecode(markup.slice(last)));
 }

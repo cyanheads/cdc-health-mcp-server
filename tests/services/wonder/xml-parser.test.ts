@@ -365,3 +365,18 @@ describe('parseDataTable', () => {
     expect(caveats).toEqual(['Only a caveat.']);
   });
 });
+
+describe('unclosed links', () => {
+  it('keeps the links that are closed and leaves the text of an unclosed one as plain text', () => {
+    expect(caveatOf('See <a href="/a.html">one</a> then <a href="/b.html">two and more')).toBe(
+      'See [one](https://wonder.cdc.gov/a.html) then two and more',
+    );
+  });
+
+  it('stays linear when many links are opened and never closed', () => {
+    const markup = '<a href="/x">'.repeat(40000) + 'end';
+    const started = performance.now();
+    expect(caveatOf(markup)).toBe('end');
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
