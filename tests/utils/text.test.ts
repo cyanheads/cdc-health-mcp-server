@@ -5,7 +5,19 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { decodeEntities, toPlainText } from '@/utils/text.js';
+import { decodeEntities, nonBlank, toPlainText, truncatePlainText } from '@/utils/text.js';
+import { expectLinearCost } from '../helpers/cpu-cost.js';
+
+describe('nonBlank', () => {
+  it.each([undefined, '', ' ', '\t\n ', '\u00a0'])('reads %j as unset', (value) => {
+    expect(nonBlank(value)).toBeUndefined();
+  });
+
+  it('returns a value with text in it exactly as sent', () => {
+    expect(nonBlank(' year=2020 ')).toBe(' year=2020 ');
+    expect(nonBlank('0')).toBe('0');
+  });
+});
 
 describe('decodeEntities', () => {
   it('decodes the named references CDC prose actually carries', () => {
@@ -117,13 +129,107 @@ describe('toPlainText', () => {
   });
 
   it('scans a long description in one pass', () => {
-    /**
-     * A per-element scan from position zero is quadratic; at this size it would not finish
-     * inside the test timeout. The assertion is correctness — the runtime is the guard.
-     */
+    /** The assertion is correctness — the runtime is the guard. */
     const body = '<span>Deaths &amp; births. </span>'.repeat(20_000);
     const text = toPlainText(body);
     expect(text.startsWith('Deaths & births.')).toBe(true);
     expect(text.split('Deaths & births.')).toHaveLength(20_001);
+  });
+
+  it('keeps a `<` that opens no tag', () => {
+    expect(toPlainText('rates <5 per 100k, p<0.05, ages < 1 year, x<')).toBe(
+      'rates <5 per 100k, p<0.05, ages < 1 year, x<',
+    );
+  });
+
+  it('drops a trailing tag the markup leaves unclosed', () => {
+    /** The Discovery API cuts `jgk8-6dpn` and `n8mc-b4w4` mid-anchor, near 4,000 characters. */
+    expect(
+      toPlainText(
+        '<p>Archived datasets can be found here:</p> <a href="https://data.cdc.gov/Public-Health-Surveillance/United-States-COVID-19-County-Level-of-Community-T',
+      ),
+    ).toBe('Archived datasets can be found here:');
+    expect(toPlainText('Statement (<a href="https://cdn.ymaws.com/www.cste.org/ps/Interim')).toBe(
+      'Statement (',
+    );
+    expect(toPlainText('Text then </spa')).toBe('Text then');
+    expect(toPlainText('Text then <!-- note')).toBe('Text then');
+    expect(toPlainText('Cut <a')).toBe('Cut');
+    expect(toPlainText('Cut <a class="x" href=')).toBe('Cut');
+  });
+
+  it('keeps prose that only looks like a tag opener when no `>` follows', () => {
+    expect(toPlainText('ratio x<y in women')).toBe('ratio x<y in women');
+    expect(toPlainText('scores of <b grade or better')).toBe('scores of <b grade or better');
+    expect(toPlainText('less than <a hundred cases')).toBe('less than <a hundred cases');
+    expect(toPlainText('<b>Rates</b> for x<y in women')).toBe('Rates for x<y in women');
+  });
+
+  describe('cost on worst-case input', () => {
+    const shapes: Record<string, (n: number) => string> = {
+      'repeated tag opener with no closer': (n) => '<a'.repeat(n / 2),
+      'repeated attribute assignment with no closer': (n) => '<a x='.repeat(n / 5),
+      'one opener before a long attribute run': (n) => `<a x=${'y'.repeat(n - 5)}`,
+      'one opener before a long name and a word': (n) => `<a${'-'.repeat(n - 4)} b`,
+      'openers each before a long unassigned attribute': (n) =>
+        `<a ${'x'.repeat(n / 4)} `.repeat(4),
+    };
+
+    it.each(Object.entries(shapes))('stays linear on %s', (_name, build) => {
+      expectLinearCost(build, toPlainText);
+    });
+  });
+});
+
+describe('truncatePlainText', () => {
+  it('returns text within the limit unchanged', () => {
+    expect(truncatePlainText('short text', 300)).toBe('short text');
+    expect(truncatePlainText('x'.repeat(300), 300)).toBe('x'.repeat(300));
+  });
+
+  it('cuts ordinary prose at the limit and appends an ellipsis', () => {
+    expect(truncatePlainText('abcdefghij klmnop', 5)).toBe('abcde…');
+  });
+
+  it('drops a URL the cut lands inside, along with the space before it', () => {
+    expect(truncatePlainText('see https://www.iqvia.com/insights for more', 20)).toBe('see…');
+    expect(truncatePlainText('see www.cdc.gov/nchs/data for more', 12)).toBe('see…');
+    expect(truncatePlainText('(https://www.iqvia.com/insights)', 20)).toBe('…');
+  });
+
+  it('keeps a URL the cut lands right after and sets the ellipsis off with a space', () => {
+    expect(truncatePlainText('see https://www.iqvia.com and more', 25)).toBe(
+      'see https://www.iqvia.com …',
+    );
+  });
+
+  it('treats an email address as a URL: dropped when cut inside, set off when cut after', () => {
+    expect(truncatePlainText('contact someone@cdc.gov for help', 20)).toBe('contact…');
+    expect(truncatePlainText('mail a@cdc.gov now', 14)).toBe('mail a@cdc.gov …');
+  });
+
+  it('keeps a whole URL followed by a cut word, ending on the word', () => {
+    expect(truncatePlainText('https://www.cdc.gov is where data lives', 23)).toBe(
+      'https://www.cdc.gov is…',
+    );
+  });
+
+  it('never leaves half of a surrogate pair at the cut', () => {
+    expect(truncatePlainText(`ab💩cd`, 3)).toBe('ab…');
+    expect(truncatePlainText(`ab💩cd`, 4)).toBe('ab💩…');
+  });
+
+  describe('cost on worst-case input', () => {
+    const shapes: Record<string, (n: number) => string> = {
+      'one unbroken token': (n) => 'a'.repeat(n),
+      'one unbroken URL': (n) => `https://${'a'.repeat(n - 8)}`,
+      'many short tokens': (n) => 'ab '.repeat(n / 3),
+      'repeated tag opener with no closer': (n) => '<a'.repeat(n / 2),
+      'tag openers before digits': (n) => '<1'.repeat(n / 2),
+    };
+
+    it.each(Object.entries(shapes))('stays linear on %s', (_name, build) => {
+      expectLinearCost(build, (input) => truncatePlainText(toPlainText(input), input.length / 2));
+    });
   });
 });
