@@ -29,7 +29,7 @@
 
 ## Overview
 
-CDC public health data from two systems: the Socrata-based CDC Open Data portal and CDC WONDER, a separate CDC system for national mortality statistics. Search the catalog, inspect dataset schemas, and run SoQL queries across vaccination, surveillance, and behavioral-risk data, or query WONDER for deaths, population, and death rates by year, age, sex, and race. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+CDC public health data from the CDC Open Data portal and CDC WONDER. Search 1,000+ datasets on vaccination, surveillance, and behavioral risk, inspect their schemas and query them with SoQL, or pull national mortality statistics by year, age, sex, and race.
 
 ### Tools
 
@@ -60,31 +60,32 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 
 ### `cdc_discover_datasets` <sub>tool</sub>
 
-- `query`, `category`, and `tags` filters (tags union, the other two intersect with them); up to 100 results per page (default 10; a larger `limit`, up to 10,000, is capped at 100 and the `notice` says so with the offset to continue from), with `offset + limit` capped at 10,000 (`page_out_of_range` past it); `order` is `dataset_id` (default, stable paging) or `relevance`
-- Results carry `assetType`, `columnCount` (0 marks a chart, map, story, file, or link that yields no data), an 8-name `columnSample`, and a description cut to 300 characters (`cdc_get_dataset_schema` with `full_description: true` returns the whole text); enrichment adds `totalCount` and `appliedFilters`
+- Filters: `query`, `category`, and `tags`. Up to 100 results per page (default 10); `offset + limit` is capped at 10,000 (`page_out_of_range` past it). `order` is `dataset_id` (default, stable paging) or `relevance`
+- Results carry `assetType`, `columnCount` (0 marks a chart, map, or other non-tabular asset), an 8-name `columnSample`, and a description cut to 300 characters, plus `totalCount` and `appliedFilters`
 - When a `category` or `tags` value matches nothing, the `notice` names the closest catalog values with their entry counts, e.g. `Vaccination` → `"Vaccinations" (89 datasets)`
 
 ---
 
 ### `cdc_get_dataset_schema` <sub>tool</sub>
 
-- Four-by-four `datasetId` (e.g. `bi63-dtpu`); `column_limit` (default 100, any larger value up to the whole schema) and `column_offset` page wide schemas, reporting `totalCount`, `truncated`, and `nextOffset`
-- The dataset `description` is capped at 4,000 characters by default, ending in `…` with `descriptionTruncated` and `descriptionLength` set when cut; `full_description: true` returns the whole text. Column descriptions are never shortened
-- Columns carry `fieldName`, `dataType`, and `description`; `rowCountSource` says whether `rowCount` is a `live` count or Socrata's `cached` figure, which can lag an active dataset. A non-tabular asset fails with `not_queryable`
+- Takes a four-by-four `datasetId` (e.g. `bi63-dtpu`). `column_limit` (default 100) and `column_offset` page wide schemas, reporting `totalCount`, `truncated`, and `nextOffset`
+- The dataset `description` is capped at 4,000 characters by default (`descriptionTruncated` and `descriptionLength` are set when cut); `full_description: true` returns the whole text
+- Columns carry `fieldName`, `dataType`, and `description`. `rowCountSource` says whether `rowCount` is `live` or Socrata's `cached` figure. A non-tabular asset fails with `not_queryable`
 
 ---
 
 ### `cdc_list_catalog_vocabulary` <sub>tool</sub>
 
-- Every category comes back whole; the ~1,600 tags are ranked by entry count and paged with `tag_limit` (default 50; a value at or above the tag count returns them all) and `tag_offset`. `filter` (3+ characters) narrows both by word containment in either direction, not fuzzy matching
-- Each value carries `datasetCount`; enrichment reports `vocabularySize`, `categoryCount`, `tagCount`, `truncated`, and `nextOffset`, with `truncationCeiling` bounding the count of every tag after the page — the tags before `tag_offset` rank at or above the first tag shown
+- Every category comes back whole; the ~1,600 tags are ranked by entry count and paged with `tag_limit` (default 50) and `tag_offset`. `filter` (3+ characters) narrows both by word match, not fuzzy matching
+- Each value carries `datasetCount`; the response also reports `vocabularySize`, `categoryCount`, `tagCount`, `truncated`, `nextOffset`, and `truncationCeiling` (an upper bound on the counts of the tags after the page)
 
 ---
 
 ### `cdc_query_dataset` <sub>tool</sub>
 
-- `select`, `where`, `group`, `having`, `order`, and full-text `search`; up to 5,000 rows per call (default 100; a larger `limit` is capped at 5,000 and says so), `offset` up to 1,000,000. Pair offset paging with an `order`, set from the first page, ending in a per-row tie-breaker: `:id` on ungrouped rows, the grouped columns on a grouped query. When the order lacks one, the notice says to restart from offset 0 with it
-- `effectiveQuery` echoes the SoQL clauses as sent, unencoded; `truncated` and `nextOffset` come from a one-row over-fetch, with no `totalCount`. A chart or map ID fails with `not_queryable`
+- Clauses: `select`, `where`, `group`, `having`, `order`, and full-text `search`. Up to 5,000 rows per call (default 100), `offset` up to 1,000,000
+- For stable offset paging, set an `order` ending in a unique tie-breaker (`:id` on ungrouped rows, the grouped columns on a grouped query); the notice says so when it is missing
+- `effectiveQuery` echoes the SoQL clauses as sent; `truncated` and `nextOffset` report paging, with no `totalCount`. A chart or map ID fails with `not_queryable`
 
 ---
 
@@ -98,9 +99,9 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 | `multiple_1999_2020` | D77 — Multiple Cause of Death | 1999–2020 | 4 bridged | yes |
 | `multiple_2018_2024` | D157 — Multiple Cause of Death, Single Race | 2018–2024 | 6 single-race | yes |
 
-- `group_by` takes 1–4 of `year`, `age_group`, `sex`, `race`, national only. `cause_icd10` and `mcd_icd10` take an ICD-10 code, a chapter or block range (`X40-X49`), or a list of up to 50 matched as one union (an empty list reads as all causes). `age_groups` takes `NS` (age not stated) alone or with all eleven known groups, never beside only some of them, which CDC refuses. `limit` (any positive integer; the response budget bounds the page) and `offset` (max 10,000) page the table, and an empty page's notice says whether nothing matched or the offset ran past the end
-- Rows carry `deaths`, `population`, `crude_rate`, and `age_adjusted_rate` where age can be standardized. Cells CDC returns as `Suppressed`, `Unreliable`, or `Not Applicable` read `null` and are listed in `cellNotes`; `messages` reports whole rows CDC hid, and `totalCount` is exact
-- CDC rejects requests less than 15 seconds apart, so calls are spaced 16 seconds apart and queued one at a time
+- `group_by` takes 1–4 of `year`, `age_group`, `sex`, `race` (national only). `cause_icd10` and `mcd_icd10` take an ICD-10 code, a range (`X40-X49`), or a list of up to 50. `age_groups` takes `NS` (age not stated) alone or with all eleven known groups. `limit` and `offset` (max 10,000) page the table
+- Rows carry `deaths`, `population`, `crude_rate`, and `age_adjusted_rate` where age can be standardized. Cells CDC returns as `Suppressed`, `Unreliable`, or `Not Applicable` read `null` and are listed in `cellNotes`; `messages` reports rows CDC hid, and `totalCount` is exact
+- CDC rejects requests less than 15 seconds apart, so calls are queued one at a time and spaced 16 seconds apart
 
 ---
 
@@ -113,8 +114,8 @@ Both resources mirror data also reachable via `cdc_discover_datasets` and `cdc_g
 
 ### `cdc://datasets/{datasetId}` <sub>resource</sub>
 
-- Dataset metadata plus the first 100 columns as `application/json`, with `columnCount` and `truncated`; the description is capped at 4,000 characters, with `descriptionTruncated` and `descriptionLength` set when cut
-- Takes no selector; continue a wider schema with `cdc_get_dataset_schema` and `column_offset`, and read a cut description whole with its `full_description: true`. The `notice` names both when they apply
+- Dataset metadata plus the first 100 columns as `application/json`, with `columnCount` and `truncated`; the description is capped at 4,000 characters
+- For more columns or the full description, use `cdc_get_dataset_schema` with `column_offset` or `full_description: true`
 
 ---
 
@@ -131,15 +132,15 @@ CDC-specific:
 
 - The [Socrata SODA API v2.1](https://dev.socrata.com/) over the CDC Open Data portal (~1,080 datasets); no auth required, and an optional app token raises rate limits
 - CDC WONDER mortality data from five databases covering 1999 through the current year, reached over its XML request API
-- The three Socrata tools take a `domain` input, allowlisted to `data.cdc.gov` (default) and `chronicdata.cdc.gov`. Both front the same catalog, so it picks the host that answers, not the datasets you can reach
-- `category` and `tags` match the catalog's controlled vocabularies (categories case-sensitively, tags case-insensitively), so a near miss returns nothing; `cdc_list_catalog_vocabulary` lists the real values
-- Socrata returns every value as a string, and a column like `year` is numeric in some datasets and text in others. Match WHERE literals to the column's `dataType` from the schema: numbers bare, strings single-quoted
+- The three Socrata tools take a `domain` input, limited to `data.cdc.gov` (default) and `chronicdata.cdc.gov`; both serve the same catalog
+- `category` and `tags` must match the catalog's own values (categories case-sensitively, tags case-insensitively); `cdc_list_catalog_vocabulary` lists them
+- Socrata returns every value as a string, and a column like `year` is numeric in some datasets and text in others. Match WHERE literals to the column's `dataType`: numbers bare, strings single-quoted
 
 Agent-friendly output:
 
-- Paging disclosed rather than implied: `totalCount`, `truncated`, `nextOffset`, and `shown`/`cap`. Both query tools bound each page by a 200,000-character budget over `structuredContent` and `content[]` together, so a wide page can end short of `limit`
-- Typed error contracts with a recovery hint on every declared reason, such as `not_queryable`, `page_out_of_range`, and `invalid_query`
-- Upstream gaps stay visible: WONDER status tokens per cell in `cellNotes`, hidden-row notices in `messages`, and `rowCountSource` on schema row counts
+- Paging is reported explicitly: `totalCount`, `truncated`, `nextOffset`, and `shown`/`cap`. Both query tools cap each page at 200,000 characters, so a wide page can end short of `limit`
+- Typed errors with a recovery hint on every declared reason, such as `not_queryable`, `page_out_of_range`, and `invalid_query`
+- Upstream gaps stay visible: WONDER status tokens in `cellNotes`, hidden-row notices in `messages`, and `rowCountSource` on schema row counts
 - `effectiveQuery` echoes the SoQL clauses or a WONDER query summary, so a result can be reproduced
 
 ## Getting started
@@ -255,7 +256,7 @@ cp .env.example .env
 | Variable | Description | Default |
 |:---|:---|:---|
 | `CDC_APP_TOKEN` | Socrata app token; raises rate limits. | none |
-| `CDC_BASE_URL` | SODA host for requests that name no `domain`, in practice only the `cdc://datasets/{datasetId}` resource. The Socrata tools choose their host with `domain`. | `https://data.cdc.gov` |
+| `CDC_BASE_URL` | SODA host for requests with no `domain` (the `cdc://datasets/{datasetId}` resource). | `https://data.cdc.gov` |
 | `CDC_CATALOG_URL` | Socrata Discovery API base URL. | `https://api.us.socrata.com/api/catalog/v1` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
