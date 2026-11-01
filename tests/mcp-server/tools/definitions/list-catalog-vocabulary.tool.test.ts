@@ -357,13 +357,59 @@ describe('cdc_list_catalog_vocabulary', () => {
       expect(enrichment.vocabularySize).toEqual({ categories: 5, tags: 6 });
     });
 
-    describe('too short to discriminate', () => {
+    describe('under three letters or digits', () => {
       /**
-       * A one- or two-character filter is a substring of most of the 1,582 live tags, so a
-       * containment test on it carries no signal and the matcher answers nothing. Reporting
-       * that as "no match" sends the caller after a spelling problem that does not exist —
-       * the filter is ignored instead and the unfiltered vocabulary comes back.
+       * A one- or two-character filter matches only the values carrying it as a whole word —
+       * containment on it would carry no signal. One that names a word narrows like any other
+       * filter. One that names none is ignored and the unfiltered vocabulary comes back:
+       * reporting "no match" would send the caller after a spelling problem, where "va" may be
+       * the start of a word the short-filter rule deliberately does not test.
        */
+      const TB_CATEGORIES: VocabularyTerm[] = [
+        ...CATEGORIES,
+        {
+          value: 'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+          datasetCount: 7,
+        },
+      ];
+      const TB_TAGS: VocabularyTerm[] = [
+        ...TAGS,
+        { value: 'tb', datasetCount: 6 },
+        { value: 'tbi', datasetCount: 4 },
+        { value: 'tuberculosis (tb)', datasetCount: 3 },
+        { value: 't-spot.tb (tspot)', datasetCount: 1 },
+      ];
+
+      it.each(['TB', 'tb'])(
+        'narrows both vocabularies to the values carrying %j as a word',
+        async (filter) => {
+          mockListCategories.mockResolvedValue(TB_CATEGORIES);
+          mockListTags.mockResolvedValue(TB_TAGS);
+          const result = await runToolContract(listCatalogVocabulary, { filter });
+
+          expect(result.structuredContent).toMatchObject({
+            categories: [
+              {
+                value: 'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+                datasetCount: 7,
+              },
+            ],
+            tags: [
+              { value: 'tb', datasetCount: 6 },
+              { value: 'tuberculosis (tb)', datasetCount: 3 },
+              { value: 't-spot.tb (tspot)', datasetCount: 1 },
+            ],
+            categoryCount: 1,
+            tagCount: 3,
+          });
+          expect(result.structuredContent).not.toHaveProperty('notice');
+          const rendered = contentText(result);
+          expect(rendered).toContain('t-spot.tb (tspot)');
+          expect(rendered).not.toContain('tbi');
+          expect(rendered).not.toContain('ignored');
+        },
+      );
+
       it.each(['v', 'va'])('returns the unfiltered vocabulary for %j', async (filter) => {
         const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
         const result = await listCatalogVocabulary.handler(
@@ -398,7 +444,7 @@ describe('cdc_list_catalog_vocabulary', () => {
         expect(getEnrichment(ctx).notice).toBeUndefined();
       });
 
-      it('says the filter was ignored and names the minimum, without blaming the spelling', async () => {
+      it('says the filter was ignored because no value carries it as a whole word, without blaming the spelling', async () => {
         const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
         await listCatalogVocabulary.handler(
           listCatalogVocabulary.input.parse({ filter: 'va' }),
@@ -406,11 +452,25 @@ describe('cdc_list_catalog_vocabulary', () => {
         );
 
         const notice = getEnrichment(ctx).notice as string;
-        expect(notice).toContain('"va"');
-        expect(notice).toContain('ignored');
-        expect(notice).toContain('at least 3');
+        expect(notice).toBe(
+          'Filter "va" was ignored: a filter under 3 letters or digits matches only the values carrying it as a whole word, and no category or tag does. This response is the unfiltered vocabulary — call again with a longer filter to narrow it.',
+        );
         expect(notice).not.toContain('No category or tag matches');
         expect(notice).not.toContain('misspelling');
+      });
+
+      it.each(['--', '   '])('says %j has no letters or digits to match on', async (filter) => {
+        const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
+        const result = await listCatalogVocabulary.handler(
+          listCatalogVocabulary.input.parse({ filter }),
+          ctx,
+        );
+
+        expect(result.categories).toEqual(CATEGORIES);
+        expect(result.tags).toEqual(TAGS);
+        expect(getEnrichment(ctx).notice).toBe(
+          `Filter "${filter}" was ignored: it has no letters or digits to match on. This response is the unfiltered vocabulary — call again with a longer filter to narrow it.`,
+        );
       });
 
       it('carries the values and the notice on content[] as well as structuredContent', async () => {
@@ -426,7 +486,7 @@ describe('cdc_list_catalog_vocabulary', () => {
           .map((block) => (block.type === 'text' ? block.text : ''))
           .join('\n');
         expect(rendered).toContain('ignored');
-        expect(rendered).toContain('at least 3');
+        expect(rendered).toContain('as a whole word');
         for (const term of [...CATEGORIES, ...TAGS]) expect(rendered).toContain(term.value);
       });
 
@@ -586,6 +646,14 @@ describe('cdc_list_catalog_vocabulary', () => {
         'Categories are never paged',
       );
       expect(listCatalogVocabulary.description).toContain('categories come back whole');
+    });
+
+    it('says the catalog matches categories and tags ignoring case', () => {
+      /** Measured: "Vaccinations", "vaccinations", and "VACCINATIONS" each match 89 entries. */
+      const description =
+        listCatalogVocabulary.output.shape.categories.element.shape.value.description ?? '';
+      expect(description).toContain('ignoring case');
+      expect(description).not.toMatch(/case-sensitive/);
     });
 
     it('names no exact category count, which the catalog can outgrow', () => {

@@ -261,6 +261,172 @@ describe('SocrataService', () => {
 
       expect(new URL(firstUrl(spy)).searchParams.has('tags')).toBe(false);
     });
+
+    describe('what a non-tabular entry is reached through', () => {
+      /** Live catalog records, trimmed to the fields the reader looks at. */
+      const records = {
+        href: {
+          resource: { id: '2g2d-yfx9', name: 'trailheads', type: 'href', parent_fxf: [] },
+          metadata: {
+            domain: 'data.cdc.gov',
+            access_points: {
+              'map-server':
+                'http://www.arcgis.com/home/webmap/viewer.html?url=https://services7.arcgis.com/RZzchnCpKnZgW3l4/arcgis/rest/services/trailheads/FeatureServer/0',
+            },
+          },
+          permalink: 'https://data.cdc.gov/d/2g2d-yfx9',
+        },
+        hrefWithMany: {
+          resource: { id: '7jqv-mu8u', name: 'NEHRS 2018', type: 'href', parent_fxf: [] },
+          metadata: {
+            access_points: {
+              Questionnaire: 'https://ftp.cdc.gov/q.pdf',
+              'SAS zip': 'https://ftp.cdc.gov/sas.zip',
+              Documentation: 'https://ftp.cdc.gov/doc.pdf',
+            },
+          },
+          permalink: 'https://data.cdc.gov/d/7jqv-mu8u',
+        },
+        chart: {
+          resource: {
+            id: 'sxbq-3sid',
+            name: 'Pfizer Allocations',
+            type: 'chart',
+            parent_fxf: ['saz5-9hgg'],
+          },
+          metadata: { domain: 'data.cdc.gov', license: 'Public Domain' },
+          permalink: 'https://data.cdc.gov/d/sxbq-3sid',
+        },
+        story: {
+          resource: {
+            id: 'cnd2-a6zw',
+            name: 'Vaccine Hesitancy for COVID-19',
+            type: 'story',
+            parent_fxf: ['c4bi-8ytd', 'ypqf-r5qs', 's5hu-2eck'],
+          },
+          metadata: { domain: 'data.cdc.gov' },
+          permalink: 'https://data.cdc.gov/stories/s/cnd2-a6zw',
+        },
+        dataset: {
+          resource: { id: 'bi63-dtpu', name: 'Leading Causes', type: 'dataset', parent_fxf: [] },
+          metadata: { domain: 'data.cdc.gov' },
+          permalink: 'https://data.cdc.gov/d/bi63-dtpu',
+        },
+      };
+      const read = async (...results: unknown[]) => {
+        mockFetch({ results, resultSetSize: results.length });
+        return (await service.discover({})).datasets;
+      };
+
+      it('reads permalink, accessPoints, and parentIds where the catalog carries them', async () => {
+        const [href, chart, story] = await read(records.href, records.chart, records.story);
+
+        expect(href).toMatchObject({
+          permalink: 'https://data.cdc.gov/d/2g2d-yfx9',
+          accessPoints: [
+            { label: 'map-server', url: records.href.metadata.access_points['map-server'] },
+          ],
+        });
+        expect(href?.parentIds).toBeUndefined();
+        expect(chart).toMatchObject({ parentIds: ['saz5-9hgg'] });
+        expect(chart?.accessPoints).toBeUndefined();
+        // A story can sit on several datasets; every parent is kept, in upstream order.
+        expect(story).toMatchObject({
+          permalink: 'https://data.cdc.gov/stories/s/cnd2-a6zw',
+          parentIds: ['c4bi-8ytd', 'ypqf-r5qs', 's5hu-2eck'],
+        });
+      });
+
+      it('keeps every access point as a { label, url } entry in upstream order', async () => {
+        const [entry] = await read(records.hrefWithMany);
+        expect(entry?.accessPoints).toEqual([
+          { label: 'Questionnaire', url: 'https://ftp.cdc.gov/q.pdf' },
+          { label: 'SAS zip', url: 'https://ftp.cdc.gov/sas.zip' },
+          { label: 'Documentation', url: 'https://ftp.cdc.gov/doc.pdf' },
+        ]);
+      });
+
+      it('keeps a publisher label of __proto__ or constructor as an ordinary label', async () => {
+        /**
+         * Labels are publisher free text and arrive as JSON object keys. Through a Zod record,
+         * `__proto__` sets the copy's prototype and the access point vanishes.
+         */
+        const raw =
+          '{"results":[{"resource":{"id":"ab12-cd34","name":"Odd labels","type":"href"},"metadata":{"access_points":{"__proto__":"https://a.example/x","constructor":"https://b.example/y"}}}],"resultSetSize":1}';
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(raw, { status: 200 }));
+        const [entry] = (await service.discover({})).datasets;
+
+        expect(entry?.accessPoints).toEqual([
+          { label: '__proto__', url: 'https://a.example/x' },
+          { label: 'constructor', url: 'https://b.example/y' },
+        ]);
+      });
+
+      it('gives a dataset entry neither accessPoints nor parentIds', async () => {
+        const [entry] = await read(records.dataset);
+        expect(entry).toEqual({
+          id: 'bi63-dtpu',
+          name: 'Leading Causes',
+          assetType: 'dataset',
+          permalink: 'https://data.cdc.gov/d/bi63-dtpu',
+        });
+      });
+
+      it.each([
+        ['a URL that is not a string', { html: 5, ok: 'https://ok.example' }],
+        ['an empty URL', { html: '', ok: 'https://ok.example' }],
+      ])('drops an access point with %s and keeps the rest', async (_label, accessPoints) => {
+        const [entry] = await read({
+          resource: { id: 'ab12-cd34', name: 'Mixed', type: 'href' },
+          metadata: { access_points: accessPoints },
+        });
+        expect(entry?.accessPoints).toEqual([{ label: 'ok', url: 'https://ok.example' }]);
+      });
+
+      it.each([
+        ['null', null],
+        ['a list', ['https://a.example']],
+        ['a string', 'https://a.example'],
+        ['an object of no URLs', { html: null }],
+      ])('reads access_points that are %s as none, without failing the page', async (_l, value) => {
+        const [entry] = await read({
+          resource: { id: 'ab12-cd34', name: 'Odd', type: 'href' },
+          metadata: { access_points: value },
+        });
+        expect(entry).toEqual({ id: 'ab12-cd34', name: 'Odd', assetType: 'href' });
+      });
+    });
+
+    describe('asset types', () => {
+      it('sends the plural forms comma-joined as one only parameter', async () => {
+        const spy = mockFetch({ results: [], resultSetSize: 0 });
+        await service.discover({ assetTypes: ['dataset', 'filter'] });
+
+        const params = new URL(firstUrl(spy)).searchParams;
+        expect(params.getAll('only')).toEqual(['datasets,filters']);
+      });
+
+      it('spells every catalog asset type as the plural the Discovery API answers', async () => {
+        const spy = mockFetch({ results: [], resultSetSize: 0 });
+        await service.discover({
+          assetTypes: ['dataset', 'filter', 'chart', 'map', 'story', 'file', 'href'],
+        });
+
+        expect(new URL(firstUrl(spy)).searchParams.get('only')).toBe(
+          'datasets,filters,charts,maps,stories,files,hrefs',
+        );
+      });
+
+      it.each([
+        ['omitted', undefined],
+        ['empty', []],
+      ])('sends no only parameter when the types are %s', async (_label, assetTypes) => {
+        const spy = mockFetch({ results: [], resultSetSize: 0 });
+        await service.discover({ assetTypes });
+
+        expect(new URL(firstUrl(spy)).searchParams.has('only')).toBe(false);
+      });
+    });
   });
 
   describe('vocabulary', () => {
@@ -344,10 +510,17 @@ describe('SocrataService', () => {
       expect(terms).toEqual([{ value: 'nndss', datasetCount: 294 }]);
     });
 
-    it('returns an empty vocabulary when the endpoint carries no results key', async () => {
+    it('fails as upstream_error when the endpoint carries no results key', async () => {
+      /**
+       * A body without `results` is not an empty vocabulary — an error page that happens to be
+       * JSON reads the same way — and a near-miss notice built on it would claim nothing in
+       * the catalog is close.
+       */
       mockFetch({ resultSetSize: 0 });
 
-      await expect(service.listTags()).resolves.toEqual([]);
+      await expect(service.listTags()).rejects.toMatchObject({
+        data: { reason: 'upstream_error' },
+      });
     });
 
     it('lets a catalog failure out with its reason rather than an empty vocabulary', async () => {
@@ -400,12 +573,288 @@ describe('SocrataService', () => {
       expect(url).toBe('https://data.cdc.gov/api/views/bi63-dtpu.json');
     });
 
+    it('names this server in the User-Agent of the outgoing request', async () => {
+      /**
+       * Every Socrata call goes through one `fetchJson`, so one endpoint covers them all. Sent
+       * explicitly so no upstream depends on a runtime's default client string.
+       */
+      const spy = mockFetch(metadataResponse);
+      await service.getMetadata('bi63-dtpu', undefined, undefined, { liveRowCount: false });
+
+      const [, init] = spy.mock.calls[0] as [string, RequestInit];
+      expect((init.headers as Record<string, string>)['User-Agent']).toBe(
+        'cdc-health-mcp-server (+https://github.com/cyanheads/cdc-health-mcp-server)',
+      );
+    });
+
     it('routes metadata to chronicdata.cdc.gov when domain is set', async () => {
       const spy = mockFetch(metadataResponse);
       await service.getMetadata('swc5-untb', undefined, 'chronicdata.cdc.gov');
 
       const url = firstUrl(spy);
       expect(url).toBe('https://chronicdata.cdc.gov/api/views/swc5-untb.json');
+    });
+
+    describe('parentId', () => {
+      /** Serve the metadata document, and a live count beside it. */
+      const serve = (document: Record<string, unknown>) =>
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(document) },
+          { match: '/resource/', respond: () => jsonResponse([{ count: '12' }]) },
+        ]);
+
+      it.each([
+        {
+          kind: 'a chart',
+          id: 'sxbq-3sid',
+          doc: { name: 'Pfizer Allocations', modifyingViewUid: 'saz5-9hgg', columns: [] },
+          parent: 'saz5-9hgg',
+        },
+        {
+          kind: 'a filter',
+          id: '2389-pvg9',
+          doc: { ...metadataResponse, modifyingViewUid: '32fd-hyzc' },
+          parent: '32fd-hyzc',
+        },
+      ])('names the dataset $kind is a view of, from modifyingViewUid', async (row) => {
+        const spy = serve(row.doc);
+        const metadata = await service.getMetadata(row.id);
+
+        expect(metadata.parentId).toBe(row.parent);
+        // Read off the document already fetched: the live count is the only other request.
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+
+      it.each([
+        ['absent', { name: 'trailheads', columns: [] }],
+        ['null', { name: 'Pulmonary evaluation', modifyingViewUid: null, columns: [] }],
+      ])('leaves parentId out when modifyingViewUid is %s', async (_label, doc) => {
+        serve(doc);
+        const metadata = await service.getMetadata('2g2d-yfx9');
+        expect(metadata).not.toHaveProperty('parentId');
+      });
+    });
+
+    describe('publisher provenance', () => {
+      /** The six keys read off the document's `custom_fields`, `license`, and `attribution`. */
+      const PROVENANCE_KEYS = [
+        'temporalCoverage',
+        'updateFrequency',
+        'geographicCoverage',
+        'citation',
+        'license',
+        'attribution',
+      ];
+      const provenanceOf = (metadata: object) =>
+        Object.fromEntries(Object.entries(metadata).filter(([k]) => PROVENANCE_KEYS.includes(k)));
+
+      /** The metadata document alone: these fields ride on it, so no count is needed. */
+      const read = (document: Record<string, unknown> | string) => {
+        const spy = mockFetchRoutes([
+          {
+            match: '/api/views/',
+            respond: () =>
+              typeof document === 'string'
+                ? new Response(document, { status: 200 })
+                : jsonResponse(document),
+          },
+        ]);
+        return {
+          spy,
+          metadata: service.getMetadata('xkb8-kh2a', undefined, undefined, { liveRowCount: false }),
+        };
+      };
+
+      /**
+       * `/api/views/xkb8-kh2a.json` as served on 2026-11-01, trimmed to the fields read here and
+       * one column. `Common Core 3` repeats the section in other forms (`Monthly` for `R/P1M`);
+       * the reader takes `Common Core`.
+       */
+      const XKB8 = {
+        name: 'VSRR Provisional Drug Overdose Death Counts',
+        columns: [{ fieldName: 'state', dataTypeName: 'text' }],
+        attribution: 'National Center for Health Statistics',
+        license: {
+          name: 'Public Domain U.S. Government',
+          termsLink: 'https://www.usa.gov/government-works',
+        },
+        metadata: {
+          custom_fields: {
+            'Data Quality': {
+              'Suggested Citation':
+                ' National Center for Health Statistics. VSRR Provisional Drug Overdose Death Counts. Date accessed [Last accessed date]. Available from https://data.cdc.gov/d/xkb8-kh2a.',
+              'Geographic Coverage': 'United States',
+            },
+            'Common Core': {
+              'Contact Email': 'cdcinfo@cdc.gov',
+              'Update Frequency': 'R/P1M',
+              'Temporal Applicability': '2015-01-01/2026-05-31',
+              'Geographic Coverage': 'United States',
+              Publisher: 'National Center for Health Statistics',
+            },
+            'Common Core 3': {
+              'Update Frequency': 'Monthly',
+              'Temporal Applicability': '2015-01-01/2026-05-31',
+            },
+          },
+        },
+      };
+
+      it('reads all six off the metadata document, the citation without its leading space', async () => {
+        const { spy, metadata } = read(XKB8);
+
+        expect(provenanceOf(await metadata)).toEqual({
+          temporalCoverage: '2015-01-01/2026-05-31',
+          updateFrequency: 'R/P1M',
+          geographicCoverage: 'United States',
+          citation:
+            'National Center for Health Statistics. VSRR Provisional Drug Overdose Death Counts. Date accessed [Last accessed date]. Available from https://data.cdc.gov/d/xkb8-kh2a.',
+          license: 'Public Domain U.S. Government',
+          attribution: 'National Center for Health Statistics',
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+
+      it('carries only attribution for a document recording no license, coverage, cadence, or citation', async () => {
+        /** `/api/views/7vnz-2mjz.json` as served on 2026-11-01, trimmed the same way. */
+        const { metadata } = read({
+          name: 'NNDSS Weekly Data',
+          columns: [{ fieldName: 'states', dataTypeName: 'text' }],
+          attribution:
+            'Division of Health Informatics and Surveillance (DHIS), Centers for Disease Control and Prevention',
+          license: null,
+          metadata: {
+            custom_fields: {
+              'Common Core': { 'Contact Email': 'cdcinfo@cdc.gov', 'Bureau Code': '009:00' },
+              'Common Core 3': { 'Contact Email': 'cdcinfo@cdc.gov', 'Bureau Code': '009:00' },
+            },
+          },
+        });
+
+        expect(provenanceOf(await metadata)).toEqual({
+          attribution:
+            'Division of Health Informatics and Surveillance (DHIS), Centers for Disease Control and Prevention',
+        });
+      });
+
+      it('parses a document with no metadata or license, carrying what it does record', async () => {
+        const { metadata } = read({
+          name: 'Bare',
+          columns: [{ fieldName: 'x', dataTypeName: 'text' }],
+          attribution: 'NCHS/DVS',
+        });
+        const result = await metadata;
+
+        expect(result.name).toBe('Bare');
+        expect(provenanceOf(result)).toEqual({ attribution: 'NCHS/DVS' });
+      });
+
+      it('parses a document with no attribution either, carrying none of the six', async () => {
+        const { metadata } = read({
+          name: 'Bare',
+          columns: [{ fieldName: 'x', dataTypeName: 'text' }],
+        });
+        expect(provenanceOf(await metadata)).toEqual({});
+      });
+
+      it('relays publisher text trimmed and otherwise exactly as written, never parsed', async () => {
+        const { metadata } = read({
+          ...XKB8,
+          license: { name: '\n Open Data Commons Attribution License \t' },
+          metadata: {
+            custom_fields: {
+              'Common Core': {
+                'Temporal Applicability': '8/1/2020 - 5/3/2024',
+                'Update Frequency': 'No longer updated (dataset archived) ',
+                'Geographic Coverage': '50 states &amp; <b>DC</b>',
+              },
+            },
+          },
+        });
+
+        expect(provenanceOf(await metadata)).toMatchObject({
+          temporalCoverage: '8/1/2020 - 5/3/2024',
+          updateFrequency: 'No longer updated (dataset archived)',
+          geographicCoverage: '50 states &amp; <b>DC</b>',
+          license: 'Open Data Commons Attribution License',
+        });
+      });
+
+      /**
+       * `custom_fields` is keyed by publisher text and walked two levels down — section, then
+       * field — so every level is a place the shape can vary. None of these is a fault in the
+       * document: each leaves its field absent and the rest of the metadata intact.
+       */
+      it.each<[string, unknown]>([
+        ['custom_fields null', null],
+        ['custom_fields an array', [{ 'Common Core': { 'Update Frequency': 'R/P1M' } }]],
+        ['custom_fields a string', 'Common Core'],
+        ['the section null', { 'Common Core': null, 'Data Quality': null }],
+        ['the section a string', { 'Common Core': 'R/P1M', 'Data Quality': 'cite me' }],
+        ['the section an array', { 'Common Core': ['R/P1M'], 'Data Quality': ['cite me'] }],
+        [
+          'every field blank or whitespace',
+          {
+            'Common Core': {
+              'Temporal Applicability': '',
+              'Update Frequency': '   ',
+              'Geographic Coverage': '\n\t',
+            },
+            'Data Quality': { 'Suggested Citation': ' ' },
+          },
+        ],
+        [
+          'every field a non-string',
+          {
+            'Common Core': {
+              'Temporal Applicability': 2020,
+              'Update Frequency': null,
+              'Geographic Coverage': ['United States'],
+            },
+            'Data Quality': { 'Suggested Citation': { text: 'cite me' } },
+          },
+        ],
+      ])(
+        'leaves the custom fields absent when %s, and still reads license and attribution',
+        async (_label, customFields) => {
+          const { metadata } = read({
+            name: 'Shapes',
+            columns: [{ fieldName: 'x', dataTypeName: 'text' }],
+            attribution: 'NCHS/DVS',
+            license: { name: 'Public Domain' },
+            metadata: { custom_fields: customFields },
+          });
+          const result = await metadata;
+
+          expect(result.columns).toHaveLength(1);
+          expect(provenanceOf(result)).toEqual({
+            license: 'Public Domain',
+            attribution: 'NCHS/DVS',
+          });
+        },
+      );
+
+      it.each<[string, Record<string, unknown>]>([
+        ['a license with no name', { license: {} }],
+        ['a blank license name', { license: { name: '  ' } }],
+        ['a blank attribution', { attribution: ' \n ' }],
+      ])('leaves the field absent for %s', async (_label, fields) => {
+        const { metadata } = read({
+          name: 'Sparse',
+          columns: [],
+          metadata: { custom_fields: { 'Common Core': { 'Update Frequency': 'R/P1W' } } },
+          ...fields,
+        });
+        expect(provenanceOf(await metadata)).toEqual({ updateFrequency: 'R/P1W' });
+      });
+
+      it('reads no section the document carries only under a "__proto__" key', async () => {
+        /** A body schema that copied `custom_fields` into a fresh object would make it the prototype. */
+        const { metadata } = read(
+          '{"name":"Proto","columns":[],"attribution":"NCHS","metadata":{"custom_fields":{"__proto__":{"Common Core":{"Update Frequency":"R/P1W"}}}}}',
+        );
+        expect(provenanceOf(await metadata)).toEqual({ attribution: 'NCHS' });
+      });
     });
 
     it('throws on 404', async () => {
@@ -575,9 +1024,14 @@ describe('SocrataService', () => {
         }
       });
 
-      it('cancels an in-flight count when the caller aborts mid-request', async () => {
-        /** A cancelled tool call must not leave the annotation's request running behind it. */
+      it('cancels an in-flight count when the caller aborts mid-request, and rethrows the abort', async () => {
+        /**
+         * A cancelled tool call must not leave the annotation's request running behind it, and
+         * the caller leaving is not a count failure to fall back from: the abort comes back as
+         * it was raised, never as a metadata response without its count.
+         */
         const controller = new AbortController();
+        const reason = new Error('caller went away during the count');
         let countSignal: AbortSignal | undefined;
         mockFetchRoutes([
           { match: '/api/views/', respond: () => jsonResponse(cachedCountMetadata) },
@@ -586,16 +1040,18 @@ describe('SocrataService', () => {
             respond: (init) => {
               countSignal = init?.signal ?? undefined;
               // Register the listener first, then cancel — as a real in-flight abort arrives.
-              const inFlight = stalledRequest(init);
-              controller.abort();
+              const inFlight = new Promise<never>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+              });
+              controller.abort(reason);
               return inFlight;
             },
           },
         ]);
-        const result = await service.getMetadata('4va6-ph5s', controller.signal);
+        const err = await service.getMetadata('4va6-ph5s', controller.signal).catch((e) => e);
 
         expect(countSignal?.aborted).toBe(true);
-        expect(result.rowCountSource).toBe('cached');
+        expect(err).toBe(reason);
       });
 
       it('supplies a row count for an asset that carries no cached count at all', async () => {

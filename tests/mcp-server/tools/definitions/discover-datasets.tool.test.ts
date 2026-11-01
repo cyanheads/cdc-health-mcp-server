@@ -324,6 +324,13 @@ describe('cdc_discover_datasets', () => {
     });
   });
 
+  it('says category matching ignores case, as the catalog does', () => {
+    /** Measured: "Vaccinations", "vaccinations", and "VACCINATIONS" each match 89 entries. */
+    const description = discoverDatasets.input.shape.category.description ?? '';
+    expect(description).toContain('ignoring case');
+    expect(description).not.toMatch(/including case|case-sensitive/);
+  });
+
   describe('tag semantics', () => {
     /**
      * The Discovery API sends one `tags` parameter per value and unions them: on
@@ -427,6 +434,26 @@ describe('cdc_discover_datasets', () => {
       expect(notice).not.toContain('Motor Vehicle');
     });
 
+    it('names a value carrying a filter under three letters as a whole word', async () => {
+      /** The vocabulary matcher's short-filter rule, wired: no category is "TB", one names it. */
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      mockListCategories.mockResolvedValue([
+        ...CATEGORY_VOCABULARY,
+        {
+          value: 'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+          datasetCount: 7,
+        },
+      ]);
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      await discoverDatasets.handler(discoverDatasets.input.parse({ category: 'TB' }), ctx);
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain(
+        'Closest category values in the catalog vocabulary: "National Center for HIV, Viral Hepatitis, STD, and TB Prevention" (7 datasets).',
+      );
+      expect(notice).not.toContain('Try broader search terms');
+    });
+
     it('resolves every supplied tag and merges the candidates into one ranked list', async () => {
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
       mockListTags.mockResolvedValue(TAG_VOCABULARY);
@@ -523,6 +550,32 @@ describe('cdc_discover_datasets', () => {
       expect(notice).toContain('Try broader search terms');
     });
 
+    it('rethrows the caller cancelling mid-lookup instead of answering without the near miss', async () => {
+      /**
+       * Absorbing the lookup's failure is right for an upstream fault, never for the caller
+       * ending the call: that would hand back a degraded success to a caller who already left.
+       * The fake aborts once the request is in flight and rejects as the service's fetch does,
+       * with the caller's own reason.
+       */
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      const controller = new AbortController();
+      const reason = new Error('caller went away');
+      mockListCategories.mockImplementation(
+        (_domain?: unknown, signal?: unknown) =>
+          new Promise<VocabularyTerm[]>((_resolve, reject) => {
+            const inFlight = signal as AbortSignal;
+            inFlight.addEventListener('abort', () => reject(inFlight.reason));
+            controller.abort(reason);
+          }),
+      );
+      const ctx = createMockContext({ errors: discoverDatasets.errors, signal: controller.signal });
+
+      await expect(
+        discoverDatasets.handler(discoverDatasets.input.parse({ category: 'Vaccination' }), ctx),
+      ).rejects.toBe(reason);
+      expect(mockListCategories).toHaveBeenCalledWith('data.cdc.gov', controller.signal);
+    });
+
     it('carries the near miss as enrichment rather than hand-authored format text', async () => {
       /**
        * The notice has to be enrichment, not a line in `format()`: the framework merges
@@ -605,17 +658,275 @@ describe('cdc_discover_datasets', () => {
     expect(input.offset).toBe(0);
   });
 
-  it('defaults order to dataset_id and threads it to the service', async () => {
-    mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
-    const ctx = createMockContext({ errors: discoverDatasets.errors });
-    const input = discoverDatasets.input.parse({ query: 'diabetes mortality' });
-    expect(input.order).toBe('dataset_id');
-    await discoverDatasets.handler(input, ctx);
+  describe('order default', () => {
+    /** The order the handler sent to the service for one call. */
+    const sentOrder = async (args: Record<string, unknown>) => {
+      mockDiscover.mockClear();
+      await runToolContract(discoverDatasets, args);
+      const [options] = mockDiscover.mock.calls[0] as unknown as [{ order?: string }];
+      return options.order;
+    };
 
-    expect(mockDiscover).toHaveBeenCalledWith(
-      expect.objectContaining({ order: 'dataset_id' }),
-      ctx.signal,
+    beforeEach(() => {
+      mockDiscover.mockResolvedValue(sampleServiceResult);
+    });
+
+    it.each([
+      ['a keyword search', { query: 'drug overdose deaths' }],
+      ['a keyword search past the first page', { query: 'drug overdose deaths', offset: 10 }],
+      ['a keyword search beside other filters', { query: 'flu', category: 'NNDSS', tags: ['x'] }],
+    ])('ranks %s by relevance', async (_label, args) => {
+      expect(await sentOrder(args)).toBe('relevance');
+    });
+
+    it.each([
+      ['no filter', {}],
+      ['a category alone', { category: 'Vaccinations' }],
+      ['tags alone', { tags: ['covid19'] }],
+      ['a whitespace-only query, which is unset', { query: '   ' }],
+    ])('walks %s in dataset_id order', async (_label, args) => {
+      expect(await sentOrder(args)).toBe('dataset_id');
+    });
+
+    it.each([
+      ['dataset_id', { query: 'diabetes mortality', order: 'dataset_id' }],
+      ['relevance', { category: 'Vaccinations', order: 'relevance' }],
+    ])('sends an explicit %s whatever the default would be', async (order, args) => {
+      expect(await sentOrder(args)).toBe(order);
+    });
+
+    it('leaves order unset in the parsed input, so the default is the handler’s to resolve', () => {
+      expect(discoverDatasets.input.parse({ query: 'flu' }).order).toBeUndefined();
+      expect(discoverDatasets.input.shape.order.description).toContain(
+        'Defaults to "relevance" when query is set and to "dataset_id" otherwise',
+      );
+    });
+  });
+
+  describe('relevance paging notice', () => {
+    const NOTICE = (total: number) =>
+      `Results are ranked by relevance, which varies between calls, so paging this search by offset can repeat or skip entries. Pass order: "dataset_id" to walk all ${total} matches in a stable order.`;
+    /** A page of `n` entries out of `total` matches. */
+    const page = (n: number, total: number): DiscoverResult => ({
+      datasets: Array.from({ length: n }, (_, i) => ({
+        ...sampleDataset,
+        id: `${String(i).padStart(4, '0')}-ab12`,
+      })),
+      totalCount: total,
+    });
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.structuredContent as { notice?: string }).notice;
+
+    it('warns on a relevance page with matches remaining past it, on both surfaces', async () => {
+      mockDiscover.mockResolvedValue(page(10, 16));
+      const result = await runToolContract(discoverDatasets, { query: 'diabetes mortality' });
+
+      expect(noticeOf(result)).toBe(NOTICE(16));
+      const html = renderMarkdown(contentText(result));
+      const quote = html.match(/<blockquote>([\s\S]*?)<\/blockquote>/)?.[1] ?? '';
+      expect(readBack(quote).replace(/\s+/g, ' ').trim()).toBe(NOTICE(16));
+    });
+
+    it('warns on a later relevance page that still leaves matches past it', async () => {
+      mockDiscover.mockResolvedValue(page(5, 16));
+      const result = await runToolContract(discoverDatasets, {
+        query: 'diabetes mortality',
+        offset: 5,
+        limit: 5,
+      });
+      expect(noticeOf(result)).toBe(NOTICE(16));
+    });
+
+    it('warns when relevance was asked for explicitly, since the paging hazard is the same', async () => {
+      mockDiscover.mockResolvedValue(page(10, 89));
+      const result = await runToolContract(discoverDatasets, {
+        category: 'Vaccinations',
+        order: 'relevance',
+      });
+      expect(noticeOf(result)).toBe(NOTICE(89));
+    });
+
+    it.each([
+      ['a relevance page that reaches the last match', { query: 'flu' }, page(6, 16), 10],
+      ['a single relevance page holding every match', { query: 'flu' }, page(16, 16), 0],
+    ])('says nothing on %s', async (_label, args, served, offset) => {
+      mockDiscover.mockResolvedValue(served);
+      const result = await runToolContract(discoverDatasets, { ...args, offset });
+      expect(noticeOf(result)).toBeUndefined();
+    });
+
+    it('says nothing on a dataset_id page, however many matches remain', async () => {
+      mockDiscover.mockResolvedValue(page(10, 16));
+      const result = await runToolContract(discoverDatasets, {
+        query: 'diabetes mortality',
+        order: 'dataset_id',
+      });
+      expect(noticeOf(result)).toBeUndefined();
+    });
+
+    it('flushes through the one notice writer the empty-page guidance shares', async () => {
+      /**
+       * `notice` is last-wins, so a second writer would erase the first. An upstream page that
+       * comes back empty while it still reports matches past the offset is the one shape that
+       * raises both segments at once.
+       */
+      mockDiscover.mockResolvedValue(page(0, 3));
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      const notice = vi.spyOn(ctx.enrich, 'notice');
+      await discoverDatasets.handler(discoverDatasets.input.parse({ query: 'flu' }), ctx);
+
+      expect(notice).toHaveBeenCalledTimes(1);
+      expect(getEnrichment(ctx).notice).toBe(
+        `No datasets found for query "flu". Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters. ${NOTICE(3)}`,
+      );
+    });
+  });
+
+  describe('non-tabular entries', () => {
+    const HREF: CatalogDataset = {
+      id: '2g2d-yfx9',
+      name: 'trailheads',
+      assetType: 'href',
+      permalink: 'https://data.cdc.gov/d/2g2d-yfx9',
+      accessPoints: [
+        {
+          label: 'map-server',
+          url: 'http://www.arcgis.com/home/webmap/viewer.html?url=https://services7.arcgis.com/RZzchnCpKnZgW3l4/arcgis/rest/services/trailheads/FeatureServer/0',
+        },
+      ],
+      columnNames: [],
+    };
+    const CHART: CatalogDataset = {
+      id: 'sxbq-3sid',
+      name: 'National Weekly Pfizer Allocations',
+      assetType: 'chart',
+      permalink: 'https://data.cdc.gov/d/sxbq-3sid',
+      parentIds: ['saz5-9hgg'],
+      columnNames: [],
+    };
+    const DATASET: CatalogDataset = {
+      ...sampleDataset,
+      assetType: 'dataset',
+      permalink: 'https://data.cdc.gov/d/bi63-dtpu',
+    };
+    type Entry = Record<string, unknown>;
+    const entries = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.structuredContent as { datasets: Entry[] }).datasets;
+
+    it('carries permalink, accessPoints, and parentIds through the output schema', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [HREF, CHART, DATASET], totalCount: 3 });
+      const [href, chart, dataset] = entries(await runToolContract(discoverDatasets, {}));
+
+      expect(href).toMatchObject({
+        permalink: HREF.permalink,
+        accessPoints: HREF.accessPoints,
+      });
+      expect(href).not.toHaveProperty('parentIds');
+      expect(chart).toMatchObject({ permalink: CHART.permalink, parentIds: ['saz5-9hgg'] });
+      expect(chart).not.toHaveProperty('accessPoints');
+      expect(dataset).toMatchObject({ permalink: DATASET.permalink });
+      expect(dataset).not.toHaveProperty('accessPoints');
+      expect(dataset).not.toHaveProperty('parentIds');
+    });
+
+    it('renders the same fields in content[]: URLs as links, labels escaped, parents as IDs', async () => {
+      const labelled: CatalogDataset = {
+        ...HREF,
+        accessPoints: [
+          {
+            label: '# html *x*',
+            url: 'https://www.cdc.gov/rdc/application-process/submission.html',
+          },
+          { label: '__proto__', url: 'https://ftp.cdc.gov/pub/a_b/readme.txt' },
+          { label: '1. App Process', url: 'https://ftp.cdc.gov/q.pdf' },
+        ],
+      };
+      mockDiscover.mockResolvedValue({ datasets: [labelled, CHART], totalCount: 2 });
+      const result = await runToolContract(discoverDatasets, {});
+
+      expect(entries(result)[0]?.accessPoints).toEqual(labelled.accessPoints);
+      const html = renderMarkdown(contentText(result));
+      expect(strayElements(html, ['h3', 'p', 'strong', 'code', 'ul', 'li'])).toEqual([]);
+      const items = [...html.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((m) => readBack(m[1] ?? ''));
+      expect(items).toEqual([
+        '# html *x*: https://www.cdc.gov/rdc/application-process/submission.html',
+        '__proto__: https://ftp.cdc.gov/pub/a_b/readme.txt',
+        '1. App Process: https://ftp.cdc.gov/q.pdf',
+      ]);
+      for (const { url } of labelled.accessPoints ?? []) {
+        expect(html).toContain(`<a href="${url}">${url}</a>`);
+      }
+      expect(html).toContain(`<a href="${HREF.permalink}">${HREF.permalink}</a>`);
+      expect(readBack(html)).toContain('Built on: saz5-9hgg');
+      expect(html).toContain('<code>saz5-9hgg</code>');
+    });
+
+    it('renders an entry with none of the three fields as before', () => {
+      const text = (
+        discoverDatasets.format!({ datasets: [{ id: 'ab12-cd34', name: 'Bare' }] })[0] as {
+          text: string;
+        }
+      ).text;
+      expect(text).not.toContain('Permalink');
+      expect(text).not.toContain('Built on');
+      expect(text).not.toContain('Access points');
+    });
+  });
+
+  describe('asset_types', () => {
+    const sent = () =>
+      (mockDiscover.mock.calls[0] as unknown as [{ assetTypes?: string[] }])[0].assetTypes;
+
+    it('sends the types once each, counts only them, and echoes them on both surfaces', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [sampleDataset], totalCount: 1132 });
+      const result = await runToolContract(discoverDatasets, {
+        asset_types: ['dataset', 'filter', 'dataset'],
+      });
+
+      expect(sent()).toEqual(['dataset', 'filter']);
+      expect(result.structuredContent).toMatchObject({
+        totalCount: 1132,
+        appliedFilters: { assetTypes: ['dataset', 'filter'] },
+      });
+      expect(contentText(result)).toMatch(/^- \*\*Asset types \(any of\):\*\* dataset, filter$/m);
+    });
+
+    it.each([
+      ['omitted', {}],
+      ['empty', { asset_types: [] }],
+    ])('sends no asset types and echoes none when they are %s', async (_label, args) => {
+      mockDiscover.mockResolvedValue(sampleServiceResult);
+      const result = await runToolContract(discoverDatasets, args);
+
+      expect(sent()).toBeUndefined();
+      expect((result.structuredContent as { appliedFilters: unknown }).appliedFilters).toEqual({});
+      expect(contentText(result)).toContain('**Applied Filters:** none');
+    });
+
+    it.each(['Dataset', 'datasets', 'bogus', ''])(
+      'rejects %j before any request, since the catalog answers an unknown type with an empty page',
+      async (value) => {
+        const args = { asset_types: [value] } as unknown as Record<string, unknown>;
+        const result = await runToolContract(discoverDatasets, args);
+        expect(result.isError).toBe(true);
+        expect(
+          (result.structuredContent as { error: { data: { reason: string } } }).error.data.reason,
+        ).toBe('invalid_arguments');
+        expect(mockDiscover).not.toHaveBeenCalled();
+      },
     );
+
+    it('names the types in the empty-page notice and how to widen past them', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      const result = await runToolContract(discoverDatasets, {
+        query: 'trailheads',
+        asset_types: ['chart', 'map'],
+      });
+
+      expect((result.structuredContent as { notice: string }).notice).toBe(
+        'No datasets found for query "trailheads", asset types [chart, map]. Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters. asset_types kept only entries of the listed types; omit it to search every type.',
+      );
+    });
   });
 
   it('forwards an explicit order override to the service', async () => {
@@ -634,48 +945,45 @@ describe('cdc_discover_datasets', () => {
     expect(() => discoverDatasets.input.parse({ order: 'last_modified' })).toThrow();
   });
 
-  describe('limit past the 100-entry cap', () => {
-    /** A full page of 100 entries out of the live catalog's 1,084. */
-    const fullPage = (n: number): DiscoverResult => ({
+  describe('limit runs to the 10,000-entry catalog window', () => {
+    /** A page of `n` entries out of the live catalog's 1,479. */
+    const page = (n: number): DiscoverResult => ({
       datasets: Array.from({ length: n }, (_, i) => ({
         ...sampleDataset,
-        id: `ab${String(i).padStart(2, '0')}-cd34`,
+        id: `${String(i).padStart(4, '0')}-cd34`,
       })),
-      totalCount: 1084,
+      totalCount: 1479,
     });
     const notice = (result: Awaited<ReturnType<typeof runToolContract>>) =>
       (result.structuredContent as { notice?: string }).notice;
-    const expectCappedRequest = () =>
-      expect(mockDiscover).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 100 }),
-        expect.anything(),
-      );
 
-    it.each([101, 10_000])(
-      'clamps limit %i to 100 and names the cap and the offset to continue from',
+    it.each([101, 5000, 10_000])(
+      'asks the catalog for limit %i as sent and returns every entry, with no clamp notice',
       async (limit) => {
-        mockDiscover.mockResolvedValue(fullPage(100));
-        const result = await runToolContract(discoverDatasets, { limit, offset: 200 });
+        mockDiscover.mockResolvedValue(page(1479));
+        const result = await runToolContract(discoverDatasets, { limit });
 
-        expectCappedRequest();
-        expect((result.structuredContent as { datasets: unknown[] }).datasets).toHaveLength(100);
-        expect(notice(result)).toBe(
-          `More datasets match beyond this page — limit=${limit} is above the 100 datasets one call returns, so the page stopped at 100. Call again with offset=300 to continue.`,
+        expect(mockDiscover).toHaveBeenCalledWith(
+          expect.objectContaining({ limit, offset: 0 }),
+          expect.anything(),
         );
-        const html = renderMarkdown(contentText(result));
-        const quote = html.match(/<blockquote>([\s\S]*?)<\/blockquote>/)?.[1] ?? '';
-        expect(readBack(quote)).toContain(`limit=${limit} is above the 100 datasets`);
+        expect((result.structuredContent as { datasets: unknown[] }).datasets).toHaveLength(1479);
+        expect(contentText(result)).toContain('**1479 datasets returned**');
+        expect(notice(result)).toBeUndefined();
       },
     );
 
-    it('clamps a limit the framework repaired from a string ("6000")', async () => {
-      mockDiscover.mockResolvedValue(fullPage(100));
+    it('asks for a limit the framework repaired from a string ("6000") as sent', async () => {
+      mockDiscover.mockResolvedValue(page(1479));
       const args = { limit: '6000' } as unknown as Record<string, unknown>;
       const result = await runToolContract(discoverDatasets, args);
 
       expect(result.isError).toBeFalsy();
-      expectCappedRequest();
-      expect(notice(result)).toContain('limit=6000 is above the 100 datasets one call returns');
+      expect(mockDiscover).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 6000 }),
+        expect.anything(),
+      );
+      expect(notice(result)).toBeUndefined();
     });
 
     it('rejects limit above 10,000, the catalog window no page can cross', async () => {
@@ -687,42 +995,19 @@ describe('cdc_discover_datasets', () => {
       expect(mockDiscover).not.toHaveBeenCalled();
     });
 
-    it('says nothing of the cap when the clamped page holds the rest of the matches', async () => {
-      mockDiscover.mockResolvedValue({ ...fullPage(84), totalCount: 1084 });
-      const result = await runToolContract(discoverDatasets, { limit: 500, offset: 1000 });
-
-      expectCappedRequest();
-      expect(notice(result)).toBeUndefined();
-    });
-
-    it('adds no clamp notice for a limit at or below the cap', async () => {
-      mockDiscover.mockResolvedValue(fullPage(100));
-      const result = await runToolContract(discoverDatasets, { limit: 100 });
-
-      expect(mockDiscover).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 100 }),
-        expect.anything(),
-      );
-      expect(notice(result)).toBeUndefined();
-    });
-
-    it('delivers an empty-page notice and the clamp notice as one notice', async () => {
-      /**
-       * The catalog reports more matches than the window holds and returns none of them: both
-       * facts apply, and a second notice write would silently replace the first.
-       */
-      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 1084 });
+    it('carries only the empty-page guidance when a large limit matched nothing', async () => {
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
       const result = await runToolContract(discoverDatasets, { query: 'flu', limit: 250 });
 
       expect(notice(result)).toBe(
-        'No datasets found for query "flu". Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters. More datasets match beyond this page — limit=250 is above the 100 datasets one call returns, so the page stopped at 100. Call again with offset=100 to continue.',
+        'No datasets found for query "flu". Try broader search terms, different keywords, or remove category/tag filters. Browse all datasets by calling with no parameters.',
       );
     });
 
-    it('states the cap and the window in the limit description', () => {
+    it('states the maximum and the window in the limit description, with no per-call cap', () => {
       const description = discoverDatasets.input.shape.limit.description ?? '';
       expect(description).toBe(
-        'Results to return (default 10). One call returns at most 100: a larger limit, up to 10,000, is capped at 100, and the response says so and gives the offset to continue from while more datasets match. offset plus limit must not exceed 10000 once limit is capped.',
+        'Results to return (default 10, max 10,000). offset plus limit must not exceed 10000.',
       );
     });
   });

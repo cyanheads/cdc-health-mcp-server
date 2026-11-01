@@ -109,6 +109,36 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
         recovery: { hint: expect.stringContaining('columnCount') },
       });
       expect(err.message).toContain('2g2d-yfx9');
+      expect(err.message).not.toContain('view of dataset');
+    });
+
+    it('names the dataset a chart is built on in the message and the recovery hint', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'National Weekly Pfizer Allocations',
+        columns: [],
+        parentId: 'saz5-9hgg',
+      });
+
+      const err = await readResourceError(datasetDetailResource, 'cdc://datasets/sxbq-3sid');
+      expect(err.data.reason).toBe('not_queryable');
+      expect(err.message).toContain('It is a view of dataset saz5-9hgg');
+      expect(err.data.recovery?.hint).toBe(
+        'Read cdc://datasets/saz5-9hgg, the dataset this asset is built on, then query that ID with cdc_query_dataset.',
+      );
+      expect(mockGetMetadata).toHaveBeenCalledTimes(1);
+    });
+
+    it('carries parentId on a filter it reads', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'Smokefree Indoor Air table',
+        columns: [{ fieldName: 'state', dataType: 'text' }],
+        parentId: '32fd-hyzc',
+      });
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
+      const params = datasetDetailResource.params!.parse({ datasetId: '2389-pvg9' });
+      const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
+
+      expect(result.parentId).toBe('32fd-hyzc');
     });
   });
 

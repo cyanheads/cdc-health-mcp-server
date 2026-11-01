@@ -1,16 +1,20 @@
 /**
- * @fileoverview Whole-response tests for cdc_query_dataset: the delivered size of the complete
- * tool result (both surfaces) and the empty-page diagnosis, run through the real SocrataService
- * against a fetch fake so the budget and the offset probe are exercised end to end.
+ * @fileoverview Whole-response tests for cdc_query_dataset: the page `limit` sets on both
+ * surfaces, its 1,000-row ceiling, and the empty-page diagnosis, run through the real
+ * SocrataService against a fetch fake so the over-fetch probe and the offset probe are
+ * exercised end to end.
  * @module tests/mcp-server/tools/definitions/query-dataset-response
  */
 
-import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import {
+  createFetchMock,
+  createMockContext,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import { initSocrataService } from '@/services/socrata/socrata-service.js';
-
-const RESPONSE_BUDGET = 200_000;
+import { contentText as text } from '../../../helpers/contract-text.js';
 
 type Row = Record<string, unknown>;
 
@@ -34,9 +38,6 @@ const surveillanceRow = (i: number): Row =>
     Array.from({ length: 15 }, (_, c) => [`field_${c}`, `${i}-${'x'.repeat(18)}`]),
   );
 
-const text = (result: Awaited<ReturnType<typeof runToolContract>>) =>
-  (result.content as { type: string; text?: string }[]).map((b) => b.text ?? '').join('\n');
-
 const structured = (result: Awaited<ReturnType<typeof runToolContract>>) =>
   result.structuredContent as Record<string, unknown> & { rows: Row[]; rowCount: number };
 
@@ -56,7 +57,14 @@ describe('cdc_query_dataset — whole response', () => {
     http.restore();
   });
 
-  describe('response budget across both surfaces', () => {
+  describe('limit is the page, on both surfaces', () => {
+    /** Data rows of the content[] table — every line after the header and its separator. */
+    const tableRows = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      text(result)
+        .split('\n')
+        .filter((line) => line.startsWith('| '))
+        .slice(2);
+
     it('returns an ordinary page whole, rows on both surfaces', async () => {
       const rows = Array.from({ length: 20 }, (_, i) => ({ id: String(i), state: 'Texas' }));
       http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
@@ -68,182 +76,91 @@ describe('cdc_query_dataset — whole response', () => {
       expect(text(result)).toContain('| 19 | Texas |');
     });
 
-    it('keeps the complete serialized result within the stated budget at limit 5000', async () => {
-      /**
-       * Rows reach the caller twice — as JSON in structuredContent and as a markdown table in
-       * content[] — so a budget counted over one serialization lets the response carry half
-       * as much again as the stated figure.
-       */
-      const rows = Array.from({ length: 5001 }, (_, i) => surveillanceRow(i));
-      http.route({ match: /\/resource\/4va6-ph5s\.json/, respond: sodaEndpoint(rows) });
+    it('returns a full 1,000-row page of wide rows, the over-fetch deciding truncation', async () => {
+      const rows = Array.from({ length: 2500 }, (_, i) => surveillanceRow(i));
+      http.route({ match: /\/resource\/akvg-8vrb\.json/, respond: sodaEndpoint(rows) });
 
-      const result = await runToolContract(queryDataset, { datasetId: '4va6-ph5s', limit: 5000 });
+      const result = await runToolContract(queryDataset, { datasetId: 'akvg-8vrb', limit: 1000 });
       const sc = structured(result);
 
-      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
-      expect(sc.truncated).toBe(true);
-      expect(sc.rowCount).toBeGreaterThan(0);
-      expect(sc.shown).toBe(sc.rowCount);
-      expect(sc.nextOffset).toBe(sc.rowCount);
-      expect(sc.notice).toMatch(/200,000-character response budget/);
+      expect(new URL(http.calls[0]!.request.url).searchParams.get('$limit')).toBe('1001');
+      expect(sc.rows).toHaveLength(1000);
+      expect(sc.rowCount).toBe(1000);
+      expect(tableRows(result)).toHaveLength(1000);
+      expect(sc).toMatchObject({ truncated: true, shown: 1000, cap: 1000, nextOffset: 1000 });
+      expect(sc.notice).toContain('the requested limit of 1000 was reached');
+      expect(sc.notice).not.toMatch(/budget|character/);
     });
 
-    it('stays within the budget when later rows introduce columns earlier rows lack', async () => {
-      /**
-       * SODA omits null keys, so a column can first appear hundreds of rows in. Every earlier
-       * row then gains an empty table cell, which a per-row cost that ignores the header would
-       * never charge for.
-       */
-      const rows = Array.from({ length: 5001 }, (_, i) => {
-        const row: Row = { id: String(i), value: 'v'.repeat(40) };
-        for (let c = 0; c < 40; c++) if (i === 100 + c * 50) row[`late_column_${c}`] = 'z';
-        if (i % 7 === 0) row.geo = { type: 'Point', coordinates: [-97.7, 30.2] };
-        return row;
-      });
+    it.each([1001, 5000, 1_000_000])(
+      'clamps limit %i to 1,000 on the wire and in the echo, and names the clamp',
+      async (limit) => {
+        const rows = Array.from({ length: 1500 }, (_, i) => ({ id: String(i) }));
+        http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
+
+        const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit });
+        const sc = structured(result);
+
+        expect(new URL(http.calls[0]!.request.url).searchParams.get('$limit')).toBe('1001');
+        expect(sc.effectiveQuery).toBe('$limit=1000&$offset=0');
+        expect(sc.rows).toHaveLength(1000);
+        expect(sc).toMatchObject({ truncated: true, shown: 1000, cap: 1000, nextOffset: 1000 });
+        expect(sc.notice).toContain(
+          `limit=${limit} is above the 1,000 rows one call returns, so the page stopped at 1,000`,
+        );
+        expect(text(result)).toContain(`limit=${limit} is above the 1,000 rows one call returns`);
+      },
+    );
+
+    it('returns a result shorter than limit whole, with no truncation', async () => {
+      const rows = Array.from({ length: 750 }, (_, i) => surveillanceRow(i));
+      http.route({ match: /\/resource\/akvg-8vrb\.json/, respond: sodaEndpoint(rows) });
+
+      const result = await runToolContract(queryDataset, { datasetId: 'akvg-8vrb', limit: 1000 });
+      const sc = structured(result);
+
+      expect(sc.rows).toHaveLength(750);
+      expect(tableRows(result)).toHaveLength(750);
+      for (const key of ['truncated', 'shown', 'cap', 'nextOffset', 'notice']) {
+        expect(sc).not.toHaveProperty(key);
+      }
+    });
+
+    it('returns a last page that fills limit exactly with no truncation', async () => {
+      const rows = Array.from({ length: 1000 }, (_, i) => ({ id: String(i) }));
       http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
 
-      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 5000 });
-      const sc = structured(result);
+      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 1000 });
 
-      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
-      expect(sc.truncated).toBe(true);
-      const header = text(result)
-        .split('\n')
-        .find((line) => line.startsWith('| id'));
-      expect(header).toContain('late_column_0');
+      expect(structured(result).rows).toHaveLength(1000);
+      expect(structured(result).truncated).toBeUndefined();
     });
 
-    it('charges each table line as rendered, Markdown escapes included', async () => {
-      /**
-       * Every character of these values is one `content[]` escapes, so each rendered table
-       * line runs to about twice its raw length. A budget that charged the raw value while
-       * the table carried the escaped one would ship well past the stated figure.
-       */
-      const rows = Array.from({ length: 5001 }, (_, i) => ({
-        _id_: String(i),
-        markup: '*_[]`\\<b>'.repeat(40),
-      }));
-      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
-
-      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 5000 });
-      const sc = structured(result);
-
-      expect(sc.truncated).toBe(true);
-      expect(text(result)).toContain(`| \\_id\\_ | markup |`);
-      expect(text(result)).toContain(`| 0 | ${'\\*\\_\\[\\]\\`\\\\\\<b>'.repeat(40)} |`);
-      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
-    });
-
-    it('charges each header key as rendered, Markdown escapes included', async () => {
-      /**
-       * A key appears once in the table header but in every row's JSON, so a wide escaped key on
-       * the first row alone puts most of its cost in the header: `*` is one character raw,
-       * three once escaped and JSON-encoded. Charged raw, the header under-counts by twice the
-       * key's length and the small rows that follow fill the page past the budget.
-       */
-      const key = '*'.repeat(25_000);
-      const rows = Array.from({ length: 5001 }, (_, i) =>
-        i === 0 ? { id: '0', [key]: 'v' } : { id: String(i) },
-      );
-      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
-
-      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 5000 });
-      const sc = structured(result);
-
-      expect(text(result)).toContain(`| id | ${'\\*'.repeat(25_000)} |`);
-      expect(sc.truncated).toBe(true);
-      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
-    });
-
-    it('charges the query echo as rendered in the trailer, code-span fence included', async () => {
-      /**
-       * The echo reaches structuredContent as a JSON string and the trailer as a code span
-       * whose fence outgrows the longest backtick run inside it, so a backtick-heavy clause
-       * costs far more rendered than raw; reserving the raw echo twice lets the rows run past
-       * the budget.
-       */
-      const where = '`'.repeat(30_000);
-      const rows = Array.from({ length: 5001 }, (_, i) => ({ id: String(i) }));
-      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
-
-      const result = await runToolContract(queryDataset, {
-        datasetId: 'ab12-cd34',
-        where,
-        order: ':id',
-        limit: 5000,
-      });
-      const sc = structured(result);
-
-      expect(sc.effectiveQuery).toContain(`$where=${where}`);
-      expect(text(result)).toContain('`'.repeat(30_001));
-      expect(sc.truncated).toBe(true);
-      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
-    });
-
-    it('resumes exactly at nextOffset across budget-cut pages', async () => {
-      const rows = Array.from({ length: 5001 }, (_, i) => surveillanceRow(i));
+    it('walks a result set to its end at nextOffset, every row once', async () => {
+      const rows = Array.from({ length: 2500 }, (_, i) => surveillanceRow(i));
       http.route({ match: /\/resource\/4va6-ph5s\.json/, respond: sodaEndpoint(rows) });
 
       const seen: string[] = [];
-      let offset = 0;
-      for (let page = 0; page < 3; page++) {
+      let offset: number | undefined = 0;
+      const pages: number[] = [];
+      while (offset !== undefined) {
         const result = await runToolContract(queryDataset, {
           datasetId: '4va6-ph5s',
-          limit: 5000,
+          order: ':id',
+          limit: 1000,
           offset,
         });
         const sc = structured(result);
-        expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
+        pages.push(sc.rows.length);
         seen.push(...sc.rows.map((r) => r.field_0 as string));
-        offset = sc.nextOffset as number;
+        offset = sc.nextOffset as number | undefined;
       }
 
-      expect(seen).toEqual(Array.from({ length: seen.length }, (_, i) => `${i}-${'x'.repeat(18)}`));
+      expect(pages).toEqual([1000, 1000, 500]);
+      expect(seen).toEqual(rows.map((r) => r.field_0));
     });
 
-    it('charges the caller select the fieldless-rows notice quotes, as rendered', async () => {
-      /**
-       * The notice quotes `select` on both surfaces, escaped in content[] — every `*` is two
-       * characters there and three once the text is a JSON string. Left uncharged, a long
-       * select carried the response past the budget the rows were trimmed to.
-       */
-      const select = '*'.repeat(31_000);
-      http.route({
-        match: /\/api\/views\/ab12-cd34\.json/,
-        respond: () => Response.json({ name: 'Real', columns: [{ fieldName: 'state' }] }),
-      });
-      http.route({
-        match: /\/resource\/ab12-cd34\.json/,
-        respond: sodaEndpoint(Array.from({ length: 5001 }, () => ({}))),
-      });
-
-      const result = await runToolContract(queryDataset, {
-        datasetId: 'ab12-cd34',
-        select,
-        limit: 5000,
-      });
-      const sc = structured(result);
-
-      expect(sc.notice).toContain(`the select clause "${select}"`);
-      expect(sc.truncated).toBe(true);
-      expect(JSON.stringify(result).length).toBeLessThanOrEqual(RESPONSE_BUDGET);
-    });
-
-    it('clamps limit past 5,000 to the cap on the wire and in the echo', async () => {
-      const rows = Array.from({ length: 6000 }, (_, i) => ({ id: String(i) }));
-      http.route({ match: /\/resource\/ab12-cd34\.json/, respond: sodaEndpoint(rows) });
-
-      const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 6000 });
-      const sc = structured(result);
-
-      expect(new URL(http.calls[0]!.request.url).searchParams.get('$limit')).toBe('5001');
-      expect(sc.effectiveQuery).toBe('$limit=5000&$offset=0');
-      expect(sc.rows).toHaveLength(5000);
-      expect(sc).toMatchObject({ truncated: true, shown: 5000, cap: 5000, nextOffset: 5000 });
-      expect(text(result)).toContain('limit=6000 is above the 5,000 rows one call returns');
-    });
-
-    it('still returns a single row wider than the whole budget', async () => {
+    it('returns a row wider than 200,000 characters and the row after it', async () => {
       http.route({
         match: /\/resource\/ab12-cd34\.json/,
         respond: sodaEndpoint([{ blob: 'x'.repeat(300_000) }, { blob: 'y' }]),
@@ -252,9 +169,9 @@ describe('cdc_query_dataset — whole response', () => {
       const result = await runToolContract(queryDataset, { datasetId: 'ab12-cd34', limit: 2 });
       const sc = structured(result);
 
-      expect(sc.rows).toHaveLength(1);
-      expect(sc.truncated).toBe(true);
-      expect(sc.nextOffset).toBe(1);
+      expect(sc.rows).toHaveLength(2);
+      expect(tableRows(result)).toHaveLength(2);
+      expect(sc.truncated).toBeUndefined();
     });
   });
 
@@ -424,6 +341,34 @@ describe('cdc_query_dataset — whole response', () => {
       expect(sc.notice).toMatch(/past the end/i);
       expect(sc.notice).toMatch(/matches nothing|matched nothing/i);
       expect(text(result)).toMatch(/past the end/i);
+      expect(http.calls).toHaveLength(2);
+    });
+
+    it('rethrows the caller abort that cuts the probe short instead of answering without it', async () => {
+      /**
+       * A probe that fails annotates nothing, so the page is answered without it — but a probe
+       * the caller cancelled is the caller leaving, and answering anyway would turn the
+       * cancellation into a success with a "could not be completed" notice.
+       */
+      const controller = new AbortController();
+      const reason = new Error('caller went away during the probe');
+      http.route({
+        match: /\/resource\/bi63-dtpu\.json/,
+        respond: (request) => {
+          if (new URL(request.url).searchParams.get('$offset') !== '0') return Response.json([]);
+          // The probe is in flight; it rejects with the reason its signal aborts with, as fetch does.
+          const inFlight = new Promise<Response>((_resolve, reject) => {
+            request.signal.addEventListener('abort', () => reject(request.signal.reason));
+          });
+          controller.abort(reason);
+          return inFlight;
+        },
+      });
+      const ctx = createMockContext({ errors: queryDataset.errors, signal: controller.signal });
+      const input = queryDataset.input.parse({ datasetId: 'bi63-dtpu', offset: 500 });
+
+      const err = await Promise.resolve(queryDataset.handler(input, ctx)).catch((e: unknown) => e);
+      expect(err).toBe(reason);
       expect(http.calls).toHaveLength(2);
     });
   });

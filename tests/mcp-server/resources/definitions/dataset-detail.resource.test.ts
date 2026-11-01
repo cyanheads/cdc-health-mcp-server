@@ -4,7 +4,7 @@
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { datasetDetailResource } from '@/mcp-server/resources/definitions/dataset-detail.resource.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
 
@@ -184,6 +184,76 @@ describe('cdc://datasets/{datasetId}', () => {
       const result = (await datasetDetailResource.handler(params, ctx)) as BoundedDetail;
 
       expect(result.columns[0]?.description).toBe(longDescription);
+    });
+  });
+
+  describe('publisher provenance', () => {
+    let fetchSpy: MockInstance<typeof fetch>;
+
+    beforeEach(() => {
+      fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unmocked fetch'));
+    });
+
+    afterEach(() => {
+      fetchSpy.mockRestore();
+    });
+
+    it('carries the coverage, cadence, citation, license, and attribution off the metadata document', async () => {
+      /**
+       * Read through the real service with only `fetch` faked: the resource spreads whatever the
+       * service read, so the document is the seam that proves the fields reach this surface.
+       * `/api/views/xkb8-kh2a.json` trimmed to these fields and one column.
+       */
+      const actual = await vi.importActual<typeof import('@/services/socrata/socrata-service.js')>(
+        '@/services/socrata/socrata-service.js',
+      );
+      const real = new actual.SocrataService();
+      mockGetMetadata.mockImplementation((...args: unknown[]) =>
+        real.getMetadata(args[0] as string, args[1] as AbortSignal | undefined),
+      );
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      fetchSpy.mockImplementation(async (input) =>
+        String(input).includes('/api/views/')
+          ? json({
+              name: 'VSRR Provisional Drug Overdose Death Counts',
+              columns: [{ fieldName: 'state', dataTypeName: 'text' }],
+              attribution: 'National Center for Health Statistics',
+              license: { name: 'Public Domain U.S. Government' },
+              metadata: {
+                custom_fields: {
+                  'Data Quality': {
+                    'Suggested Citation': ' NCHS. VSRR Provisional Drug Overdose Death Counts.',
+                  },
+                  'Common Core': {
+                    'Update Frequency': 'R/P1M',
+                    'Temporal Applicability': '2015-01-01/2026-05-31',
+                    'Geographic Coverage': 'United States',
+                  },
+                },
+              },
+            })
+          : json([{ count: '81270' }]),
+      );
+      const ctx = createMockContext({ errors: datasetDetailResource.errors });
+      const params = datasetDetailResource.params!.parse({ datasetId: 'xkb8-kh2a' });
+      const result = (await datasetDetailResource.handler(params, ctx)) as DatasetMetadata;
+
+      expect(result).toMatchObject({
+        temporalCoverage: '2015-01-01/2026-05-31',
+        updateFrequency: 'R/P1M',
+        geographicCoverage: 'United States',
+        citation: 'NCHS. VSRR Provisional Drug Overdose Death Counts.',
+        license: 'Public Domain U.S. Government',
+        attribution: 'National Center for Health Statistics',
+        rowCount: 81_270,
+      });
+    });
+
+    it('names the fields it carries in its description', () => {
+      for (const field of ['temporalCoverage', 'updateFrequency', 'citation', 'license']) {
+        expect(datasetDetailResource.description).toContain(field);
+      }
     });
   });
 

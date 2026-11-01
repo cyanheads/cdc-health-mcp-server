@@ -1,5 +1,6 @@
 /**
- * @fileoverview Tests for SocrataService error handling, 400 codes, network failures, and security.
+ * @fileoverview Tests for SocrataService error handling by status, 400 codes, and security. Failures
+ * that arrive without a usable status are in `socrata-service-failures.test.ts`.
  * @module tests/services/socrata/socrata-service-errors
  */
 
@@ -28,10 +29,6 @@ function mockFetch(body: unknown, status = 200) {
 
 function mockFetchText(body: string, status: number) {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status }));
-}
-
-function mockFetchReject(err: Error) {
-  return vi.spyOn(globalThis, 'fetch').mockRejectedValue(err);
 }
 
 describe('SocrataService — error handling', () => {
@@ -485,25 +482,6 @@ describe('SocrataService — error handling', () => {
       const err = (await service.discover({ query: 'x' }).catch((e) => e)) as McpError;
       expect(err.code).toBe(JsonRpcErrorCode.Unauthorized);
       expect((err.data as Record<string, unknown> | undefined)?.reason).toBeUndefined();
-    });
-  });
-
-  describe('network failures', () => {
-    it('propagates TypeError on network failure in discover', async () => {
-      mockFetchReject(new TypeError('fetch failed'));
-      await expect(service.discover({})).rejects.toThrow(/fetch failed/);
-    });
-
-    it('propagates network error in query', async () => {
-      mockFetchReject(new Error('ECONNREFUSED'));
-      await expect(service.query({ datasetId: 'ab12-cd34' })).rejects.toThrow(/ECONNREFUSED/);
-    });
-
-    it('propagates AbortError on signal abort', async () => {
-      const controller = new AbortController();
-      mockFetchReject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
-      controller.abort();
-      await expect(service.getMetadata('ab12-cd34', controller.signal)).rejects.toThrow(/Aborted/);
     });
   });
 

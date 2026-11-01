@@ -72,14 +72,19 @@ describe('SocrataService ↔ definition error contracts', () => {
      * contract entry, so one upstream status can arrive as a permanent refusal from one
      * definition and a retryable outage from another once the entries drift. Retryability
      * is the half that misled callers: `upstream_error` is the only non-429 reason allowed
-     * to claim a retry, and it is allowed one only because it is now scoped to 5xx.
+     * to claim a retry, and it is allowed one only because it is scoped to outages — a 5xx, an
+     * unreachable host, a request past its deadline, an unreadable 2xx body — never a 4xx.
      */
     const shape: Record<string, { code: JsonRpcErrorCode; retryable?: true; when?: RegExp }> = {
       access_denied: { code: JsonRpcErrorCode.Forbidden, when: /403/ },
       dataset_not_found: { code: JsonRpcErrorCode.NotFound },
       invalid_query: { code: JsonRpcErrorCode.ValidationError },
       rate_limited: { code: JsonRpcErrorCode.RateLimited, retryable: true, when: /429/ },
-      upstream_error: { code: JsonRpcErrorCode.ServiceUnavailable, retryable: true, when: /5xx/ },
+      upstream_error: {
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        retryable: true,
+        when: /returned a 5xx server error, could not be reached, did not finish answering within 20 seconds, or answered with a body that is not the JSON it serves\.$/,
+      },
     };
 
     for (const { name, errors } of CONSUMERS) {

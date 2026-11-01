@@ -6,7 +6,7 @@
 import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import type { DatasetMetadata } from '@/services/socrata/types.js';
+import { type DatasetMetadata, REQUEST_TIMEOUT_TEXT } from '@/services/socrata/types.js';
 import {
   DATASET_DESCRIPTION_CAP,
   DATASET_DESCRIPTION_CAP_TEXT,
@@ -28,7 +28,7 @@ const COLUMN_WINDOW = 100;
 
 export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
   name: 'CDC Dataset Detail',
-  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters, with descriptionTruncated and descriptionLength set when cut; call cdc_get_dataset_schema with full_description: true for the whole text. The row count and its rowCountSource ("live" or "cached") match what cdc_get_dataset_schema reports for the same ID.`,
+  description: `Dataset metadata and column schema for a specific CDC dataset, addressable by URI. Carries the first ${COLUMN_WINDOW} columns, the dataset's total column count, and a truncation flag; call cdc_get_dataset_schema with column_offset for the columns beyond that window. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters, with descriptionTruncated and descriptionLength set when cut; call cdc_get_dataset_schema with full_description: true for the whole text. The row count and its rowCountSource ("live" or "cached") match what cdc_get_dataset_schema reports for the same ID. A filter carries parentId, the dataset it is a view of; a chart or map has no schema of its own, and the failure names the dataset it is built on. Where the publisher recorded them, temporalCoverage, updateFrequency, geographicCoverage, citation, license, and attribution carry its own text in no fixed format, as on cdc_get_dataset_schema.`,
   mimeType: 'application/json',
 
   errors: [
@@ -70,7 +70,7 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata metadata API returned a 5xx server error.',
+      when: `Socrata metadata API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -114,12 +114,21 @@ export const datasetDetailResource = resource('cdc://datasets/{datasetId}', {
     /**
      * The metadata endpoint answers 200 for every catalog asset, so an empty `columns`
      * array is what separates a tabular dataset from a chart, map, story, file, or link.
-     * Returning that bare is a failed lookup dressed as a result.
+     * Returning that bare is a failed lookup dressed as a result. A chart or map names the
+     * dataset it draws on in the same document, so the failure points there.
      */
     if (metadata.columns.length === 0) {
+      const { parentId } = metadata;
       throw ctx.fail(
         'not_queryable',
-        `Dataset ${params.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.`,
+        `Dataset ${params.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.${parentId ? ` It is a view of dataset ${parentId}, which carries the rows behind it.` : ''}`,
+        parentId
+          ? {
+              recovery: {
+                hint: `Read cdc://datasets/${parentId}, the dataset this asset is built on, then query that ID with cdc_query_dataset.`,
+              },
+            }
+          : undefined,
       );
     }
 

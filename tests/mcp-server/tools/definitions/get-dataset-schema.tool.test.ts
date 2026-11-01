@@ -51,6 +51,111 @@ describe('cdc_get_dataset_schema', () => {
     expect(mockGetMetadata).toHaveBeenCalledWith('bi63-dtpu', ctx.signal, 'data.cdc.gov');
   });
 
+  describe('parentId', () => {
+    it('names the dataset a filter is a view of on both surfaces', async () => {
+      mockGetMetadata.mockResolvedValue({ ...sampleMetadata, parentId: '32fd-hyzc' });
+      const result = await runToolContract(getDatasetSchema, { datasetId: '2389-pvg9' });
+
+      expect(result.structuredContent).toMatchObject({ parentId: '32fd-hyzc' });
+      const html = renderMarkdown(contentText(result));
+      expect(html).toContain('<code>32fd-hyzc</code>');
+      expect(readBack(html)).toContain('View of: 32fd-hyzc — the dataset it was derived from');
+    });
+
+    it('carries no parentId and no view line for a dataset in its own right', async () => {
+      mockGetMetadata.mockResolvedValue(sampleMetadata);
+      const result = await runToolContract(getDatasetSchema, { datasetId: 'bi63-dtpu' });
+
+      expect(result.structuredContent).not.toHaveProperty('parentId');
+      expect(contentText(result)).not.toContain('View of');
+    });
+  });
+
+  describe('publisher provenance', () => {
+    /** `xkb8-kh2a`'s values as the service reads them off its metadata document. */
+    const XKB8 = {
+      temporalCoverage: '2015-01-01/2026-05-31',
+      updateFrequency: 'R/P1M',
+      geographicCoverage: 'United States',
+      citation:
+        'National Center for Health Statistics. VSRR Provisional Drug Overdose Death Counts. Date accessed [Last accessed date]. Available from https://data.cdc.gov/d/xkb8-kh2a.',
+      license: 'Public Domain U.S. Government',
+      attribution: 'National Center for Health Statistics',
+    } as const;
+    const LABELS = {
+      temporalCoverage: 'Temporal coverage',
+      updateFrequency: 'Update frequency',
+      geographicCoverage: 'Geographic coverage',
+      citation: 'Suggested citation',
+      license: 'License',
+      attribution: 'Attribution',
+    } as const;
+    const KEYS = Object.keys(LABELS) as (keyof typeof LABELS)[];
+    const ALLOWED = ['h2', 'p', 'strong', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'code'];
+
+    /** The rendered line `label` opens, read back as the text a content[]-only client sees. */
+    const renderedLine = (html: string, label: string) =>
+      readBack(html)
+        .split('\n')
+        .find((line) => line.startsWith(`${label}: `));
+
+    it('carries every field the publisher recorded on both surfaces', async () => {
+      mockGetMetadata.mockResolvedValue({ ...sampleMetadata, ...XKB8 });
+      const result = await runToolContract(getDatasetSchema, { datasetId: 'xkb8-kh2a' });
+
+      expect(result.structuredContent).toMatchObject(XKB8);
+      const html = renderMarkdown(contentText(result));
+      for (const key of KEYS) {
+        expect(renderedLine(html, LABELS[key])).toBe(`${LABELS[key]}: ${XKB8[key]}`);
+      }
+      // The citation's URL links to the address it spells, its closing period left outside.
+      expect(html).toContain('href="https://data.cdc.gov/d/xkb8-kh2a"');
+      expect(strayElements(html, ALLOWED)).toEqual([]);
+    });
+
+    it('renders markup-shaped publisher text as the literal text structuredContent carries', async () => {
+      const hostile = {
+        temporalCoverage: '1999/2018 *provisional*',
+        updateFrequency: '# Weekly',
+        geographicCoverage: '1. United States_',
+        citation: 'See [here](javascript:alert(1)) and https://www.cdc.gov/a-_b.htm',
+        license: '<b>Public</b> | Domain',
+        attribution: 'NCHS &amp; DVS `x`',
+      };
+      mockGetMetadata.mockResolvedValue({ ...sampleMetadata, ...hostile });
+      const result = await runToolContract(getDatasetSchema, { datasetId: 'ab12-cd34' });
+
+      expect(result.structuredContent).toMatchObject(hostile);
+      const html = renderMarkdown(contentText(result));
+      for (const key of KEYS) {
+        expect(renderedLine(html, LABELS[key])).toBe(`${LABELS[key]}: ${hostile[key]}`);
+      }
+      expect(strayElements(html, ALLOWED)).toEqual([]);
+    });
+
+    it('carries only what a sparse document records, with no line for the rest', async () => {
+      /** `7vnz-2mjz` records an attribution and none of the other five. */
+      mockGetMetadata.mockResolvedValue({ ...sampleMetadata, attribution: 'NCHS/DHIS' });
+      const result = await runToolContract(getDatasetSchema, { datasetId: '7vnz-2mjz' });
+
+      const structured = result.structuredContent as Record<string, unknown>;
+      expect(KEYS.filter((key) => key in structured)).toEqual(['attribution']);
+      const html = renderMarkdown(contentText(result));
+      expect(renderedLine(html, 'Attribution')).toBe('Attribution: NCHS/DHIS');
+      for (const key of KEYS.filter((k) => k !== 'attribution')) {
+        expect(renderedLine(html, LABELS[key])).toBeUndefined();
+      }
+    });
+
+    it('describes each field as publisher-written text in no fixed format', () => {
+      for (const key of KEYS) {
+        const description = getDatasetSchema.output.shape[key].description ?? '';
+        expect(description, key).toContain('publisher-written text');
+        expect(description, key).toContain('no fixed format');
+      }
+    });
+  });
+
   describe('row count provenance', () => {
     it('carries a live-derived count and its provenance on both surfaces', async () => {
       /**

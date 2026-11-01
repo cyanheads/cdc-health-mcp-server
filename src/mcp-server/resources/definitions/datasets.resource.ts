@@ -8,7 +8,7 @@
 import { resource } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import type { DiscoverResult } from '@/services/socrata/types.js';
+import { type DiscoverResult, REQUEST_TIMEOUT_TEXT } from '@/services/socrata/types.js';
 
 export const datasetsResource = resource('cdc://datasets', {
   name: 'CDC Dataset Catalog',
@@ -41,7 +41,7 @@ export const datasetsResource = resource('cdc://datasets', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata catalog API returned a 5xx server error.',
+      when: `Socrata catalog API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
       recovery: 'Retry after a brief delay; the catalog may be temporarily unavailable.',
     },

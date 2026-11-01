@@ -53,8 +53,8 @@ const UNCLOSED_TAG = /<(?:!--|\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][-\w:.]*\s
 /**
  * Characters of the dataset-level description a metadata response carries before it is cut. The
  * description repeats on every column page, and column paging cannot shrink it: at 32,394
- * characters, `ua7e-t2fy`'s is 98% of a two-column response. Only a few dozen catalog
- * descriptions exceed this (the median is about 1,075), so the cap changes only those.
+ * characters, a very long one dominates a response of only a few columns. Only a few dozen
+ * catalog descriptions exceed this (the median is about 1,075), so the cap changes only those.
  */
 export const DATASET_DESCRIPTION_CAP = 4000;
 
@@ -178,7 +178,7 @@ export function toPlainText(markup: string): string {
  * address: a GFM client autolinks bare URLs, and `https://www.cdc.gov/nch` links to a page
  * that does not exist. A URL the cut lands right after is kept and set off from the ellipsis
  * by a space, since GFM extends a bare URL through a directly-attached `…` (`%E2%80%A6`). Any
- * other token is cut at the limit, as before. A cut that would split a surrogate pair moves
+ * other token is cut at the limit. A cut that would split a surrogate pair moves
  * back one unit — a lone surrogate makes a strict JSON consumer reject the whole frame.
  *
  * Takes text already converted with `toPlainText`, so the limit is spent on visible text and

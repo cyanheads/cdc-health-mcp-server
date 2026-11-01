@@ -10,16 +10,17 @@ import {
   CDC_SOCRATA_DOMAINS,
   type DatasetMetadata,
   type QueryResult,
+  REQUEST_TIMEOUT_TEXT,
 } from '@/services/socrata/types.js';
 import { escapeTableCell, markdownBlockquote, markdownCodeSpan } from '@/utils/markdown.js';
-import { jsonLength, MAX_RESPONSE_CHARS } from '@/utils/response-budget.js';
 import { nonBlank } from '@/utils/text.js';
 
 /**
  * Most rows one call returns. `limit` sizes the SODA `$limit`, so it is a workload cap: a larger
- * `limit` is clamped to it and the clamp disclosed, rather than the call rejected.
+ * `limit` is clamped to it and the clamp disclosed, rather than the call rejected. SODA sets no
+ * maximum of its own; `select` narrows each row of a wide dataset.
  */
-const MAX_LIMIT = 5000;
+const MAX_LIMIT = 1000;
 const MAX_LIMIT_TEXT = MAX_LIMIT.toLocaleString('en-US');
 /**
  * Ceiling on `offset`, mirrored in the input schema and used to decide whether a
@@ -28,26 +29,10 @@ const MAX_LIMIT_TEXT = MAX_LIMIT.toLocaleString('en-US');
  */
 const MAX_OFFSET = 1_000_000;
 const MAX_OFFSET_TEXT = MAX_OFFSET.toLocaleString('en-US');
-/**
- * Characters held back from the `MAX_RESPONSE_CHARS` row budget for the parts of the response
- * that are not rows: the result keys, the row-count heading, the table's opening pipes, the
- * schema tip, the enrichment trailer's labels, and the notice, which reaches both surfaces.
- * The fixed text of the longest notice combination, doubled, is under 2,000 characters; the
- * query echo and the caller's clauses a notice quotes are reserved separately because their
- * length is the caller's.
- *
- * Every row reaches the caller twice: as JSON in `structuredContent` and as a line of the
- * markdown table in `content[]`, so each row is charged both costs. A row count is a leaky
- * proxy for size: 5,000 rows of a 38-column surveillance dataset serialize to ~6 MB, while
- * 5,000 rows of a 3-column summary fit in a fraction of that. The budget only ever shortens a
- * page below its (capped) `limit`, and rows it drops are disclosed with a `nextOffset` that
- * resumes exactly where the response stopped.
- */
-const FRAMING_RESERVE = 4_000;
 
 type Row = Record<string, unknown>;
 
-/** One table cell, as `format()` renders it — shared so the budget charges what is rendered. */
+/** One table cell, as `format()` renders it. */
 function renderCell(value: unknown): string {
   const text = typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
   return escapeTableCell(text);
@@ -60,42 +45,10 @@ function renderTableRow(row: Row, columns: readonly string[]): string {
 
 /**
  * The trailer line for the query echo — a code span, since a SoQL clause is full of characters
- * Markdown acts on (`count(*)` alone pairs into emphasis). Shared with the budget so the echo
- * is charged as rendered.
+ * Markdown acts on (`count(*)` alone pairs into emphasis).
  */
 function renderEffectiveQuery(query: string): string {
   return `**effectiveQuery:** ${markdownCodeSpan(query)}`;
-}
-
-/**
- * Take rows from the head of the page until the next one would carry the serialized response
- * past `MAX_RESPONSE_CHARS`. A row costs its JSON plus its table line; a column first seen on
- * a later row also costs its header and separator cells and one empty cell on every earlier
- * line, since SODA omits null keys and the table is headed by the union of all rows' keys.
- * Always keeps the first row: a single row wider than the whole budget still has to come back
- * as a row, not as an empty page that reads like "nothing matched".
- */
-function withinBudget(rows: Row[], reserved: number): Row[] {
-  let used = reserved;
-  const columns: string[] = [];
-  const known = new Set<string>();
-  for (const [index, row] of rows.entries()) {
-    for (const key of Object.keys(row)) {
-      if (known.has(key)) continue;
-      known.add(key);
-      columns.push(key);
-      used += jsonLength(renderCell(key)) + ' | '.length + ' | ---'.length + ' | '.length * index;
-    }
-    // The row inside the JSON array plus its comma, then its table line plus the newline.
-    used += JSON.stringify(row).length + 1 + jsonLength(`${renderTableRow(row, columns)}\n`);
-    if (used > MAX_RESPONSE_CHARS) return rows.slice(0, Math.max(index, 1));
-  }
-  return rows;
-}
-
-/** What `text` costs in the response: a JSON string in `structuredContent`, a blockquote in `content[]`. */
-function noticeCost(text: string): number {
-  return jsonLength(text) + jsonLength(markdownBlockquote(text));
 }
 
 /**
@@ -255,7 +208,7 @@ export const queryDataset = tool('cdc_query_dataset', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata data API returned a 5xx server error.',
+      when: `Socrata data API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -310,7 +263,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .max(MAX_OFFSET)
       .default(100)
       .describe(
-        `Max rows to return (default 100). One call returns at most ${MAX_LIMIT_TEXT} rows: a larger limit, up to ${MAX_OFFSET_TEXT}, is capped at ${MAX_LIMIT_TEXT}, and the response says so and gives a nextOffset when more rows remain. Fewer come back when the page would carry the response past its ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character budget, counted over the whole result — the rows as JSON and as the rendered table together; the response says so and gives a nextOffset to resume from.`,
+        `Rows to return (default 100). One call returns at most ${MAX_LIMIT_TEXT} rows: a larger limit, up to ${MAX_OFFSET_TEXT}, is capped at ${MAX_LIMIT_TEXT}, and the response says so and gives a nextOffset when more rows remain. Up to that cap, a page comes back shorter than limit only at the end of the result set.`,
       ),
     offset: z
       .number()
@@ -364,7 +317,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .string()
       .optional()
       .describe(
-        `Guidance when no rows matched, when offset ran past the end of the result set, when further rows remain (naming a limit above ${MAX_LIMIT_TEXT} that was capped), or when the response budget cut the page short — how to verify filters, lower offset, resume paging under the same order or restart it from offset 0 under one that makes the walk gap-free, or broaden the query.`,
+        `Guidance when no rows matched, when offset ran past the end of the result set (or the offset-0 check that tells the two apart could not complete), when every matched row came back with no fields for the projection, or when further rows remain (naming a limit above ${MAX_LIMIT_TEXT} that was capped) — how to verify filters, lower offset, pick columns the matched rows populate, resume paging under the same order or restart it from offset 0 under one that makes the walk gap-free, or broaden the query.`,
       ),
   },
 
@@ -420,23 +373,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       ? `the select clause "${clauses.select}"`
       : 'every column of the dataset';
 
-    /**
-     * The query echo reaches both surfaces — structuredContent and the enrichment trailer — and
-     * so does every notice. A notice's fixed text sits in `FRAMING_RESERVE`; the caller's
-     * clauses it quotes are charged here, as rendered, wherever that notice can appear: the
-     * resume advice on any non-empty page (the budget itself may cut it), the projection when
-     * the first row — which the budget always keeps — carries no fields.
-     */
-    const [firstRow] = result.rows;
-    const reserved =
-      FRAMING_RESERVE +
-      jsonLength(result.query) +
-      jsonLength(renderEffectiveQuery(result.query)) +
-      (firstRow ? noticeCost(resumeAdvice(MAX_OFFSET, clauses)) : 0) +
-      (firstRow && Object.keys(firstRow).length === 0 ? noticeCost(projection) : 0);
-    const rows = withinBudget(result.rows, reserved);
-    const budgetCut = rows.length < result.rows.length;
-    const hasMore = result.hasMore || budgetCut;
+    const { rows, hasMore } = result;
     const nextOffset = input.offset + rows.length;
 
     /**
@@ -446,22 +383,23 @@ export const queryDataset = tool('cdc_query_dataset', {
      */
     const guidance: string[] = [];
 
-    if (result.rows.length === 0 && input.offset === 0) {
+    if (rows.length === 0 && input.offset === 0) {
       guidance.push(NO_MATCH_NOTICE);
-    } else if (result.rows.length === 0) {
+    } else if (rows.length === 0) {
       /**
        * The data endpoint reports no total, so an offset paged past the end of a real result
        * set and a filter that matched nothing arrive identically. The same query at offset 0
        * tells them apart for one row's cost, spent only on this branch — an empty page at
        * offset 0 and every non-empty page issue no extra request. The probe annotates an
        * answer that is already correct, so its failure names both causes rather than failing
-       * the call.
+       * the call — unless the caller cancelled it, which is the call ending, not the probe failing.
        */
       let matchedAtStart: boolean | undefined;
       try {
         const probe = await service.query({ ...clauses, offset: 0, limit: 1 }, ctx.signal);
         matchedAtStart = probe.rows.length > 0;
       } catch (err) {
+        if (ctx.signal.aborted) throw err;
         ctx.log.warning('Offset probe failed; empty page left undiagnosed', {
           datasetId: input.datasetId,
           error: err instanceof Error ? err.message : String(err),
@@ -497,9 +435,18 @@ export const queryDataset = tool('cdc_query_dataset', {
       }
 
       if (metadata.columns.length === 0) {
+        // The document already in hand names the dataset a chart or map draws on.
+        const { parentId } = metadata;
         throw ctx.fail(
           'not_queryable',
-          `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset — a chart or a map — and the rows it returned carry no fields, so there is no data to page through.`,
+          `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset — a chart or a map — and the rows it returned carry no fields, so there is no data to page through.${parentId ? ` It is a view of dataset ${parentId}, which carries the rows behind it.` : ''}`,
+          parentId
+            ? {
+                recovery: {
+                  hint: `Query datasetId "${parentId}", the dataset this asset is built on; cdc_get_dataset_schema lists its columns.`,
+                },
+              }
+            : undefined,
         );
       }
 
@@ -512,14 +459,9 @@ export const queryDataset = tool('cdc_query_dataset', {
       );
     }
 
-    if (result.rows.length > 0 && hasMore) {
-      const clamped = input.limit > MAX_LIMIT;
-      const capNote = clamped
-        ? ` (limit=${input.limit} is capped at ${MAX_LIMIT_TEXT} rows per call)`
-        : '';
-      const cause = budgetCut
-        ? `the ${MAX_RESPONSE_CHARS.toLocaleString('en-US')}-character response budget, which counts the rows as JSON and as the rendered table together, cut the page at ${rows.length.toLocaleString('en-US')} of the ${limit.toLocaleString('en-US')} rows requested${capNote}`
-        : clamped
+    if (rows.length > 0 && hasMore) {
+      const cause =
+        input.limit > MAX_LIMIT
           ? `limit=${input.limit} is above the ${MAX_LIMIT_TEXT} rows one call returns, so the page stopped at ${MAX_LIMIT_TEXT}`
           : `the requested limit of ${input.limit} was reached`;
       const resume =
@@ -537,7 +479,6 @@ export const queryDataset = tool('cdc_query_dataset', {
       domain: input.domain,
       datasetId: input.datasetId,
       rowCount: rows.length,
-      budgetCut,
       hasMore,
       query: result.query,
     });

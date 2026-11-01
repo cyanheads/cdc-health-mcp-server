@@ -62,6 +62,40 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       expect(err.message).toContain('has no columns');
     });
 
+    it('keeps the parentless failure text for a file, which names no dataset', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'Pulmonary evaluation of 3D printer emissions',
+        columns: [],
+      });
+
+      const err = await contractError(getDatasetSchema, { datasetId: '235m-gsry' });
+      expect(err.message).toBe(
+        'Dataset 235m-gsry ("Pulmonary evaluation of 3D printer emissions") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.',
+      );
+      expect(err.data.recovery?.hint).toBe(
+        getDatasetSchema.errors?.find((e) => e.reason === 'not_queryable')?.recovery,
+      );
+    });
+
+    it('names the dataset a chart is built on in the message and the recovery hint', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'National Weekly Pfizer Allocations',
+        columns: [],
+        parentId: 'saz5-9hgg',
+      });
+
+      const err = await contractError(getDatasetSchema, { datasetId: 'sxbq-3sid' });
+      expect(err.data.reason).toBe('not_queryable');
+      expect(err.message).toBe(
+        'Dataset sxbq-3sid ("National Weekly Pfizer Allocations") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it. It is a view of dataset saz5-9hgg, which carries the rows behind it.',
+      );
+      expect(err.data.recovery?.hint).toBe(
+        'Call cdc_get_dataset_schema with datasetId "saz5-9hgg", the dataset this asset is built on, then query that ID with cdc_query_dataset.',
+      );
+      // The parent comes off the document the check already read: one metadata call, as before.
+      expect(mockGetMetadata).toHaveBeenCalledTimes(1);
+    });
+
     it('handles column with no description', async () => {
       const meta: DatasetMetadata = {
         name: 'Dataset',

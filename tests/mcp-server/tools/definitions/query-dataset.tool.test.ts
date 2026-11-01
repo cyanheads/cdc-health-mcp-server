@@ -214,6 +214,28 @@ describe('cdc_query_dataset', () => {
       expect(err.data.recovery?.hint).toContain('columnCount');
       expect(err.message).toContain('sxbq-3sid');
       expect(err.message).toContain('Pfizer Allocations');
+      expect(err.message).not.toContain('view of dataset');
+    });
+
+    it('names the dataset a chart is built on, from the metadata the check already read', async () => {
+      mockQuery.mockResolvedValue(fieldlessPage);
+      mockGetMetadata.mockResolvedValue({
+        name: 'National Weekly Pfizer Allocations',
+        columns: [],
+        parentId: 'saz5-9hgg',
+      });
+
+      const err = await contractError(queryDataset, { datasetId: 'sxbq-3sid', limit: 2 });
+
+      expect(err.data.reason).toBe('not_queryable');
+      expect(err.message).toBe(
+        'Dataset sxbq-3sid ("National Weekly Pfizer Allocations") has no columns. The ID names a non-tabular catalog asset — a chart or a map — and the rows it returned carry no fields, so there is no data to page through. It is a view of dataset saz5-9hgg, which carries the rows behind it.',
+      );
+      expect(err.data.recovery?.hint).toBe(
+        'Query datasetId "saz5-9hgg", the dataset this asset is built on; cdc_get_dataset_schema lists its columns.',
+      );
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockGetMetadata).toHaveBeenCalledTimes(1);
     });
 
     it('succeeds with a notice when the dataset has columns but the projection is all null', async () => {
@@ -382,19 +404,19 @@ describe('cdc_query_dataset', () => {
     expect(input.limit).toBe(100);
   });
 
-  describe('limit past the 5,000-row cap', () => {
+  describe('limit past the 1,000-row cap', () => {
     const notice = (result: Awaited<ReturnType<typeof runToolContract>>) =>
       (result.structuredContent as { notice?: string }).notice;
 
-    /** The service was asked for the 5,000-row cap, whatever limit the caller sent. */
+    /** The service was asked for the 1,000-row cap, whatever limit the caller sent. */
     const expectCappedRequest = () =>
       expect(mockQuery).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 5000 }),
+        expect.objectContaining({ limit: 1000 }),
         expect.anything(),
       );
 
-    it.each([5001, 1_000_000])(
-      'clamps limit %i to 5,000 and names the cap when rows remain',
+    it.each([1001, 5000, 1_000_000])(
+      'clamps limit %i to 1,000 and names the cap when rows remain',
       async (limit) => {
         mockQuery.mockResolvedValue({ ...sampleResult, hasMore: true });
         const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit });
@@ -403,14 +425,14 @@ describe('cdc_query_dataset', () => {
         expect(result.structuredContent).toMatchObject({
           truncated: true,
           shown: 2,
-          cap: 5000,
+          cap: 1000,
           nextOffset: 2,
         });
         expect(notice(result)).toBe(
-          `More rows exist beyond this response — limit=${limit} is above the 5,000 rows one call returns, so the page stopped at 5,000. To page on without skipping or repeating rows, call again from offset=0 with order=":id" and continue by offset from there. ":id" is the row identifier every dataset carries, and this page was read without that tie-breaker, so the rows returned so far need not be the ones that order puts first.`,
+          `More rows exist beyond this response — limit=${limit} is above the 1,000 rows one call returns, so the page stopped at 1,000. To page on without skipping or repeating rows, call again from offset=0 with order=":id" and continue by offset from there. ":id" is the row identifier every dataset carries, and this page was read without that tie-breaker, so the rows returned so far need not be the ones that order puts first.`,
         );
         expect(contentText(result)).toContain(
-          `limit=${limit} is above the 5,000 rows one call returns`,
+          `limit=${limit} is above the 1,000 rows one call returns`,
         );
       },
     );
@@ -423,43 +445,41 @@ describe('cdc_query_dataset', () => {
 
       expect(result.isError).toBeFalsy();
       expectCappedRequest();
-      expect(notice(result)).toContain('limit=6000 is above the 5,000 rows one call returns');
+      expect(notice(result)).toContain('limit=6000 is above the 1,000 rows one call returns');
     });
 
     it('says nothing of the cap when a clamped limit returned the whole remainder', async () => {
       mockQuery.mockResolvedValue(sampleResult);
-      const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit: 5001 });
+      const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit: 1001 });
 
       expectCappedRequest();
       expect(result.structuredContent).not.toHaveProperty('truncated');
       expect(notice(result)).toBeUndefined();
     });
 
-    it('names the cap beside a budget cut of a clamped page, every count formatted alike', async () => {
-      // Rows narrow enough that the budget keeps over a thousand of them, wide enough to cut.
-      const wide = Array.from({ length: 5000 }, (_, i) => ({ blob: `${i}-${'w'.repeat(60)}` }));
+    it('returns every row the service hands back for a clamped page, wide rows included', async () => {
+      const wide = Array.from({ length: 1000 }, (_, i) => ({ blob: `${i}-${'w'.repeat(600)}` }));
       mockQuery.mockResolvedValue({
         rows: wide,
-        rowCount: 5000,
-        query: '$limit=5000&$offset=0',
+        rowCount: 1000,
+        query: '$limit=1000&$offset=0',
         hasMore: true,
       });
       const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit: 7000 });
-      const sc = result.structuredContent as { shown: number; cap: number; notice: string };
+      const sc = result.structuredContent as { rows: unknown[]; shown: number; cap: number };
 
-      expect(sc.cap).toBe(5000);
-      expect(sc.shown).toBeGreaterThan(999);
-      expect(sc.shown).toBeLessThan(5000);
-      expect(sc.notice).toContain(
-        `cut the page at ${sc.shown.toLocaleString('en-US')} of the 5,000 rows requested (limit=7000 is capped at 5,000 rows per call).`,
+      expect(sc.rows).toHaveLength(1000);
+      expect(sc).toMatchObject({ shown: 1000, cap: 1000, nextOffset: 1000 });
+      expect(notice(result)).toContain(
+        'limit=7000 is above the 1,000 rows one call returns, so the page stopped at 1,000.',
       );
     });
 
     it('formats the fieldless-row count beside the formatted cap', async () => {
       mockQuery.mockResolvedValue({
-        rows: Array.from({ length: 5000 }, () => ({})),
-        rowCount: 5000,
-        query: '$select=footnote&$limit=5000&$offset=0',
+        rows: Array.from({ length: 1000 }, () => ({})),
+        rowCount: 1000,
+        query: '$select=footnote&$limit=1000&$offset=0',
         hasMore: true,
       });
       mockGetMetadata.mockResolvedValue({
@@ -473,18 +493,35 @@ describe('cdc_query_dataset', () => {
       });
 
       expect((result.structuredContent as { notice: string }).notice).toContain(
-        'the select clause "footnote" is null on all 5,000 matched rows',
+        'the select clause "footnote" is null on all 1,000 matched rows',
       );
     });
 
-    it('keeps a limit at or below the cap exactly as today, with no cap notice', async () => {
+    it('keeps a limit at the cap as requested, with no cap notice', async () => {
       mockQuery.mockResolvedValue({ ...sampleResult, hasMore: true });
-      const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit: 5000 });
+      const result = await runToolContract(queryDataset, { datasetId: 'bi63-dtpu', limit: 1000 });
 
       expectCappedRequest();
       expect(notice(result)).toBe(
-        'More rows exist beyond this response — the requested limit of 5000 was reached. To page on without skipping or repeating rows, call again from offset=0 with order=":id" and continue by offset from there. ":id" is the row identifier every dataset carries, and this page was read without that tie-breaker, so the rows returned so far need not be the ones that order puts first.',
+        'More rows exist beyond this response — the requested limit of 1000 was reached. To page on without skipping or repeating rows, call again from offset=0 with order=":id" and continue by offset from there. ":id" is the row identifier every dataset carries, and this page was read without that tie-breaker, so the rows returned so far need not be the ones that order puts first.',
       );
+    });
+
+    it('states the 1,000-row cap and drops any character budget from the limit, cap, and notice descriptions', () => {
+      const { limit } = queryDataset.input.shape;
+      expect(limit.description).toBe(
+        'Rows to return (default 100). One call returns at most 1,000 rows: a larger limit, up to 1,000,000, is capped at 1,000, and the response says so and gives a nextOffset when more rows remain. Up to that cap, a page comes back shorter than limit only at the end of the result set.',
+      );
+      expect(queryDataset.enrichment?.cap.description).toBe(
+        'The row limit that bounded this response: the requested limit, or 1,000 when a larger one was capped.',
+      );
+      for (const description of [
+        limit.description,
+        queryDataset.enrichment?.notice.description,
+        queryDataset.enrichment?.truncated.description,
+      ]) {
+        expect(description).not.toMatch(/budget|character/);
+      }
     });
 
     it('still rejects a non-integer limit', () => {

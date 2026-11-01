@@ -82,14 +82,98 @@ describe('matchVocabulary', () => {
     }
   });
 
-  it('ignores a filter too short to discriminate', () => {
+  describe('a filter under three letters or digits', () => {
     /**
-     * "a" is inside most of the ~1,600 live tags, so containment on it returns the whole
-     * vocabulary dressed as a match — a result that reads as signal and carries none.
+     * Live `data.cdc.gov` values that carry `tb`, `h5`, or `19` — as a whole word or inside
+     * one — plus the one category naming TB, count-ranked as the service returns them.
      */
-    expect(matchVocabulary(CATEGORIES, 'a', 3)).toEqual([]);
-    expect(matchVocabulary(CATEGORIES, 'NN', 3)).toEqual([]);
-    expect(matchVocabulary(CATEGORIES, '   ', 3)).toEqual([]);
+    const SHORT_TERMS: VocabularyTerm[] = [
+      { value: 'covid-19', datasetCount: 178 },
+      { value: 'outbreak', datasetCount: 9 },
+      {
+        value: 'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+        datasetCount: 7,
+      },
+      { value: 'tb', datasetCount: 6 },
+      { value: 'tbi', datasetCount: 4 },
+      { value: 'tuberculosis (tb)', datasetCount: 3 },
+      { value: 'latent tuberculosis infection (ltbi)', datasetCount: 2 },
+      { value: 'avian influenza a (h5)', datasetCount: 1 },
+      { value: 'h5', datasetCount: 1 },
+      { value: 'h5n1', datasetCount: 1 },
+      { value: 't-spot.tb (tspot)', datasetCount: 1 },
+    ];
+
+    /**
+     * Containment on a one- or two-character filter would carry no signal — "a" is inside most
+     * of the ~1,600 live tags — so a short filter matches a value only where one of the value's
+     * own words equals it after folding. `tb` reaches "tuberculosis (tb)" and never "outbreak",
+     * "tbi", or "ltbi"; a filter with no letters or digits has no word to match and reaches
+     * nothing, where `[].every` would otherwise admit every value.
+     */
+    it.each([
+      {
+        filter: 'TB',
+        matched: [
+          'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+          'tb',
+          'tuberculosis (tb)',
+          't-spot.tb (tspot)',
+        ],
+      },
+      {
+        filter: 'tb',
+        matched: [
+          'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+          'tb',
+          'tuberculosis (tb)',
+          't-spot.tb (tspot)',
+        ],
+      },
+      { filter: 'h5', matched: ['avian influenza a (h5)', 'h5'] },
+      { filter: '19', matched: ['covid-19'] },
+      {
+        filter: ' (TB) ',
+        matched: [
+          'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+          'tb',
+          'tuberculosis (tb)',
+          't-spot.tb (tspot)',
+        ],
+      },
+      { filter: 'zq', matched: [] },
+      { filter: 'h', matched: [] },
+      { filter: '--', matched: [] },
+      { filter: '   ', matched: [] },
+      { filter: '', matched: [] },
+    ])('$filter matches $matched', ({ filter, matched }) => {
+      expect(values(matchVocabulary(SHORT_TERMS, filter))).toEqual(matched);
+    });
+
+    it('matches no prefix: "NN" does not reach "NNDSS", nor "a" a word starting with it', () => {
+      expect(matchVocabulary(CATEGORIES, 'NN', 3)).toEqual([]);
+      expect(matchVocabulary(CATEGORIES, 'a', 3)).toEqual([]);
+    });
+
+    it('keeps the caller-ranked order and honours the limit', () => {
+      expect(values(matchVocabulary(SHORT_TERMS, 'tb', 2))).toEqual([
+        'National Center for HIV, Viral Hepatitis, STD, and TB Prevention',
+        'tb',
+      ]);
+    });
+  });
+
+  it('keeps containment for a filter of three or more letters', () => {
+    /** At the floor a token relates by containment again: "tub" reaches every tuberculosis tag. */
+    const terms: VocabularyTerm[] = [
+      { value: 'tuberculosis (tb)', datasetCount: 3 },
+      { value: 'latent tuberculosis infection (ltbi)', datasetCount: 2 },
+      { value: 'tb', datasetCount: 6 },
+    ];
+    expect(values(matchVocabulary(terms, 'tub'))).toEqual([
+      'tuberculosis (tb)',
+      'latent tuberculosis infection (ltbi)',
+    ]);
   });
 
   it('does not let a short vocabulary token match everything', () => {

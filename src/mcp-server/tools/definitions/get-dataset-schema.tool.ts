@@ -6,11 +6,16 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import { CDC_SOCRATA_DOMAINS, type DatasetMetadata } from '@/services/socrata/types.js';
+import {
+  CDC_SOCRATA_DOMAINS,
+  type DatasetMetadata,
+  REQUEST_TIMEOUT_TEXT,
+} from '@/services/socrata/types.js';
 import {
   escapeMarkdownText,
   escapeTableCell,
   markdownBlockquote,
+  markdownCodeSpan,
   markdownTableCodeSpan,
 } from '@/utils/markdown.js';
 import {
@@ -30,7 +35,7 @@ import {
 const DEFAULT_COLUMN_LIMIT = 100;
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
-  description: `Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, and last-updated timestamp. Returns the first 100 columns by default; wide datasets continue via column_offset. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default; pass full_description: true for the whole text. Get dataset IDs from cdc_discover_datasets.`,
+  description: `Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, last-updated timestamp, and, for a filter, the dataset it is a view of — with the period and area it covers, how often it is updated, its suggested citation, license, and attribution wherever the publisher recorded them. A chart or map has no schema of its own; the failure names the dataset it is built on. Returns the first 100 columns by default; wide datasets continue via column_offset. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default; pass full_description: true for the whole text. Get dataset IDs from cdc_discover_datasets.`,
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -72,7 +77,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata metadata API returned a 5xx server error.',
+      when: `Socrata metadata API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
       recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
     },
@@ -153,6 +158,48 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
         'Provenance of rowCount. "live" is a count(*) run against the dataset for this call. "cached" is the figure Socrata stored when it last built its column cache, returned when the count request did not succeed; Socrata does not refresh it as rows land. Absent exactly when rowCount is absent.',
       ),
     updatedAt: z.string().optional().describe('Last data update timestamp when provided.'),
+    parentId: z
+      .string()
+      .optional()
+      .describe(
+        'Four-by-four ID of the dataset this asset is a view of — set on a filter, naming the dataset it was derived from. Absent on a dataset in its own right.',
+      ),
+    temporalCoverage: z
+      .string()
+      .optional()
+      .describe(
+        'Period the data covers — publisher-written text in no fixed format, relayed as written ("2015-01-01/2026-05-31", "1999/2018", "2019/present", "N/A"). Absent when the publisher recorded none.',
+      ),
+    updateFrequency: z
+      .string()
+      .optional()
+      .describe(
+        'How often the publisher updates the dataset — publisher-written text in no fixed format ("R/P1M", "Weekly", "irregular", "No longer updated (dataset archived)"). Absent when the publisher recorded none; updatedAt is when the data last changed, which alone does not tell a monthly series from a closed one.',
+      ),
+    geographicCoverage: z
+      .string()
+      .optional()
+      .describe(
+        'Area the data covers — publisher-written text in no fixed format ("United States", "50 states and District of Columbia"). Absent when the publisher recorded none.',
+      ),
+    citation: z
+      .string()
+      .optional()
+      .describe(
+        'How the publisher asks the dataset to be cited — publisher-written text in no fixed format, placeholders such as "[Last accessed date]" included. Absent when the publisher recorded none.',
+      ),
+    license: z
+      .string()
+      .optional()
+      .describe(
+        'Name of the license the dataset is published under — publisher-written text in no fixed format ("Public Domain U.S. Government", "Open Data Commons Attribution License"). Absent when the publisher named none.',
+      ),
+    attribution: z
+      .string()
+      .optional()
+      .describe(
+        'The office the publisher credits for the dataset — publisher-written text in no fixed format ("National Center for Health Statistics"). Absent when the publisher recorded none.',
+      ),
     columns: z
       .array(
         z
@@ -219,11 +266,21 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
      * stories, files, and external links. Those come back with an empty `columns` array —
      * the one signal that lines up with what `/resource/{id}.json` will actually serve.
      * `resource.type` does not: `filter` assets carry real columns and query successfully.
+     * A chart or map names the dataset it draws on in the same document, so the failure can
+     * point there at no extra request.
      */
     if (metadata.columns.length === 0) {
+      const { parentId } = metadata;
       throw ctx.fail(
         'not_queryable',
-        `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.`,
+        `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.${parentId ? ` It is a view of dataset ${parentId}, which carries the rows behind it.` : ''}`,
+        parentId
+          ? {
+              recovery: {
+                hint: `Call cdc_get_dataset_schema with datasetId "${parentId}", the dataset this asset is built on, then query that ID with cdc_query_dataset.`,
+              },
+            }
+          : undefined,
       );
     }
 
@@ -292,12 +349,24 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
         : result.rowCountSource === 'cached'
           ? " (cached count — a live count was unavailable, and Socrata's cache lags the dataset)"
           : '';
-    lines.push(
-      `**Rows:** ${rows}${provenance} | **Updated:** ${result.updatedAt ?? '—'}`,
-      '',
-      '| Column | Type | Description |',
-      '|:-------|:-----|:------------|',
-    );
+    lines.push(`**Rows:** ${rows}${provenance} | **Updated:** ${result.updatedAt ?? '—'}`);
+    if (result.parentId) {
+      lines.push(
+        `**View of:** ${markdownCodeSpan(result.parentId)} — the dataset it was derived from`,
+      );
+    }
+    const publisherFields: [string, string | undefined][] = [
+      ['Temporal coverage', result.temporalCoverage],
+      ['Update frequency', result.updateFrequency],
+      ['Geographic coverage', result.geographicCoverage],
+      ['Suggested citation', result.citation],
+      ['License', result.license],
+      ['Attribution', result.attribution],
+    ];
+    for (const [label, value] of publisherFields) {
+      if (value) lines.push(`**${label}:** ${escapeMarkdownText(value)}`);
+    }
+    lines.push('', '| Column | Type | Description |', '|:-------|:-----|:------------|');
 
     for (const col of result.columns) {
       const description = escapeTableCell(col.description ?? '') || '—';

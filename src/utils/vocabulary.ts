@@ -7,22 +7,17 @@
 import type { VocabularyTerm } from '@/services/socrata/types.js';
 
 /**
- * Shortest filter worth matching on, counted in alphanumeric characters. Below it a
- * containment test stops discriminating: "a" is a substring of most of the ~1,600 tags, so
- * every value would qualify and the ranking would carry no signal.
+ * Shortest token that may match by containment rather than equality. Below it containment
+ * stops discriminating — "a" is a substring of most of the ~1,600 tags — so a shorter token
+ * relates only to an equal one, whether it comes from the filter ("tb" reaches the word "tb"
+ * in "tuberculosis (tb)", never "outbreak") or from a value (the "19" of "covid-19" never
+ * relates to "2019").
  */
-export const MIN_FILTER_LENGTH = 3;
-
-/**
- * Shortest token that may match by containment rather than equality. The same floor as the
- * filter, applied per token: without it the two-letter tokens real vocabulary values carry
- * ("covid-19", "hiv/aids") would relate to any word containing them.
- */
-const MIN_TOKEN_LENGTH = 3;
+export const MIN_CONTAINMENT_LENGTH = 3;
 
 /** Whether two tokens name the same thing — one contains the other, or they are equal. */
 function related(a: string, b: string): boolean {
-  if (a.length < MIN_TOKEN_LENGTH || b.length < MIN_TOKEN_LENGTH) return a === b;
+  if (a.length < MIN_CONTAINMENT_LENGTH || b.length < MIN_CONTAINMENT_LENGTH) return a === b;
   return a.includes(b) || b.includes(a);
 }
 
@@ -43,14 +38,15 @@ export function vocabularyTokens(value: string): string[] {
 }
 
 /**
- * Whether `value` carries enough alphanumeric characters for `matchVocabulary` to
- * discriminate. Below the floor the matcher answers nothing, which two callers read
- * differently: a near-miss lookup has no candidate to name, while a filter is ignored and the
- * whole vocabulary returned. Exported so the ignoring caller states the rule by asking rather
- * than by restating the threshold.
+ * Whether `value` has fewer letters and digits than the containment floor, counted across
+ * all of its words. Every token of such a filter matches only an equal word, so finding none
+ * says nothing about its spelling — "va" may be the start of a word, which matching
+ * deliberately does not test. The vocabulary tool reads an unmatched short filter as ignored
+ * rather than as a miss; a filter with no letters or digits counts as short and matches
+ * nothing. Exported so that caller states the rule by asking rather than by restating it.
  */
-export function isDiscriminatingFilter(value: string): boolean {
-  return vocabularyTokens(value).join('').length >= MIN_FILTER_LENGTH;
+export function isShortFilter(value: string): boolean {
+  return vocabularyTokens(value).join('').length < MIN_CONTAINMENT_LENGTH;
 }
 
 /**
@@ -59,7 +55,9 @@ export function isDiscriminatingFilter(value: string): boolean {
  * A value qualifies when every token on one side is related to some token on the other — in
  * either direction, because the two cover different mistakes. Forward covers a caller less
  * specific than the vocabulary ("Vaccination" → "Vaccinations", "Child Vaccinations");
- * reverse covers one who was more specific ("nndss weekly" → "nndss").
+ * reverse covers one who was more specific ("nndss weekly" → "nndss"). A token under the
+ * containment floor relates only to an equal one, so a short filter ("TB", "h5") matches the
+ * values carrying it as a whole word.
  *
  * Deliberately not fuzzy: relatedness is containment, so a transposed or misspelled filter
  * resolves to nothing rather than to a confident wrong answer. Ranking is inherited from
@@ -71,8 +69,9 @@ export function matchVocabulary(
   value: string,
   limit?: number,
 ): VocabularyTerm[] {
-  if (!isDiscriminatingFilter(value)) return [];
   const filter = vocabularyTokens(value);
+  // A filter with no letters or digits names nothing; `[].every` would admit every value.
+  if (filter.length === 0) return [];
 
   const matched = terms.filter(({ value: term }) => {
     const tokens = vocabularyTokens(term);

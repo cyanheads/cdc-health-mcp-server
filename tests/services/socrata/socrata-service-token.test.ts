@@ -31,29 +31,43 @@ describe('SocrataService — app token', () => {
 
   beforeEach(() => {
     service = new SocrataService();
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unmocked fetch'));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  /** Each case issues one request; every call gets its own body so none is read twice. */
+  /** Every call gets its own body so none is read twice — `getMetadata` issues two requests. */
   function mockFetchEachCall(body: unknown, status = 200) {
     return vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () => new Response(JSON.stringify(body), { status }));
   }
 
+  /** Each call with a body its endpoint reads as a real answer. */
   const callsThatHitTheWire = [
-    ['discover', (s: SocrataService) => s.discover({ query: 'diabetes' })],
-    ['getMetadata', (s: SocrataService) => s.getMetadata('bi63-dtpu')],
-    ['query', (s: SocrataService) => s.query({ datasetId: 'bi63-dtpu', where: 'year=2020' })],
+    [
+      'discover',
+      (s: SocrataService) => s.discover({ query: 'diabetes' }),
+      { results: [], resultSetSize: 0 },
+    ],
+    [
+      'getMetadata',
+      (s: SocrataService) => s.getMetadata('bi63-dtpu'),
+      { name: 'Diabetes Mortality', columns: [] },
+    ],
+    [
+      'query',
+      (s: SocrataService) => s.query({ datasetId: 'bi63-dtpu', where: 'year=2020' }),
+      [{ state: 'Texas' }],
+    ],
   ] as const;
 
   it.each(callsThatHitTheWire)(
     '%s sends the token as a header and puts it nowhere in the request URL',
-    async (_, call) => {
-      const spy = mockFetchEachCall({ results: [], resultSetSize: 0, columns: [] });
+    async (_, call, body) => {
+      const spy = mockFetchEachCall(body);
       await call(service);
 
       const [url, init] = spy.mock.calls[0] as [string, RequestInit];
@@ -99,6 +113,18 @@ describe('SocrataService — app token', () => {
        * `url` to every error it throws, and the framework forwards `data` intact. Pin that the
        * url is present, then assert on the whole serialized error.
        */
+      expect((err.data as { url?: string }).url).toMatch(/^https:\/\//);
+      expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(APP_TOKEN);
+    },
+  );
+
+  it.each(callsThatHitTheWire)(
+    '%s keeps the token out of the error an unreadable 2xx body raises',
+    async (_, call) => {
+      mockFetchEachCall({ message: 'ok' });
+      const err = (await call(service).catch((e) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'upstream_error' });
       expect((err.data as { url?: string }).url).toMatch(/^https:\/\//);
       expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(APP_TOKEN);
     },

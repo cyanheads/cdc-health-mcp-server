@@ -152,57 +152,56 @@ describe('cdc_query_dataset — edge cases', () => {
     });
   });
 
-  describe('handler — response budget', () => {
-    /** A row roughly the width of akvg-8vrb's 38 columns (~1.2 KB serialized). */
+  describe('handler — the page is what the service returned', () => {
+    /** A row roughly the width of a 38-column surveillance dataset. */
     const wideRow = (i: number) =>
       Object.fromEntries(
         Array.from({ length: 38 }, (_, c) => [`col_${c}`, `${i}-${'v'.repeat(28)}`]),
       );
 
-    it('bounds a 5000-row page by serialized size and reports how far it got', async () => {
-      const rows = Array.from({ length: 5000 }, (_, i) => wideRow(i));
+    it('returns a full page of wide rows whole, with truncation from the over-fetch alone', async () => {
+      const rows = Array.from({ length: 1000 }, (_, i) => wideRow(i));
       mockQuery.mockResolvedValue({
         rows,
-        rowCount: 5000,
-        query: '$limit=5000&$offset=0',
-        hasMore: false,
+        rowCount: 1000,
+        query: '$limit=1000&$offset=0',
+        hasMore: true,
       });
       const ctx = createMockContext({ errors: queryDataset.errors });
-      const input = queryDataset.input.parse({ datasetId: 'akvg-8vrb', limit: 5000 });
+      const input = queryDataset.input.parse({ datasetId: 'akvg-8vrb', limit: 1000 });
       const result = await queryDataset.handler(input, ctx);
 
-      expect(result.rowCount).toBeLessThan(5000);
-      expect(result.rowCount).toBe(result.rows.length);
-      expect(JSON.stringify(result.rows).length).toBeLessThanOrEqual(200_000);
+      expect(result.rows).toBe(rows);
+      expect(result.rowCount).toBe(1000);
 
       const enrichment = getEnrichment(ctx);
-      expect(enrichment.truncated).toBe(true);
-      expect(enrichment.shown).toBe(result.rowCount);
-      expect(enrichment.cap).toBe(5000);
-      expect(enrichment.nextOffset).toBe(result.rowCount);
-      expect(enrichment.notice).toMatch(/200,000-character response budget/);
-      expect(enrichment.notice).toMatch(/as JSON and as the rendered table together/);
+      expect(enrichment).toMatchObject({
+        truncated: true,
+        shown: 1000,
+        cap: 1000,
+        nextOffset: 1000,
+      });
+      expect(enrichment.notice).not.toMatch(/budget|character/);
     });
 
-    it('charges the rows JSON and the rendered table against one budget', async () => {
-      const rows = Array.from({ length: 5000 }, (_, i) => wideRow(i));
+    it('reports no truncation for a full page with no further row', async () => {
+      const rows = Array.from({ length: 1000 }, (_, i) => wideRow(i));
       mockQuery.mockResolvedValue({
         rows,
-        rowCount: 5000,
-        query: '$limit=5000&$offset=0',
+        rowCount: 1000,
+        query: '$limit=1000&$offset=0',
         hasMore: false,
       });
       const ctx = createMockContext({ errors: queryDataset.errors });
-      const input = queryDataset.input.parse({ datasetId: 'akvg-8vrb', limit: 5000 });
+      const input = queryDataset.input.parse({ datasetId: 'akvg-8vrb', limit: 1000 });
       const result = await queryDataset.handler(input, ctx);
 
-      const text = (queryDataset.format!(result)[0] as { type: 'text'; text: string }).text;
-      expect(JSON.stringify(result.rows).length + JSON.stringify(text).length).toBeLessThan(
-        200_000,
-      );
+      expect(result.rows).toHaveLength(1000);
+      expect(getEnrichment(ctx).truncated).toBeUndefined();
+      expect(getEnrichment(ctx).notice).toBeUndefined();
     });
 
-    it('keeps one row when a single row is larger than the whole budget', async () => {
+    it('keeps a row wider than 200,000 characters and the row after it', async () => {
       const monster = { blob: 'x'.repeat(300_000) };
       mockQuery.mockResolvedValue({
         rows: [monster, { blob: 'y' }],
@@ -214,9 +213,8 @@ describe('cdc_query_dataset — edge cases', () => {
       const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 2 });
       const result = await queryDataset.handler(input, ctx);
 
-      expect(result.rows).toHaveLength(1);
-      expect(getEnrichment(ctx).notice).not.toContain('No rows matched');
-      expect(getEnrichment(ctx).truncated).toBe(true);
+      expect(result.rows).toHaveLength(2);
+      expect(getEnrichment(ctx).truncated).toBeUndefined();
     });
 
     it('leaves an ordinary page untouched', async () => {

@@ -6,9 +6,18 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
-import { CDC_SOCRATA_DOMAINS, type VocabularyTerm } from '@/services/socrata/types.js';
+import {
+  CDC_SOCRATA_DOMAINS,
+  REQUEST_TIMEOUT_TEXT,
+  type VocabularyTerm,
+} from '@/services/socrata/types.js';
 import { escapeTableCell, markdownBlockquote } from '@/utils/markdown.js';
-import { isDiscriminatingFilter, MIN_FILTER_LENGTH, matchVocabulary } from '@/utils/vocabulary.js';
+import {
+  isShortFilter,
+  MIN_CONTAINMENT_LENGTH,
+  matchVocabulary,
+  vocabularyTokens,
+} from '@/utils/vocabulary.js';
 
 /**
  * Tags returned per call when the caller names no window. The tag vocabulary is a long tail:
@@ -22,12 +31,18 @@ import { isDiscriminatingFilter, MIN_FILTER_LENGTH, matchVocabulary } from '@/ut
  */
 const DEFAULT_TAG_LIMIT = 50;
 
+/**
+ * Longest `filter` accepted, in characters. The longest value either vocabulary holds is about
+ * 100 characters, so a filter that names one whole, or a phrase around it, fits well inside this.
+ */
+const MAX_FILTER_LENGTH = 500;
+
 const VocabularyTermSchema = z
   .object({
     value: z
       .string()
       .describe(
-        'The value as the catalog spells it — pass it verbatim to cdc_discover_datasets. Categories are matched case-sensitively by the catalog; tags case-insensitively.',
+        'The value as the catalog spells it — pass it verbatim to cdc_discover_datasets. The catalog matches categories and tags against these values ignoring case, but otherwise exactly.',
       ),
     datasetCount: z
       .number()
@@ -40,7 +55,7 @@ const VocabularyTermSchema = z
 export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
   title: 'List CDC Catalog Vocabulary',
   description:
-    "List the controlled vocabularies cdc_discover_datasets' category and tags filters are matched against — every domain category and domain tag the CDC catalog publishes, each with the number of entries carrying it. Call it before filtering a search: a value the catalog does not carry matches nothing and returns an empty page, which is indistinguishable from a real value with no results. All categories come back whole; the tag vocabulary runs to roughly 1,600 values, so tags are ranked by entry count and returned one page at a time via tag_limit and tag_offset. Pass filter to narrow both vocabularies to the values whose words contain it.",
+    "List the controlled vocabularies cdc_discover_datasets' category and tags filters are matched against — every domain category and domain tag the CDC catalog publishes, each with the number of entries carrying it. Call it before filtering a search: a value the catalog does not carry matches nothing and returns an empty page, which is indistinguishable from a real value with no results. All categories come back whole; the tag vocabulary runs to roughly 1,600 values, so tags are ranked by entry count and returned one page at a time via tag_limit and tag_offset. Pass filter to narrow both vocabularies to the values whose words contain its words, or that appear whole inside it; a filter under three letters or digits matches whole words only.",
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -68,7 +83,7 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
     {
       reason: 'upstream_error',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'Socrata catalog API returned a 5xx server error.',
+      when: `Socrata catalog API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
       recovery: 'Retry after a brief delay; the catalog may be temporarily unavailable.',
     },
@@ -90,9 +105,10 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
       ),
     filter: z
       .string()
+      .max(MAX_FILTER_LENGTH)
       .optional()
       .describe(
-        'Narrow both vocabularies to the values related to this text. A value matches when every word of the filter appears inside one of its words ("vaccin" reaches "Vaccinations" and "covid-19 vaccination"), or when the whole value appears in the filter. Matching is not fuzzy — a misspelling returns nothing rather than a guess — and a filter under three letters is ignored.',
+        `Narrow both vocabularies to the values related to this text (at most ${MAX_FILTER_LENGTH} characters). A value matches when every word of the filter appears inside one of its words ("vaccin" reaches "Vaccinations" and "covid-19 vaccination"), or when the whole value appears in the filter. Matching is not fuzzy — a misspelling returns nothing rather than a guess. A word under three letters or digits matches only an equal word, so a short filter reaches the values carrying it as a whole word ("tb" reaches "tuberculosis (tb)", never "outbreak"); a short filter that reaches none, or one with no letters or digits, is ignored and both vocabularies come back unfiltered.`,
       ),
     tag_limit: z
       .number()
@@ -165,7 +181,7 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
       .string()
       .optional()
       .describe(
-        'Guidance when the response is a subset of the vocabulary, when a filter too short to discriminate was ignored, when the filter matched nothing, or when tag_offset ran past the end of the matches.',
+        'Guidance when the response is a subset of the vocabulary, when a filter under three letters or digits was ignored because no value carries it as a whole word, when the filter matched nothing, or when tag_offset ran past the end of the matches.',
       ),
   },
 
@@ -204,18 +220,26 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
     }
 
     const vocabularySize = { categories: categories.length, tags: tags.length };
-    /**
-     * A filter too short to discriminate matches nothing, and reporting that as "no match"
-     * would send the caller after a spelling problem that does not exist. It is dropped
-     * instead, so the response carries the unfiltered vocabulary and says the filter was
-     * ignored. An empty string is no filter at all and needs no notice.
-     */
-    const ignoredFilter = !!input.filter && !isDiscriminatingFilter(input.filter);
-    const filter = ignoredFilter ? undefined : input.filter;
+    const { filter } = input;
     // Filtering runs over the complete vocabularies, never over the page — a filter applied
     // after the cut would search the 50 tags that happened to rank highest.
-    const matchedCategories = filter ? matchVocabulary(categories, filter) : categories;
-    const matchedTags = filter ? matchVocabulary(tags, filter) : tags;
+    const narrowed = filter
+      ? { categories: matchVocabulary(categories, filter), tags: matchVocabulary(tags, filter) }
+      : undefined;
+    /**
+     * A short filter matches whole words only, so finding none says nothing about its
+     * spelling, and reporting "no match" would send the caller after a problem that may not
+     * exist. It is dropped instead: the response carries the unfiltered vocabulary and says
+     * the filter was ignored. An empty string is no filter at all and needs no notice.
+     */
+    const ignoredFilter =
+      !!filter &&
+      isShortFilter(filter) &&
+      narrowed?.categories.length === 0 &&
+      narrowed.tags.length === 0;
+    const kept = ignoredFilter ? undefined : narrowed;
+    const matchedCategories = kept?.categories ?? categories;
+    const matchedTags = kept?.tags ?? tags;
 
     const page = matchedTags.slice(input.tag_offset, input.tag_offset + input.tag_limit);
     const consumed = input.tag_offset + page.length;
@@ -228,12 +252,16 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
 
     const guidance: string[] = [];
     if (ignoredFilter) {
+      const reason =
+        vocabularyTokens(filter).length === 0
+          ? 'it has no letters or digits to match on'
+          : `a filter under ${MIN_CONTAINMENT_LENGTH} letters or digits matches only the values carrying it as a whole word, and no category or tag does`;
       guidance.push(
-        `Filter "${input.filter}" was ignored: matching needs at least ${MIN_FILTER_LENGTH} letters or digits, and anything shorter is contained in most values. This response is the unfiltered vocabulary — call again with a longer filter to narrow it.`,
+        `Filter "${filter}" was ignored: ${reason}. This response is the unfiltered vocabulary — call again with a longer filter to narrow it.`,
       );
     }
 
-    if (filter && matchedCategories.length === 0 && matchedTags.length === 0) {
+    if (kept && matchedCategories.length === 0 && matchedTags.length === 0) {
       guidance.push(
         `No category or tag matches "${filter}". Matching is exact on words rather than approximate, so a misspelling returns nothing — call again without filter to browse the ${vocabularySize.categories} categories and the most-used tags.`,
       );
