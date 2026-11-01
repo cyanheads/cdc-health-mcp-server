@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: cdc-health-mcp-server
-abstract: "Model Context Protocol (MCP) server for the CDC Open Data portal (~1,487 public health datasets via the Socrata SODA API), providing dataset catalog discovery, schema inspection, and SoQL queries across disease surveillance, mortality, vaccinations, behavioral risk factors, and other public health domains."
+abstract: "Model Context Protocol (MCP) server for CDC public health data: the CDC Open Data portal (~1,080 datasets via the Socrata SODA API), with catalog discovery, schema inspection, and SoQL queries across disease surveillance, mortality, vaccinations, behavioral risk factors, and other domains, plus national mortality statistics from five CDC WONDER databases."
 type: software
 authors:
   - family-names: Hand

@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-10-12 23:23:58
+Generated on: 2026-11-01 08:00:39
 
 ```text
 cdc-health-mcp-server/
@@ -46,6 +46,8 @@ cdc-health-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -144,6 +146,9 @@ cdc-health-mcp-server/
 │   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
+├── skills/
+│   └── cdc-health-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -166,14 +171,14 @@ cdc-health-mcp-server/
 │   │   ├── socrata/
 │   │   │   ├── socrata-service.ts
 │   │   │   └── types.ts
-│   │   └── wonder/
-│   │       ├── types.ts
-│   │       ├── wonder-service.ts
-│   │       ├── xml-builder.ts
-│   │       └── xml-parser.ts
+│   │   ├── wonder/
+│   │   │   ├── types.ts
+│   │   │   ├── wonder-service.ts
+│   │   │   ├── xml-builder.ts
+│   │   │   └── xml-parser.ts
+│   │   └── user-agent.ts
 │   ├── utils/
 │   │   ├── markdown.ts
-│   │   ├── response-budget.ts
 │   │   ├── text.ts
 │   │   └── vocabulary.ts
 │   └── index.ts
@@ -183,13 +188,33 @@ cdc-health-mcp-server/
 │   │   └── server-config.test.ts
 │   ├── fixtures/
 │   │   └── wonder/
+│   │       ├── d157-injury-intent-2023.response.xml
+│   │       ├── d158-a82-2018-2024-both-hidden.response.xml
+│   │       ├── d158-a82-2021-suppressed-rows-hidden.response.xml
 │   │       ├── d158-duplicate-race-group-by.response.xml
+│   │       ├── d158-leading-causes-2023.response.xml
 │   │       ├── d158-race-age-c00-2024.response.xml
+│   │       ├── d176-2025-2026-partial-year.response.xml
+│   │       ├── d176-hispanic-origin-2025.response.xml
+│   │       ├── d176-icd-chapter-2026-lag.response.xml
+│   │       ├── d176-icd-subchapter-all-years.response.xml
+│   │       ├── d176-month-2026.response.xml
+│   │       ├── d176-overdose-2025-2026-lag.response.xml
+│   │       ├── d176-withheld-cause-all-years.response.xml
+│   │       ├── d76-c61-female-2019-zero-rows-hidden.response.xml
+│   │       ├── d76-icd-chapter-2019.response.xml
+│   │       ├── d76-icd-chapter-and-subchapter.response.xml
+│   │       ├── d76-leading-causes-beside-year-rejected.response.xml
 │   │       ├── d76-x40-x44-by-year-2018-2019.response.xml
+│   │       ├── d76-x40-x49-year-age-1999-2001-intervals.response.xml
 │   │       ├── d76-year-age-sex-race.response.xml
+│   │       ├── d76-year-month-2019.response.xml
+│   │       ├── d77-2019-intervals.response.xml
+│   │       ├── d77-cause-113-2019.response.xml
 │   │       └── d77-overdose-ucd-opioid-mcd-2019.response.xml
 │   ├── helpers/
 │   │   ├── contract-error.ts
+│   │   ├── contract-text.ts
 │   │   ├── cpu-cost.ts
 │   │   ├── markdown-render.ts
 │   │   └── resource-read.ts
@@ -214,11 +239,13 @@ cdc-health-mcp-server/
 │   │           ├── query-dataset-response.tool.test.ts
 │   │           ├── query-dataset.tool.test.ts
 │   │           ├── query-wonder.input-seam.test.ts
-│   │           ├── query-wonder.response-budget.test.ts
+│   │           ├── query-wonder.paging.test.ts
 │   │           ├── query-wonder.service-seam.test.ts
 │   │           └── query-wonder.tool.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── mcpb-agent-doc-entry.test.ts
 │   ├── security/
 │   │   └── tools-security.test.ts
 │   ├── services/
@@ -226,10 +253,13 @@ cdc-health-mcp-server/
 │   │   │   ├── socrata-contract-parity.test.ts
 │   │   │   ├── socrata-domain-semantics.test.ts
 │   │   │   ├── socrata-service-errors.test.ts
+│   │   │   ├── socrata-service-failures.test.ts
 │   │   │   ├── socrata-service-token.test.ts
-│   │   │   └── socrata-service.test.ts
+│   │   │   ├── socrata-service.test.ts
+│   │   │   └── socrata-upstream-error-wiring.test.ts
 │   │   └── wonder/
 │   │       ├── database-ids.test.ts
+│   │       ├── types.test.ts
 │   │       ├── wonder-service.test.ts
 │   │       ├── xml-builder.test.ts
 │   │       └── xml-parser.test.ts
@@ -254,7 +284,9 @@ cdc-health-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
