@@ -216,6 +216,29 @@ describe('analyze_health_trend', () => {
       expect(wonderGuidance).not.toContain('chapter range');
     });
 
+    it('routes leading-cause, Hispanic-origin, and month questions to WONDER', async () => {
+      const wonderGuidance = (
+        await generate(analyzeHealthTrend.args!.parse({ topic: 'leading causes of death' }))
+      )
+        .split('\n')
+        .find((line) => line.startsWith('- `cdc_query_wonder`'));
+
+      expect(wonderGuidance).toContain('Leading causes of death, Hispanic origin, and seasonal');
+      for (const dimension of ['leading_causes', 'hispanic_origin', 'month']) {
+        expect(wonderGuidance).toContain(`\`${dimension}\``);
+      }
+    });
+
+    it('sends a reader to the fields that say whether a dataset is still updated', async () => {
+      const text = await generate(analyzeHealthTrend.args!.parse({ topic: 'flu trends' }));
+
+      for (const field of ['updateFrequency', 'temporalCoverage', 'updatedAt', 'parentIds']) {
+        expect(text).toContain(`\`${field}\``);
+      }
+      expect(text).toContain('95% confidence interval');
+      expect(text).toContain('latest year is partial');
+    });
+
     it('routes a sub-national or non-mortality question to the Socrata catalog', async () => {
       const args = analyzeHealthTrend.args!.parse({
         topic: 'childhood vaccination coverage by state',
