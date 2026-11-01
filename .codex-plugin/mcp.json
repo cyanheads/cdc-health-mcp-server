@@ -4,6 +4,7 @@
     "args": ["-y", "@cyanheads/cdc-health-mcp-server"],
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"
-    }
+    },
+    "env_vars": ["CDC_APP_TOKEN"]
   }
 }

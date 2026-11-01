@@ -21,12 +21,22 @@
     "health-data",
     "typescript"
   ],
+  "userConfig": {
+    "CDC_APP_TOKEN": {
+      "type": "string",
+      "title": "Socrata app token",
+      "description": "Optional app token for higher CDC Open Data (Socrata) rate limits. Register free at dev.socrata.com.",
+      "sensitive": true,
+      "default": ""
+    }
+  },
   "mcpServers": {
     "cdc-health-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/cdc-health-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "CDC_APP_TOKEN": "${user_config.CDC_APP_TOKEN}"
       }
     }
   }

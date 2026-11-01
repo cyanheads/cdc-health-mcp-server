@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "cdc-health-mcp-server",
+  "version": "0.10.0",
+  "description": "Search and query CDC public health data — mortality, vaccinations, surveillance, behavioral risk (Socrata SODA API) via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/cdc-health-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/cdc-health-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "cdc",
+    "public-health",
+    "socrata",
+    "health-data",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http"
+  ]
+}
