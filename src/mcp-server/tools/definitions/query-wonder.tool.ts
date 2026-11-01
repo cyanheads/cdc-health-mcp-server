@@ -101,10 +101,9 @@ const MAX_OFFSET = WONDER_MAX_TABLE_ROWS;
  * handler rather than rejected; an omitted `limit` reads as the rest of the table up to it.
  * WONDER's request carries no limit of its own, so every call re-runs the whole query behind
  * the 16-second gap and repeats the caveats and messages: a small default would multiply both,
- * so the ceiling matches `WONDER_MAX_TABLE_ROWS` and any table a query may produce fits in one
- * call.
+ * so the ceiling is the table bound itself and any table a query may produce fits in one call.
  */
-const MAX_ROWS_PER_CALL = 10_000;
+const MAX_ROWS_PER_CALL = WONDER_MAX_TABLE_ROWS;
 
 /**
  * A row count as the notices print it (`2,014`). Values a caller passes back — `offset=N`,
