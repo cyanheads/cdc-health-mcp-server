@@ -175,15 +175,15 @@ describe('Security — input validation', () => {
       ).toThrow();
     });
 
-    it('keeps an oversized filter out of any URL, since it is matched in-process', async () => {
+    it('keeps a filter at the length cap out of any URL, since it is matched in-process', async () => {
       /**
        * `filter` never reaches the wire — both vocabularies are fetched whole and narrowed
-       * locally — so length is bounded by what the caller sends, not by what upstream accepts.
+       * locally — and the input schema bounds its length.
        */
       mockListCategories.mockResolvedValue([]);
       mockListTags.mockResolvedValue([]);
       const ctx = createMockContext({ errors: listCatalogVocabulary.errors });
-      const longFilter = 'x'.repeat(5000);
+      const longFilter = 'x'.repeat(500);
       await listCatalogVocabulary.handler(
         listCatalogVocabulary.input.parse({ filter: longFilter }),
         ctx,
@@ -191,6 +191,13 @@ describe('Security — input validation', () => {
 
       expect(mockListCategories).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
       expect(mockListTags).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
+    });
+
+    it('rejects a filter one character over the 500-character cap', () => {
+      expect(() => listCatalogVocabulary.input.parse({ filter: 'x'.repeat(501) })).toThrow();
+      expect(listCatalogVocabulary.input.parse({ filter: 'x'.repeat(500) }).filter).toHaveLength(
+        500,
+      );
     });
   });
 
@@ -210,6 +217,13 @@ describe('Security — input validation', () => {
     it('rejects offset above 9999', () => {
       expect(() => discoverDatasets.input.parse({ offset: 10000 })).toThrow();
     });
+
+    it.each(['Dataset', 'DATASET', 'datasets', 'bogus', '', 'dataset,filter', 'dataset&only=x'])(
+      'rejects asset_types entry %j — the catalog answers any unrecognized type with an empty page',
+      (value) => {
+        expect(() => discoverDatasets.input.parse({ asset_types: [value] })).toThrow();
+      },
+    );
 
     it('accepts oversized query string without throwing at schema level (passed to service)', async () => {
       // The tool schema does not restrict query length — oversized queries are passed to
@@ -242,9 +256,9 @@ describe('Security — input validation', () => {
       expect(input.limit).toBe(1);
     });
 
-    it('accepts limit of 5000 (the per-call cap)', () => {
-      const input = queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 5000 });
-      expect(input.limit).toBe(5000);
+    it('accepts limit of 1000 (the per-call cap) and a larger one the handler clamps to it', () => {
+      expect(queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 1000 }).limit).toBe(1000);
+      expect(queryDataset.input.parse({ datasetId: 'ab12-cd34', limit: 5000 }).limit).toBe(5000);
     });
 
     it('rejects negative offset', () => {
@@ -677,8 +691,31 @@ describe('Security — input validation', () => {
       expect(queryWonder.input.parse({ cause_icd10: '' }).cause_icd10).toBe('');
     });
 
-    it.each(['country', 'state', 'location', 'YEAR'])('rejects group_by value %j', (dim) => {
+    it.each([
+      'country',
+      'state',
+      'location',
+      'YEAR',
+      // Raw variable codes and near misses of the cause groupings: only the enum reaches a B_ slot.
+      'D76.V9',
+      'V2-level1',
+      'icd_chapters',
+      'cause_of_death',
+      'Month',
+    ])('rejects group_by value %j', (dim) => {
       expect(() => queryWonder.input.parse({ group_by: [dim] })).toThrow();
+    });
+
+    it.each([
+      'icd_chapter',
+      'icd_subchapter',
+      'cause_113',
+      'leading_causes',
+      'injury_intent',
+      'hispanic_origin',
+      'month',
+    ])('accepts group_by value %j, which the builder maps to a fixed variable', (dim) => {
+      expect(queryWonder.input.parse({ group_by: [dim] }).group_by).toEqual([dim]);
     });
 
     it('rejects an empty or oversized group_by list', () => {
@@ -751,7 +788,10 @@ describe('Security — input validation', () => {
     it.each([1, 5000, 5001, 1_000_000, Number.MAX_SAFE_INTEGER])(
       'accepts limit %j, which only slices a table already fetched whole',
       (limit) => {
-        /** The response budget, not limit, bounds what one page can carry. */
+        /**
+         * The handler lowers a limit past the 10,000-row ceiling to it rather than rejecting
+         * it (pinned in query-wonder.paging.test.ts), so every positive integer parses.
+         */
         expect(queryWonder.input.parse({ limit }).limit).toBe(limit);
       },
     );
@@ -763,8 +803,8 @@ describe('Security — input validation', () => {
 
     it('leaves limit unset and offset at zero when neither is supplied', () => {
       /**
-       * No row cap is imposed by default — the response budget alone bounds an omitted
-       * limit, and discloses the cut with truncated and nextOffset rather than capping silently.
+       * An omitted limit reads as the rest of the table up to the 10,000-row ceiling, applied in
+       * the handler and disclosed with truncated and nextOffset rather than capped silently.
        */
       const input = queryWonder.input.parse({});
       expect(input.limit).toBeUndefined();

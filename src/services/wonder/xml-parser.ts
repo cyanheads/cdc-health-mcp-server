@@ -1,11 +1,15 @@
 /**
  * @fileoverview Parses a CDC WONDER XML response — the `<data-table>` into keyed row objects,
- * and the `<message>` elements into plain text with Markdown links.
+ * the `<message>` elements into plain text with Markdown links, and the provisional database's
+ * data-through date out of its `<dataset vintage>`.
  * The table is HTML-table-like: the leading (outer) dimension cell of each group carries a
  * rowspan (`r="N"`) and is omitted on the group's subsequent rows, so dimension values must
  * be carried forward. Measure values arrive with comma thousands separators, or as a status
- * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number. Dimension labels
- * are CDC's own text with only surrounding whitespace removed (see `dimensionLabel`). Caveat,
+ * token ("Suppressed", "Unreliable", "Not Applicable") in place of a number; a rate cell may
+ * nest its 95% confidence interval as an `<l v="(lower - upper)"/>` child. Dimension labels
+ * are CDC's own text with only surrounding whitespace removed (see `dimensionLabel`); a cause
+ * grouping's cells may carry a code beside the label (`cd`, `h`), carried forward with it
+ * through a rowspan (see `codeSources`). Caveat,
  * footnote, and message text is rendered as plain text with its links kept as Markdown links
  * (see `toLinkedText`): anchors are found on the raw markup before any tag comes off, and every
  * segment goes through the shared single-pass decode in `utils/text` exactly once — a
@@ -17,7 +21,14 @@
  */
 
 import { collapseWhitespace, decodeEntities, stripAndDecode } from '@/utils/text.js';
-import { isSuppressedToken, type WonderCellNote, type WonderRow } from './types.js';
+import {
+  isSuppressedToken,
+  WONDER_DIMENSION_CODES,
+  WONDER_RATE_MEASURES,
+  type WonderCellNote,
+  type WonderDimensionCode,
+  type WonderRow,
+} from './types.js';
 
 /** Read an XML attribute value from a cell's attribute string (anchored to an attr-name start). */
 function attr(attrs: string, name: string): string | undefined {
@@ -158,18 +169,53 @@ function elementContents(markup: string, name: string, shape: OpenerShape): stri
   return contents;
 }
 
+/** One `<c …>` cell of a row. */
+interface Cell {
+  /** The cell's attribute string, without the `/` of a self-closing cell. */
+  attrs: string;
+  /** The `v` of the `<l …>` child CDC nests in a rate cell to carry its confidence interval. */
+  interval?: string | undefined;
+}
+
+/** The tag a rate cell's interval child opens with: `<l` as a whole tag name. */
+const INTERVAL_OPEN = '<l';
+
 /**
- * The attribute string of every `<c …>` cell in a row, in order, read in one forward pass.
- * Pairs as `<c\b([^>]*?)\/?>` does: the tag runs to its first `>`, and the `/` of a
- * self-closing cell is not part of its attributes.
+ * Every `<c …>` cell in a row, in order, read in one forward pass. A cell's tag pairs as
+ * `<c\b([^>]*?)\/?>` does: it runs to its first `>`, and the `/` of a self-closing cell is not
+ * part of its attributes.
+ *
+ * A cell that does not close itself may open with an interval child — `<c v="188.0" a="c"><l
+ * v="(187.5 - 188.4)"/></c>`. The child counts only when it is the first tag inside the cell,
+ * with nothing but whitespace before it; its tag runs to its first `>`, and the scan for the next
+ * cell resumes past it. Every search starts where the last one ended, so the pass stays linear
+ * in the row.
  */
-function cellAttributes(row: string): string[] {
-  const cells: string[] = [];
+function rowCells(row: string): Cell[] {
+  const cells: Cell[] = [];
   let tag = nextOpeningTag(row, 'c', 'word', 0);
   while (tag) {
     const attrs = row.slice(tag.attrsStart, tag.tagEnd);
-    cells.push(attrs.endsWith('/') ? attrs.slice(0, -1) : attrs);
-    tag = nextOpeningTag(row, 'c', 'word', tag.tagEnd + 1);
+    let resume = tag.tagEnd + 1;
+    if (attrs.endsWith('/')) {
+      cells.push({ attrs: attrs.slice(0, -1) });
+    } else {
+      const child = row.indexOf('<', resume);
+      const childEnd = child === -1 ? -1 : row.indexOf('>', child + INTERVAL_OPEN.length);
+      const isInterval =
+        childEnd !== -1 &&
+        row.startsWith(INTERVAL_OPEN, child) &&
+        !NAME_CHAR.test(row.charAt(child + INTERVAL_OPEN.length)) &&
+        row.slice(resume, child).trim() === '';
+      if (isInterval) {
+        const childAttrs = row.slice(child + INTERVAL_OPEN.length, childEnd);
+        cells.push({ attrs, interval: attr(childAttrs, 'v') });
+        resume = childEnd + 1;
+      } else {
+        cells.push({ attrs });
+      }
+    }
+    tag = nextOpeningTag(row, 'c', 'word', resume);
   }
   return cells;
 }
@@ -186,6 +232,53 @@ export function parseMessages(body: string): string[] {
   return elementContents(body, 'message', 'prefix')
     .map(cleanText)
     .filter((m) => m.length > 0);
+}
+
+/** Month names as CDC spells them, in calendar order. */
+const MONTHS: readonly string[] = [
+  'january',
+  'february',
+  'march',
+  'april',
+  'may',
+  'june',
+  'july',
+  'august',
+  'september',
+  'october',
+  'november',
+  'december',
+];
+
+/**
+ * A date as CDC writes one at the start of a vintage — `October 17, 2026`. Anchored, and each
+ * part's characters are disjoint from the separator after it, so a failed match backtracks at
+ * most once per character: linear in the vintage.
+ */
+const LEADING_DATE = /^([A-Za-z]+) +(\d{1,2}), *(\d{4})\b/;
+
+/**
+ * The last date of death a provisional response holds, as `YYYY-MM-DD`, or undefined when the
+ * response names none.
+ *
+ * The provisional database states it in its `<dataset>` element's vintage —
+ * `vintage="October 17, 2026 as of  October 25, 2026"`, the first date the one deaths run
+ * through, the second the day the data was drawn — and restates it in a "Deaths occurring
+ * through …" caveat. The final databases send a bare year there (`vintage="2024"`), which is no
+ * date, so they read as undefined. So does a vintage that does not open with a real calendar
+ * date: a guessed one would date a notice wrongly. Linear in the body.
+ */
+export function parseDataThrough(body: string): string | undefined {
+  const tag = nextOpeningTag(body, 'dataset', 'word', 0);
+  if (!tag) return;
+  const vintage = decodeEntities(attr(body.slice(tag.attrsStart, tag.tagEnd), 'vintage') ?? '');
+  const match = LEADING_DATE.exec(vintage.trim());
+  if (!match) return;
+  const month = MONTHS.indexOf((match[1] ?? '').toLowerCase());
+  const day = Number(match[2]);
+  const date = new Date(Date.UTC(Number(match[3]), month, day));
+  if (month === -1 || date.getUTCMonth() !== month || date.getUTCDate() !== day) return;
+  return date.toISOString().slice(0, 10);
 }
 
 /**
@@ -225,6 +318,31 @@ function parseMeasure(raw: string | undefined): { value: number | null; token: s
   return { value: null, token: t };
 }
 
+/** One bound of an interval: a figure read the way a measure value is, or NaN for anything else. */
+function boundValue(raw: string): number {
+  const t = raw.trim();
+  return t === '' ? Number.NaN : Number(t.replaceAll(',', ''));
+}
+
+/**
+ * Parse a rate cell's interval, written by CDC as `(lower - upper)` with comma thousands
+ * separators — `(1,035.1 - 1,037.5)`. Anything else — no parentheses, one figure or three, a
+ * side that is not a number — yields no bounds rather than a guessed one. A rate is never
+ * negative, so the one `-` is the separator. Linear in the value: one split and one pass per side.
+ */
+function parseInterval(raw: string | undefined): { lower: number; upper: number } | undefined {
+  const t = (raw ?? '').trim();
+  if (!t.startsWith('(') || !t.endsWith(')')) return;
+  const sides = t.slice(1, -1).split('-');
+  if (sides.length !== 2) return;
+  const lower = boundValue(sides[0] ?? '');
+  const upper = boundValue(sides[1] ?? '');
+  return Number.isFinite(lower) && Number.isFinite(upper) ? { lower, upper } : undefined;
+}
+
+/** Measure columns that carry interval bounds, as a lookup the row loop reads per cell. */
+const RATE_MEASURES: ReadonlySet<string> = new Set(WONDER_RATE_MEASURES);
+
 /** Extracted rows, caveats/footnotes, and the status tokens found in measure cells. */
 export interface ParsedTable {
   caveats: string[];
@@ -233,11 +351,56 @@ export interface ParsedTable {
   suppressedCount: number;
 }
 
+/** Where one code key of a row is read from: a dimension slot, and the attribute of its cells. */
+interface CodeSource {
+  attribute: WonderDimensionCode['attribute'];
+  slot: number;
+}
+
 /**
- * Parse a WONDER response body into rows keyed by `columns`.
+ * The code keys a table's rows carry, in row order, each with the dimension slot it is read
+ * from: one per `WONDER_DIMENSION_CODES` entry whose grouping is among the dimensions, a later
+ * entry replacing an earlier one that feeds the same key.
+ */
+function codeSources(
+  columns: readonly string[],
+  dimensionCount: number,
+): Map<WonderDimensionCode['key'], CodeSource> {
+  const sources = new Map<WonderDimensionCode['key'], CodeSource>();
+  for (const { dimension, attribute, key } of WONDER_DIMENSION_CODES) {
+    const slot = columns.indexOf(dimension);
+    if (slot !== -1 && slot < dimensionCount) sources.set(key, { slot, attribute });
+  }
+  return sources;
+}
+
+/**
+ * A dimension cell's code as the row carries it: a `cd` as CDC wrote it, surrounding
+ * whitespace removed; an `h` as the integer it is. Null when the cell carries none, or an `h`
+ * that is not an integer — a guessed level would misplace the row in the list.
+ */
+function dimensionCode(
+  attrs: string,
+  attribute: WonderDimensionCode['attribute'],
+): string | number | null {
+  const raw = decodeEntities(attr(attrs, attribute) ?? '').trim();
+  if (raw === '') return null;
+  if (attribute === 'cd') return raw;
+  const level = Number(raw);
+  return Number.isInteger(level) ? level : null;
+}
+
+/**
+ * Parse a WONDER response body into rows keyed by `columns`. After the dimensions come the codes
+ * the grouping's cells carry beside their labels — `cause_code`, then `cause_level`, each only
+ * when a grouping that sends it is among the dimensions (see `WONDER_DIMENSION_CODES`) and null
+ * on a row whose cell lacks it. Then the measures, each rate followed by `<rate>_lower` and
+ * `<rate>_upper`, read from the interval CDC nested in the rate's cell and null when it sent
+ * none. Every row of a table carries the same keys, so the first row names the columns of all
+ * of them.
  *
  * @param body - Full XML response text.
- * @param columns - Ordered output keys: `dimensionCount` dimensions followed by measures.
+ * @param columns - Ordered cell keys: `dimensionCount` dimensions followed by measures.
  * @param dimensionCount - Number of leading dimension columns (for rowspan reconstruction).
  * @returns Parsed rows, resolved caveats/footnotes, and the status tokens found in measure cells.
  */
@@ -247,6 +410,7 @@ export function parseDataTable(
   dimensionCount: number,
 ): ParsedTable {
   const measureCount = columns.length - dimensionCount;
+  const codes = codeSources(columns, dimensionCount);
 
   const caveats = [
     ...elementContents(body, 'caveat', 'exact'),
@@ -260,15 +424,17 @@ export function parseDataTable(
 
   const rows: WonderRow[] = [];
   const cellNotes: WonderCellNote[] = [];
+  /** Each dimension slot's latest cell: its label, and its attributes for the codes beside it. */
   const carried: string[] = new Array<string>(dimensionCount).fill('');
+  const carriedAttrs: string[] = new Array<string>(dimensionCount).fill('');
 
   for (const rowInner of elementContents(tableInner, 'r', 'exact')) {
-    const cells = cellAttributes(rowInner);
+    const cells = rowCells(rowInner);
     // Skip subtotal/total rows (defensive — absent when O_show_totals=false):
     // they carry a `dt` cell or a leading `c=` colspan marker.
-    const first = cells[0];
+    const first = cells[0]?.attrs;
     const isTotalsRow =
-      cells.some((c) => attr(c, 'dt') !== undefined) ||
+      cells.some((c) => attr(c.attrs, 'dt') !== undefined) ||
       (first !== undefined && attr(first, 'c') !== undefined && attr(first, 'l') === undefined);
     if (isTotalsRow) continue;
     if (cells.length < measureCount) continue;
@@ -279,10 +445,12 @@ export function parseDataTable(
     if (dimCells.length > dimensionCount) continue; // anomalous — no mortality database emits it
 
     // Rowspan carry: present dimension cells fill the trailing dimension slots; the
-    // leading slots (omitted due to rowspan) keep the previous row's value.
+    // leading slots (omitted due to rowspan) keep the previous row's value, codes included.
     const present = dimCells.length;
     for (let j = 0; j < present; j++) {
-      carried[dimensionCount - present + j] = dimensionLabel(attr(dimCells[j] ?? '', 'l'));
+      const attrs = dimCells[j]?.attrs ?? '';
+      carried[dimensionCount - present + j] = dimensionLabel(attr(attrs, 'l'));
+      carriedAttrs[dimensionCount - present + j] = attrs;
     }
 
     const row: WonderRow = {};
@@ -290,12 +458,21 @@ export function parseDataTable(
       const key = columns[i];
       if (key !== undefined) row[key] = carried[i] ?? '';
     }
+    for (const [key, { slot, attribute }] of codes) {
+      row[key] = dimensionCode(carriedAttrs[slot] ?? '', attribute);
+    }
     for (let m = 0; m < measureCount; m++) {
       const key = columns[dimensionCount + m];
       if (key === undefined) continue;
-      const { value, token } = parseMeasure(attr(measureCells[m] ?? '', 'v'));
+      const cell = measureCells[m];
+      const { value, token } = parseMeasure(attr(cell?.attrs ?? '', 'v'));
       row[key] = value;
       if (token !== null) cellNotes.push({ row: rows.length, column: key, token });
+      if (RATE_MEASURES.has(key)) {
+        const bounds = parseInterval(cell?.interval);
+        row[`${key}_lower`] = bounds?.lower ?? null;
+        row[`${key}_upper`] = bounds?.upper ?? null;
+      }
     }
     rows.push(row);
   }

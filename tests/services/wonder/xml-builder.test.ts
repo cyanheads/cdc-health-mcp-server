@@ -8,6 +8,7 @@ import {
   WONDER_DATABASE_SPECS,
   WONDER_DATABASES,
   type WonderDatabase,
+  type WonderGroupBy,
 } from '@/services/wonder/types.js';
 import { buildRequestXml, measuresFor } from '@/services/wonder/xml-builder.js';
 
@@ -40,8 +41,10 @@ interface ScaffoldInventory {
   values: string[];
 }
 
+/** `O_aar_CI` rides with the age-adjusted rate, which the inventory's year grouping computes. */
 const SHARED_OUTPUT_OPTIONS = [
   'O_aar',
+  'O_aar_CI',
   'O_aar_pop',
   'O_age',
   'O_javascript',
@@ -329,6 +332,63 @@ describe('buildRequestXml', () => {
     ]);
   });
 
+  describe('cause, origin and month groupings', () => {
+    /** Each value's variable as every database's request form lists it in its Group By menus. */
+    const VARIABLE: [WonderGroupBy, string][] = [
+      ['icd_chapter', 'V2-level1'],
+      ['icd_subchapter', 'V2-level2'],
+      ['cause_113', 'V4'],
+      ['leading_causes', 'V28'],
+      ['injury_intent', 'V22'],
+      ['hispanic_origin', 'V17'],
+      ['month', 'V1-level2'],
+    ];
+    const cases = WONDER_DATABASES.flatMap((db) =>
+      VARIABLE.map(([dimension, variable]) => [db, dimension, variable] as const),
+    );
+
+    it.each(cases)('sends %s grouped by %s as <ID>.%s in a B_ slot', (db, dimension, variable) => {
+      const { xml, columns, dimensionCount } = buildRequestXml({
+        database: db,
+        groupBy: [dimension],
+      });
+      expect(values(xml, 'B_1')).toEqual([`${ID[db]}.${variable}`]);
+      expect(values(xml, 'B_2')).toEqual(['*None*']);
+      // The codes a cause grouping's cells carry are not cells of their own.
+      expect(columns).toEqual([
+        dimension,
+        'deaths',
+        'population',
+        'crude_rate',
+        'age_adjusted_rate',
+      ]);
+      expect(dimensionCount).toBe(1);
+    });
+
+    it('keeps the two levels of one variable in their own slots, in the order given', () => {
+      expect(values(buildRequestXml({ groupBy: ['year', 'month'] }).xml, 'B_2')).toEqual([
+        'D76.V1-level2',
+      ]);
+      const { xml } = buildRequestXml({ groupBy: ['icd_subchapter', 'icd_chapter', 'sex'] });
+      expect(['B_1', 'B_2', 'B_3', 'B_4'].map((slot) => values(xml, slot))).toEqual([
+        ['D76.V2-level2'],
+        ['D76.V2-level1'],
+        ['D76.V7'],
+        ['*None*'],
+      ]);
+    });
+
+    it('leaves the age-adjusted rule to age alone, whatever else is grouped', () => {
+      expect(buildRequestXml({ groupBy: ['month'] }).columns).toContain('age_adjusted_rate');
+      expect(buildRequestXml({ groupBy: ['cause_113', 'sex'] }).columns).toContain(
+        'age_adjusted_rate',
+      );
+      expect(buildRequestXml({ groupBy: ['icd_chapter', 'age_group'] }).columns).not.toContain(
+        'age_adjusted_rate',
+      );
+    });
+  });
+
   it('requests M_1..M_3 and drives the age-adjusted column through O_aar, never an M_4', () => {
     /**
      * No mortality database defines an M4 — the age-adjusted column comes from `O_aar=aar_std`.
@@ -341,6 +401,36 @@ describe('buildRequestXml', () => {
     expect(names(xml)).not.toContain('M_4');
     expect(values(xml, 'O_aar')).toEqual(['aar_std']);
     expect(columns).toContain('age_adjusted_rate');
+  });
+
+  describe('95% confidence intervals', () => {
+    /**
+     * D76 and D77 send no interval unless asked; D158, D157 and D176 send both by default. The
+     * builder asks every database explicitly rather than leaning on those defaults: `M_32` for
+     * the crude rate's interval, `O_aar_CI=true` for the age-adjusted one.
+     */
+    it.each(WONDER_DATABASES)('asks %s for the interval on both rates', (db) => {
+      const { xml, columns } = buildRequestXml({ groupBy: ['year'], database: db });
+      expect(values(xml, 'M_32')).toEqual([`${ID[db]}.M32`]);
+      expect(values(xml, 'O_aar')).toEqual(['aar_std']);
+      expect(values(xml, 'O_aar_CI')).toEqual(['true']);
+      // The interval rides inside its rate's cell, so the cells the parser keys are unchanged.
+      expect(columns).toEqual(['year', 'deaths', 'population', 'crude_rate', 'age_adjusted_rate']);
+    });
+
+    it.each(WONDER_DATABASES)(
+      'asks %s for the crude interval alone when no age-adjusted rate is computed',
+      (db) => {
+        for (const { xml } of [
+          buildRequestXml({ groupBy: ['age_group'], database: db }),
+          buildRequestXml({ groupBy: ['year'], ageGroups: ['25-34'], database: db }),
+        ]) {
+          expect(values(xml, 'M_32')).toEqual([`${ID[db]}.M32`]);
+          expect(values(xml, 'O_aar')).toEqual(['aar_none']);
+          expect(names(xml)).not.toContain('O_aar_CI');
+        }
+      },
+    );
   });
 
   it('drops the age-adjusted column and uses aar_none when grouping by age', () => {

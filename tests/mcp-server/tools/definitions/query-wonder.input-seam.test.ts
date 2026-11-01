@@ -15,8 +15,10 @@ import {
   WONDER_AGE_GROUPS,
   WONDER_DATABASES,
   type WonderAgeGroup,
+  type WonderGroupBy,
 } from '@/services/wonder/types.js';
 import { initWonderService } from '@/services/wonder/wonder-service.js';
+import { contentText as textOf } from '../../../helpers/contract-text.js';
 
 function fixture(name: string): string {
   return readFileSync(new URL(`../../../fixtures/wonder/${name}`, import.meta.url), 'utf8');
@@ -90,10 +92,6 @@ function values(xml: string, name: string): string[] | undefined {
 }
 
 type ContractResult = Awaited<ReturnType<typeof runToolContract>>;
-
-function textOf(result: ContractResult): string {
-  return (result.content as { type: string; text: string }[]).map((c) => c.text).join('\n');
-}
 
 function errorOf(result: ContractResult) {
   return (
@@ -265,6 +263,132 @@ describe('cdc_query_wonder input handling over the real service', () => {
       expect(values(xml!, 'V_D76.V5')).toEqual(['25-34', '35-44']);
       expect(structuredOf(result).rows[0]).toHaveProperty('age_adjusted_rate', 9.5);
     });
+
+    describe('leading_causes beside another grouping', () => {
+      /** WONDER's own HTTP 500 for leading causes grouped beside year, captured unchanged. */
+      const REJECTED = fixture('d76-leading-causes-beside-year-rejected.response.xml');
+
+      it.each<[WonderGroupBy[], string]>([
+        [['leading_causes', 'year'], 'year'],
+        [['sex', 'leading_causes', 'race'], 'sex, race'],
+      ])(
+        'fails %j as invalid_query naming group_by, without a request',
+        async (groupBy, others) => {
+          respondWith(REJECTED, 500);
+          const result = await runToolContract(queryWonder, { group_by: groupBy });
+          const { message } = expectInvalidQueryBeforeRequest(result);
+          expect(message).toBe(
+            `group_by pairs leading_causes with ${others}, and CDC WONDER ranks the 15 leading causes only on their own: it refuses any other grouping beside them. Group by leading_causes alone — the filters still apply — or group by cause_113, whose list holds the same rankable causes (marked "#") and combines with other dimensions.`,
+          );
+        },
+      );
+
+      it('reports a repeated leading_causes as the repeat it is', async () => {
+        respondWith(REJECTED, 500);
+        const result = await runToolContract(queryWonder, {
+          group_by: ['leading_causes', 'leading_causes'],
+        });
+        const { message } = expectInvalidQueryBeforeRequest(result);
+        expect(message).toContain('group_by lists "leading_causes" more than once');
+      });
+
+      it('queries leading_causes alone, with a cause filter, in one request', async () => {
+        respondWith(fixture('d158-leading-causes-2023.response.xml'));
+        const result = await runToolContract(queryWonder, {
+          database: 'underlying_2018_2024',
+          group_by: ['leading_causes'],
+          cause_icd10: 'V01-Y89',
+          year_range: { from: 2023, to: 2023 },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        const [xml] = sentRequests();
+        expect(values(xml!, 'B_1')).toEqual(['D158.V28']);
+        expect(values(xml!, 'B_2')).toEqual(['*None*']);
+        expect(values(xml!, 'F_D158.V2')).toEqual(['V01-Y89']);
+      });
+    });
+
+    describe('the bound on a table’s rows', () => {
+      /** WONDER's HTTP 500 to a refused request — what a request that should not go out returns. */
+      const REFUSED = '<page><message>This request should never reach WONDER.</message></page>';
+
+      it('refuses a grouping that could reach 10,080 rows, naming each factor, without a request', async () => {
+        respondWith(REFUSED, 500);
+        const result = await runToolContract(queryWonder, {
+          group_by: ['icd_chapter', 'year', 'age_group', 'sex'],
+          year_range: { from: 2000, to: 2020 },
+        });
+        const { message } = expectInvalidQueryBeforeRequest(result);
+        expect(message).toBe(
+          "group_by icd_chapter, year, age_group, sex can produce up to 10,080 rows on D76 (icd_chapter 20 × year 21 × age_group 12 × sex 2), past the 10,000-row bound on one query's table — CDC WONDER takes longer than the 20-second request deadline to answer a table that large. Narrow year_range, filter sex or age_groups, or drop a dimension from group_by until the product is 10,000 or less; a cause filter does not lower it.",
+        );
+      });
+
+      it.each<[string, Record<string, unknown>]>([
+        [
+          'one year fewer (9,600 rows)',
+          {
+            group_by: ['icd_chapter', 'year', 'age_group', 'sex'],
+            year_range: { from: 2001, to: 2020 },
+          },
+        ],
+        [
+          'the same grouping filtered to one sex (5,040 rows)',
+          {
+            group_by: ['icd_chapter', 'year', 'age_group', 'sex'],
+            year_range: { from: 2000, to: 2020 },
+            sex: 'female',
+          },
+        ],
+        [
+          'the largest grouping without a cause dimension (2,112 rows)',
+          { group_by: ['year', 'age_group', 'sex', 'race'] },
+        ],
+        [
+          'sub-chapters by year and sex over every D76 year (7,788 rows)',
+          { group_by: ['icd_subchapter', 'year', 'sex'] },
+        ],
+        [
+          'year, month and sex over every D76 year, the month already naming its year (528 rows)',
+          { group_by: ['year', 'month', 'sex'] },
+        ],
+      ])('queries %s in one request', async (_label, input) => {
+        respondWith(FOUR_MEASURE_TABLE);
+        const result = await runToolContract(queryWonder, input);
+        expect(result.isError).toBeFalsy();
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+
+      it.each<[string, Record<string, unknown>, string]>([
+        [
+          'sub-chapters by year, age and race — past WONDER’s own 75,000-row ceiling',
+          { group_by: ['icd_subchapter', 'year', 'age_group', 'race'] },
+          'up to 186,912 rows on D76',
+        ],
+        [
+          'months by age, sex and race',
+          { group_by: ['month', 'age_group', 'sex', 'race'] },
+          'up to 25,344 rows on D76 (month 264 × age_group 12 × sex 2 × race 4), past',
+        ],
+        [
+          'years and months by age and race, counting the year once inside its month',
+          { group_by: ['year', 'month', 'age_group', 'race'] },
+          'up to 12,672 rows on D76 (year 1 × month 264 × age_group 12 × race 4; month already enumerates year), past',
+        ],
+        [
+          'the 113-cause list by year, sex and race on the provisional database',
+          { database: 'provisional', group_by: ['cause_113', 'year', 'sex', 'race'] },
+          'rows on D176 (cause_113 138 × year',
+        ],
+      ])('refuses %s', async (_label, input, named) => {
+        respondWith(REFUSED, 500);
+        const { message } = expectInvalidQueryBeforeRequest(
+          await runToolContract(queryWonder, input),
+        );
+        expect(message).toContain(named);
+      });
+    });
   });
 
   describe('a single cause value', () => {
@@ -359,17 +483,22 @@ describe('cdc_query_wonder input handling over the real service', () => {
       expect(values(xml!, 'O_V13_fmode')).toEqual(['freg']);
 
       const structured = structuredOf(result);
+      /** Captured before the request asked for intervals, so every bound reads null. */
       expect(structured.rows).toEqual([
         {
           year: '2019',
           deaths: 49860,
           population: 328239523,
           crude_rate: 15.2,
+          crude_rate_lower: null,
+          crude_rate_upper: null,
           age_adjusted_rate: 15.5,
+          age_adjusted_rate_lower: null,
+          age_adjusted_rate_upper: null,
         },
       ]);
       expect(structured.effectiveQuery).toContain(`any listed cause ${OPIOID_MCD.join(' or ')}`);
-      expect(textOf(result)).toContain('| 2019 | 49860 | 328239523 | 15.2 | 15.5 |');
+      expect(textOf(result)).toContain('| 2019 | 49860 | 328239523 | 15.2 |  |  | 15.5 |  |  |');
     });
 
     it('sends lists on both finders of the provisional database, the withheld marker among them', async () => {
@@ -386,6 +515,45 @@ describe('cdc_query_wonder input handling over the real service', () => {
       const [xml] = sentRequests();
       expect(values(xml!, 'F_D176.V2')).toEqual(['X40-X49', '999--999']);
       expect(values(xml!, 'F_D176.V13')).toEqual(['T40.1', 'T40.4']);
+    });
+
+    describe('the withheld-cause code a sub-chapter row carries', () => {
+      /**
+       * Grouped by icd_subchapter, the provisional database's withheld-cause row carries
+       * `999-999` as its cause_code; by chapter it is `999--999`. Only `999--999` is verified as
+       * a finder value, so the sub-chapter form is accepted and sent as that.
+       */
+      it.each<[string, string | string[]]>([
+        ['the sub-chapter code', '999-999'],
+        ['both forms in one list', ['999-999', '999--999']],
+      ])('sends %s as the one finder value 999--999', async (_label, cause) => {
+        respondWith(FOUR_MEASURE_TABLE);
+        const result = await runToolContract(queryWonder, {
+          database: 'provisional',
+          group_by: ['year'],
+          cause_icd10: cause,
+          year_range: { from: 2024, to: 2024 },
+        });
+
+        expect(result.isError).toBeFalsy();
+        const [xml] = sentRequests();
+        expect(values(xml!, 'F_D176.V2')).toEqual(['999--999']);
+        expect(values(xml!, 'I_D176.V2')).toEqual(['999--999']);
+        expect(structuredOf(result).effectiveQuery).toContain('underlying cause 999--999, years');
+        expect(textOf(result)).toContain('underlying cause 999--999');
+        expect(xml).not.toContain('999-999<');
+      });
+
+      it('rejects the sub-chapter code off the provisional database as the marker it is', async () => {
+        respondWith(FOUR_MEASURE_TABLE);
+        const result = await runToolContract(queryWonder, {
+          group_by: ['year'],
+          cause_icd10: '999-999',
+        });
+        const { message } = expectInvalidQueryBeforeRequest(result);
+        expect(message).toContain('"999--999" is CDC\'s marker');
+        expect(message).toContain('database "provisional"');
+      });
     });
 
     it('sends a one-entry list exactly as it sends the bare code', async () => {

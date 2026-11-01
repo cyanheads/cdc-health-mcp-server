@@ -1,7 +1,8 @@
 /**
  * @fileoverview Builds the CDC WONDER `request_xml` document from friendly query options.
  * WONDER expects a full `<request-parameters>` block: group-by slots (B_1..B_5), measures
- * (M_1..M_3), per-variable finder/value filters, and output options. Location is pinned to
+ * (M_1..M_3, plus M_32 for the crude rate's confidence interval), per-variable finder/value
+ * filters, and output options. Location is pinned to
  * national (*All*) unconditionally — the API forbids sub-national grouping or filtering.
  * Pure module (no framework imports) so it is testable in isolation.
  *
@@ -176,6 +177,14 @@ const MCD_FINDERS = ['V13', 'V15', 'V16', 'V26'] as const;
 /** Measure → per-database measure code. No mortality database has an M4 (see `measuresFor`). */
 const MEASURE_CODE = { deaths: 'M1', population: 'M2', crude_rate: 'M3' } as const;
 
+/**
+ * Measure code for the crude rate's 95% confidence interval. It adds no cell of its own: CDC
+ * nests the interval inside the crude-rate cell as an `<l v="(lower - upper)"/>` child. Sent to
+ * every database — D76 and D77 return no interval without it, the other three return one either
+ * way.
+ */
+const CRUDE_RATE_INTERVAL_CODE = 'M32';
+
 /** Sex filter → `.V7` value. Identical on every database. */
 const SEX_CODE = { all: '*All*', male: 'M', female: 'F' } as const;
 
@@ -287,7 +296,10 @@ function fixedParams(
 
 /** Result of building a request: the XML plus the metadata the parser needs to key rows. */
 export interface BuiltRequest {
-  /** Ordered output column keys: group-by dimensions followed by measures. */
+  /**
+   * Ordered keys of the cells each row is read from: group-by dimensions followed by measures.
+   * The parser adds each rate's interval bounds beside it.
+   */
   columns: string[];
   /** Number of leading dimension columns (for rowspan reconstruction). */
   dimensionCount: number;
@@ -312,25 +324,48 @@ export function measuresFor(
   return canAgeStandardize ? [...base, 'age_adjusted_rate'] : base;
 }
 
-/** Group-by dimension → the selected database's variable code (as a B_ parameter value). */
+/**
+ * Group-by dimension → the selected database's variable code (as a B_ parameter value). Every
+ * code but race's is the same on all five databases' request forms. Year and month are the two
+ * levels of one date variable, as ICD chapter and sub-chapter are of the underlying-cause one;
+ * the 15 leading causes (`V28`) WONDER ranks on its own and refuses beside any other grouping.
+ */
 function groupByCode(spec: WonderDatabaseSpec, dimension: WonderGroupBy): string {
   switch (dimension) {
     case 'year':
       return `${spec.id}.V1-level1`;
+    case 'month':
+      return `${spec.id}.V1-level2`;
     case 'age_group':
       return `${spec.id}.V5`;
     case 'sex':
       return `${spec.id}.V7`;
     case 'race':
       return `${spec.id}.${spec.raceVariable}`;
+    case 'hispanic_origin':
+      return `${spec.id}.V17`;
+    case 'icd_chapter':
+      return `${spec.id}.V2-level1`;
+    case 'icd_subchapter':
+      return `${spec.id}.V2-level2`;
+    case 'cause_113':
+      return `${spec.id}.V4`;
+    case 'leading_causes':
+      return `${spec.id}.V28`;
+    case 'injury_intent':
+      return `${spec.id}.V22`;
   }
 }
 
 /**
  * Build the WONDER `request_xml` for a mortality query against the selected database. Measures
  * are ordered canonically (deaths, population, crude rate, age-adjusted rate) — WONDER returns
- * them in that order. Only M_1..M_3 are sent: the age-adjusted column is produced by
- * `O_aar=aar_std`, not by a measure code, and no mortality database defines an M4.
+ * them in that order. The measure codes sent are M_1..M_3 and M_32: the age-adjusted column is
+ * produced by `O_aar=aar_std`, not by a measure code, and no mortality database defines an M4.
+ * Both rates' 95% confidence intervals are asked for explicitly rather than left to per-database
+ * defaults — `M_32` for the crude rate on every request, `O_aar_CI=true` whenever the
+ * age-adjusted rate is requested. Neither adds a cell: each interval rides inside its rate's
+ * cell, so `columns` is the same either way.
  */
 export function buildRequestXml(options: WonderQueryOptions): BuiltRequest {
   const database = options.database ?? WONDER_DEFAULT_DATABASE;
@@ -344,12 +379,17 @@ export function buildRequestXml(options: WonderQueryOptions): BuiltRequest {
     params[`B_${i + 1}`] = dim ? groupByCode(spec, dim) : '*None*';
   }
 
-  // Measures → M_1..M_3, plus the age-adjusted column through O_aar.
+  // Measures → M_1..M_3 and the crude interval, plus the age-adjusted column (and its interval)
+  // through O_aar.
   const measures = measuresFor(options.groupBy, options.ageGroups);
   params.M_1 = `${id}.${MEASURE_CODE.deaths}`;
   params.M_2 = `${id}.${MEASURE_CODE.population}`;
   params.M_3 = `${id}.${MEASURE_CODE.crude_rate}`;
-  if (measures.includes('age_adjusted_rate')) params.O_aar = 'aar_std';
+  params.M_32 = `${id}.${CRUDE_RATE_INTERVAL_CODE}`;
+  if (measures.includes('age_adjusted_rate')) {
+    params.O_aar = 'aar_std';
+    params.O_aar_CI = 'true';
+  }
 
   /**
    * Cause filters: one F_ `<value>` per code, which WONDER ORs within the finder (and the two

@@ -8,8 +8,9 @@ import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
-import type { WonderResult } from '@/services/wonder/types.js';
+import { WONDER_DATABASE_SPECS, type WonderResult } from '@/services/wonder/types.js';
 import { contractError } from '../../../helpers/contract-error.js';
+import { contentText } from '../../../helpers/contract-text.js';
 import {
   readBack,
   renderedCells,
@@ -57,13 +58,16 @@ const sampleResult: WonderResult = {
   columns: ['year', 'sex', 'deaths', 'population', 'crude_rate', 'age_adjusted_rate'],
 };
 
+/** CDC's message for strata it hid because they recorded no deaths. */
+const ZERO_ROWS_HIDDEN =
+  'Rows with zero Deaths are hidden. Use Quick Options above to show zero rows.';
+/** CDC's message for strata it hid because their death count is suppressed. */
+const SUPPRESSED_ROWS_HIDDEN =
+  'Rows with suppressed Deaths are hidden. Use Quick Options above to show suppressed rows.';
 /** The two messages D76 returns when it drops rows from a table before sending it. */
-const HIDDEN_ROW_MESSAGES = [
-  'Rows with zero Deaths are hidden. Use Quick Options above to show zero rows.',
-  'Rows with suppressed Deaths are hidden. Use Quick Options above to show suppressed rows.',
-];
+const HIDDEN_ROW_MESSAGES = [ZERO_ROWS_HIDDEN, SUPPRESSED_ROWS_HIDDEN];
 
-/** One row whose crude rate CDC flagged Unreliable — published, not withheld. */
+/** One row whose crude rate CDC flagged Unreliable — the token stands where the rate would. */
 const unreliableResult: WonderResult = {
   ...sampleResult,
   rows: [
@@ -200,6 +204,92 @@ describe('cdc_query_wonder', () => {
     expect(notice).not.toContain('No rows matched');
   });
 
+  describe('which rows CDC said it withheld', () => {
+    /**
+     * A stratum CDC hides for recording zero deaths takes nothing from the deaths in rows; one
+     * hidden for a suppressed count does. The notice keys on which message CDC sent, so a true
+     * zero never reads as hidden data that a wider query might uncover.
+     */
+    const TOTALS_UNAVAILABLE =
+      'Totals are not available for these results due to suppression constraints.';
+    const PARTIAL = 'treat counts, rankings, and completeness claims drawn from rows as partial';
+
+    async function noticeFor(
+      messages: string[],
+      rows = sampleResult.rows,
+      fields: Record<string, unknown> = {},
+    ) {
+      mockQuery.mockResolvedValue({ ...sampleResult, rows, rowCount: rows.length, messages });
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      const result = await queryWonder.handler(
+        queryWonder.input.parse({ group_by: ['year'], ...fields }),
+        ctx,
+      );
+      return { result, notice: getEnrichment(ctx).notice ?? '' };
+    }
+
+    it('reads an empty table with only zero-death rows hidden as no deaths recorded', async () => {
+      const { result, notice } = await noticeFor([ZERO_ROWS_HIDDEN], []);
+
+      expect(notice).toContain('CDC recorded no deaths for this combination');
+      expect(notice).toContain(ZERO_ROWS_HIDDEN);
+      expect(notice).toContain('deaths summed from rows are complete');
+      expect(notice).not.toMatch(/suppress|Widen|partial|not evidence that nothing matched/i);
+      expect(notice).not.toContain('No rows matched');
+      expect(result.messages).toEqual([ZERO_ROWS_HIDDEN]);
+    });
+
+    it.each([
+      ['the suppressed-deaths message alone', [TOTALS_UNAVAILABLE, SUPPRESSED_ROWS_HIDDEN]],
+      ['both hidden-row messages', HIDDEN_ROW_MESSAGES],
+      ['a hidden-row message naming neither kind', ['Rows with incomplete records are hidden.']],
+    ])('keeps the suppression wording on an empty table with %s', async (_label, messages) => {
+      const { result, notice } = await noticeFor(messages, []);
+
+      expect(notice).toContain('not evidence that nothing matched');
+      expect(notice).toContain('Widen the query');
+      expect(notice).toContain(PARTIAL);
+      expect(notice).not.toMatch(/recorded no deaths|summed from rows are complete/);
+      expect(result.messages).toEqual(messages);
+    });
+
+    it('tells a non-empty table with only zero-death rows hidden that its deaths are complete', async () => {
+      const { notice } = await noticeFor([ZERO_ROWS_HIDDEN]);
+
+      expect(notice).toContain('CDC withheld whole rows from this table');
+      expect(notice).toContain(ZERO_ROWS_HIDDEN);
+      expect(notice).toContain('recorded zero deaths');
+      expect(notice).toContain('deaths summed from rows are complete');
+      expect(notice).not.toMatch(/partial|suppress|may have been dropped/i);
+      expect(notice).not.toContain('recorded no deaths for this combination');
+    });
+
+    it.each([
+      ['the suppressed-deaths message alone', [SUPPRESSED_ROWS_HIDDEN]],
+      ['a hidden-row message naming neither kind', ['Rows with incomplete records are hidden.']],
+    ])('keeps the partial wording on a non-empty table with %s', async (_label, messages) => {
+      const { notice } = await noticeFor(messages);
+
+      expect(notice).toContain('may have been dropped rather than unobserved');
+      expect(notice).toContain(PARTIAL);
+      expect(notice).not.toMatch(/recorded zero deaths|summed from rows are complete/);
+    });
+
+    it('keys the wording on the message alone, never on the cause filter or the row count', async () => {
+      const filtered = await noticeFor([ZERO_ROWS_HIDDEN], [], {
+        cause_icd10: 'C61',
+        sex: 'female',
+      });
+      const unfiltered = await noticeFor([ZERO_ROWS_HIDDEN], []);
+      expect(filtered.notice).toBe(unfiltered.notice);
+
+      const oneRow = await noticeFor([SUPPRESSED_ROWS_HIDDEN], sampleResult.rows.slice(0, 1));
+      const twoRows = await noticeFor([SUPPRESSED_ROWS_HIDDEN]);
+      expect(oneRow.notice).toContain(PARTIAL);
+      expect(twoRows.notice).toContain(PARTIAL);
+    });
+  });
+
   it('notices when cells were suppressed', async () => {
     mockQuery.mockResolvedValue({
       ...sampleResult,
@@ -214,12 +304,12 @@ describe('cdc_query_wonder', () => {
     await queryWonder.handler(queryWonder.input.parse({ group_by: ['year'] }), ctx);
     const notice = getEnrichment(ctx).notice ?? '';
     expect(notice).toContain('3 cell(s) were withheld');
-    // Suppression is withholding — it must never be tallied into the "not withheld" phrasing.
-    expect(notice).not.toContain('not withheld');
+    // Suppression is withholding — it must never be tallied with the tokens that are not.
+    expect(notice).not.toContain('not suppressed for confidentiality');
     expect(notice).not.toContain('Suppressed (3 cells)');
   });
 
-  it('returns cellNotes and notices unreliable cells as published, not withheld', async () => {
+  it('returns cellNotes and notices an unreliable cell as a rate the token replaced', async () => {
     mockQuery.mockResolvedValue(unreliableResult);
     const ctx = createMockContext({ errors: queryWonder.errors });
     const result = await queryWonder.handler(
@@ -229,11 +319,48 @@ describe('cdc_query_wonder', () => {
 
     expect(result.cellNotes).toEqual([{ row: 0, column: 'crude_rate', token: 'Unreliable' }]);
     expect(result.suppressedCount).toBe(0);
-    const notice = getEnrichment(ctx).notice ?? '';
-    expect(notice).toContain('Unreliable (1 cell)');
-    expect(notice).toContain('fewer than 20 deaths');
-    expect(notice).toContain('not withheld');
-    expect(notice).not.toContain('withheld by CDC for confidentiality');
+    expect(getEnrichment(ctx).notice).toBe(
+      "CDC returned a status token instead of a number for some cells — Unreliable (1 cell): no rate shown — CDC flags the rate as statistically unstable and puts the token in its place (on D76, when it is computed from 20 or fewer deaths), while the row's deaths and population stand. Those cells are null for the reason given, not suppressed for confidentiality; cellNotes gives the row index and column of each.",
+    );
+  });
+
+  describe('the Unreliable criterion of the database queried', () => {
+    /** CDC's caveat on each database, as its responses carry it. */
+    const DEATH_COUNT = 'when it is computed from 20 or fewer deaths';
+    const INTERVAL_WIDTH =
+      'when its 95% confidence interval is wider than 160% of the rate, whatever the death count';
+
+    it.each([
+      ['underlying_1999_2020', 'D76', DEATH_COUNT],
+      ['multiple_1999_2020', 'D77', DEATH_COUNT],
+      ['underlying_2018_2024', 'D158', INTERVAL_WIDTH],
+      ['multiple_2018_2024', 'D157', INTERVAL_WIDTH],
+      ['provisional', 'D176', INTERVAL_WIDTH],
+    ] as const)('states %s’s rule in the notice and in content[]', async (database, id, rule) => {
+      mockQuery.mockResolvedValue({ ...unreliableResult, database: id });
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      const result = await queryWonder.handler(
+        queryWonder.input.parse({
+          database,
+          group_by: ['age_group'],
+          year_range: { from: 2019, to: 2019 },
+        }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).notice).toContain(`(on ${id}, ${rule})`);
+      const text = (queryWonder.format!(result)[0] as { text: string }).text;
+      expect(text).toContain(`row 0, \`crude_rate\` — \`Unreliable\`: no rate shown`);
+      expect(text).toContain(`(on ${id}, ${rule})`);
+    });
+
+    it('never calls an Unreliable rate published on any surface that names the token', () => {
+      const token = queryWonder.output.shape.cellNotes.element.shape.token.description ?? '';
+      for (const surface of [queryWonder.description, token]) {
+        expect(surface).not.toMatch(/published, not withheld|fewer than 20 deaths/);
+        expect(surface).toContain('D76 and D77 when it is computed from 20 or fewer deaths');
+        expect(surface).toContain(`D176, D158, and D157 ${INTERVAL_WIDTH}`);
+      }
+    });
   });
 
   it('forwards a service McpError through ctx.fail with its declared reason', async () => {
@@ -402,14 +529,352 @@ describe('cdc_query_wonder', () => {
     });
 
     it('stays quiet about a twin on the provisional database, which has none', async () => {
-      /** Provisional runs past where the final databases stop, so selecting it is never a no-op. */
+      /**
+       * Provisional runs past where the final databases stop, so selecting it is never a no-op.
+       * The range stops before the partial latest year, so no reporting-lag clause fires either.
+       */
       mockQuery.mockResolvedValue({ ...sampleResult, database: 'D176' });
       const ctx = createMockContext({ errors: queryWonder.errors });
       await queryWonder.handler(
-        queryWonder.input.parse({ database: 'provisional', group_by: ['year'] }),
+        queryWonder.input.parse({
+          database: 'provisional',
+          group_by: ['year'],
+          year_range: { from: 2018, to: 2024 },
+        }),
         ctx,
       );
       expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+  });
+
+  describe('the provisional database’s reporting lag', () => {
+    /** The provisional database's last year: the current year, read at module load. */
+    const CURRENT_YEAR = WONDER_DATABASE_SPECS.provisional.lastYear;
+
+    async function noticeFor(input: Record<string, unknown>, result: Partial<WonderResult> = {}) {
+      mockQuery.mockResolvedValue({ ...sampleResult, database: 'D176', ...result });
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      await queryWonder.handler(
+        queryWonder.input.parse({ database: 'provisional', ...input }),
+        ctx,
+      );
+      return getEnrichment(ctx).notice;
+    }
+
+    it('names the partial year whatever group_by holds, since a sum hides its label', async () => {
+      const notice = await noticeFor(
+        { group_by: ['sex'], year_range: { from: 2025, to: 2026 } },
+        { dataThrough: '2026-10-17' },
+      );
+      expect(notice).toBe(
+        "The provisional database holds 2026 only through October 17, 2026: deaths for 2026 cover part of the year while its population is the full-year estimate, so counts and rates that include 2026 read low, and neither compares with a finished year's.",
+      );
+    });
+
+    it('names the month a month grouping ends in as partial, unless the data runs to its last day', async () => {
+      const partialYear = (through: string) =>
+        `The provisional database holds 2026 only through ${through}, 2026: deaths for 2026 cover part of the year while its population is the full-year estimate, so counts and rates that include 2026 read low, and neither compares with a finished year's.`;
+      expect(
+        await noticeFor(
+          { group_by: ['year', 'month'], year_range: { from: 2026, to: 2026 } },
+          { dataThrough: '2026-10-17' },
+        ),
+      ).toBe(
+        `${partialYear('October 17')} October 2026, the month that date falls in, is itself partial, so its deaths read low beside a full month's.`,
+      );
+      expect(
+        await noticeFor(
+          { group_by: ['month'], year_range: { from: 2026, to: 2026 } },
+          { dataThrough: '2026-10-31' },
+        ),
+      ).toBe(partialYear('October 31'));
+    });
+
+    it('says nothing for a range that ends before the withheld window’s year', async () => {
+      // Data through October 17, 2026 puts the cutoff at May 2, 2026; 2025 is finished and whole.
+      const notice = await noticeFor(
+        { cause_icd10: 'X42', year_range: { from: 2018, to: 2025 } },
+        { dataThrough: '2026-10-17' },
+      );
+      expect(notice).toBeUndefined();
+    });
+
+    it('names the cutoff for a finished year that a January data-through date reaches back into', async () => {
+      /** Data through January 8, 2026 withholds causes from July 24, 2025 on. */
+      const notice = await noticeFor(
+        { cause_icd10: 'X40-X49', year_range: { from: 2024, to: 2025 } },
+        { dataThrough: '2026-01-08' },
+      );
+      expect(notice).toBe(
+        'CDC withholds the cause of external-cause (V01-Y89), sudden-death (R95, R96) and drug-poisoning (T36-T50) deaths after July 24, 2025 — the 24 weeks before January 8, 2026 — counting them under "999--999" until their cause is released, so the cause filter here misses them and its counts and rates for any period after July 24, 2025 run low. Query cause_icd10 "999--999" on this database for the count withheld across all three: it spans every withheld cause at once, so it bounds what any one filter or cause row is missing and is never added to that filter\'s or row\'s count.',
+      );
+      expect(
+        await noticeFor(
+          { cause_icd10: 'X40-X49', year_range: { from: 2018, to: 2024 } },
+          { dataThrough: '2026-01-08' },
+        ),
+      ).toBeUndefined();
+    });
+
+    it.each([
+      ['a chapter holding the sudden-death codes', { cause_icd10: 'R00-R99' }, true],
+      ['an external-cause code in a list', { cause_icd10: ['I21', 'W01'] }, true],
+      ['drug poisoning as a listed cause', { mcd_icd10: 'T40.1' }, true],
+      ['no cause filter', {}, false],
+      ['a cause outside the withheld spans', { cause_icd10: 'I00-I99' }, false],
+      ['a listed cause outside them', { mcd_icd10: 'J09-J18' }, false],
+      ['the withheld-cause marker', { cause_icd10: '999--999' }, false],
+    ] as const)('adds the withheld-cause clause for %s: %s', async (_label, filter, expected) => {
+      const notice = await noticeFor(
+        { ...filter, year_range: { from: 2025, to: 2026 } },
+        { dataThrough: '2026-10-17' },
+      );
+      expect(notice).toContain('The provisional database holds 2026 only through October 17, 2026');
+      const lag = 'after May 2, 2026 — the 24 weeks before October 17, 2026';
+      expect(notice).toEqual(
+        expected ? expect.stringContaining(lag) : expect.not.stringContaining(lag),
+      );
+    });
+
+    it('words both clauses without dates when the response names no data-through date', async () => {
+      const notice = await noticeFor({ cause_icd10: 'X42' });
+      expect(notice).toBe(
+        `The provisional database holds ${CURRENT_YEAR}, the current year, only through its latest weekly update: deaths for ${CURRENT_YEAR} cover part of the year while its population is the full-year estimate, so counts and rates that include ${CURRENT_YEAR} read low, and neither compares with a finished year's. CDC withholds the cause of external-cause (V01-Y89), sudden-death (R95, R96) and drug-poisoning (T36-T50) deaths in the 24 weeks before the provisional data ends, counting them under "999--999" until their cause is released, so the cause filter here misses them and its counts and rates for those weeks run low. Query cause_icd10 "999--999" on this database for the count withheld across all three: it spans every withheld cause at once, so it bounds what any one filter or cause row is missing and is never added to that filter's or row's count.`,
+      );
+      expect(
+        await noticeFor({ cause_icd10: 'X42', year_range: { from: 2018, to: CURRENT_YEAR - 1 } }),
+      ).toBeUndefined();
+    });
+
+    it('never fires on a final database, whatever its response carries', async () => {
+      mockQuery.mockResolvedValue({ ...sampleResult, database: 'D158', dataThrough: '2024-12-31' });
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      await queryWonder.handler(
+        queryWonder.input.parse({ database: 'underlying_2018_2024', cause_icd10: 'X42' }),
+        ctx,
+      );
+      expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+
+    it('carries both clauses after the page position when the page is cut', async () => {
+      mockQuery.mockResolvedValue({
+        ...sampleResult,
+        database: 'D176',
+        dataThrough: '2026-10-17',
+      });
+      const result = await runToolContract(queryWonder, {
+        database: 'provisional',
+        cause_icd10: 'X42',
+        year_range: { from: 2025, to: 2026 },
+        limit: 1,
+      });
+      const sc = result.structuredContent as { notice: string; nextOffset: number };
+      expect(sc.nextOffset).toBe(1);
+      expect(sc.notice.startsWith('Showing rows 1–1 of 2.')).toBe(true);
+      const partial = sc.notice.indexOf('The provisional database holds 2026');
+      const lag = sc.notice.indexOf('CDC withholds the cause');
+      expect(partial).toBeGreaterThan(0);
+      expect(lag).toBeGreaterThan(partial);
+      const text = contentText(result);
+      expect(text).toContain('after May 2, 2026 — the 24 weeks before October 17, 2026');
+    });
+
+    describe('cause groupings', () => {
+      /**
+       * Grouped by underlying cause inside the window, CDC moves the withheld deaths out of
+       * their own cause's row — a chapter grouping returns a 999--999 row beside an undercounted
+       * V01-Y89 chapter — so the rows run low exactly as a filtered count does.
+       */
+      const GROUPING_CLAUSE = (dims: string) =>
+        `CDC withholds the cause of external-cause (V01-Y89), sudden-death (R95, R96) and drug-poisoning (T36-T50) deaths after May 2, 2026 — the 24 weeks before October 17, 2026 — counting them under "999--999" until their cause is released, so the ${dims} rows for those causes miss them and their counts and rates for any period after May 2, 2026 run low — the withheld deaths fill a row of their own by ICD chapter or sub-chapter, and a ranking across causes places those causes lower than their full count would. Query cause_icd10 "999--999" on this database for the count withheld across all three: it spans every withheld cause at once, so it bounds what any one filter or cause row is missing and is never added to that filter's or row's count.`;
+      const FILTER_CLAUSE =
+        'so the cause filter here misses them and its counts and rates for any period after May 2, 2026 run low.';
+
+      it.each(['icd_chapter', 'icd_subchapter', 'cause_113', 'leading_causes', 'injury_intent'])(
+        'adds the withheld-cause clause to %s with no cause filter',
+        async (dim) => {
+          const notice = await noticeFor(
+            { group_by: [dim], year_range: { from: 2026, to: 2026 } },
+            { dataThrough: '2026-10-17' },
+          );
+          expect(notice).toContain(GROUPING_CLAUSE(dim));
+        },
+      );
+
+      it('names every cause grouping in the clause, and only those', async () => {
+        const notice = await noticeFor(
+          { group_by: ['icd_chapter', 'sex', 'cause_113'], year_range: { from: 2026, to: 2026 } },
+          { dataThrough: '2026-10-17' },
+        );
+        expect(notice).toContain(GROUPING_CLAUSE('icd_chapter and cause_113'));
+      });
+
+      it.each([
+        ['an underlying-cause filter clear of the withheld spans', { cause_icd10: 'C00-D48' }],
+        ['the withheld-cause marker itself', { cause_icd10: '999--999' }],
+      ] as const)('leaves the clause off for %s', async (_label, filter) => {
+        const notice = await noticeFor(
+          { group_by: ['icd_subchapter'], ...filter, year_range: { from: 2026, to: 2026 } },
+          { dataThrough: '2026-10-17' },
+        );
+        expect(notice).not.toContain('CDC withholds the cause');
+      });
+
+      it('keeps the filter wording when the filter reaches a withheld cause too', async () => {
+        const notice = await noticeFor(
+          {
+            group_by: ['icd_subchapter'],
+            cause_icd10: 'V01-Y89',
+            year_range: { from: 2026, to: 2026 },
+          },
+          { dataThrough: '2026-10-17' },
+        );
+        expect(notice).toContain(FILTER_CLAUSE);
+        expect(notice).not.toContain('rows for those causes');
+      });
+
+      it('takes the grouping wording beside a listed-cause filter that reaches nothing withheld', async () => {
+        // A death with influenza listed and an external underlying cause still leaves its chapter.
+        const notice = await noticeFor(
+          { group_by: ['icd_chapter'], mcd_icd10: 'J09-J18', year_range: { from: 2026, to: 2026 } },
+          { dataThrough: '2026-10-17' },
+        );
+        expect(notice).toContain(GROUPING_CLAUSE('icd_chapter'));
+      });
+
+      it.each(['hispanic_origin', 'month', 'year'])(
+        'adds no withheld-cause clause to %s, which does not partition by cause',
+        async (dim) => {
+          const notice = await noticeFor(
+            { group_by: [dim], year_range: { from: 2026, to: 2026 } },
+            { dataThrough: '2026-10-17' },
+          );
+          expect(notice).toContain('The provisional database holds 2026 only through');
+          expect(notice).not.toContain('CDC withholds the cause');
+        },
+      );
+
+      it('adds no clause for years that end before the window', async () => {
+        const notice = await noticeFor(
+          { group_by: ['icd_chapter'], year_range: { from: 2018, to: 2025 } },
+          { dataThrough: '2026-10-17' },
+        );
+        expect(notice).toBeUndefined();
+      });
+    });
+  });
+
+  describe('cause, origin and month groupings', () => {
+    /** One query's notice, or the error the handler raised before calling the service. */
+    async function run(input: Record<string, unknown>, result: Partial<WonderResult> = {}) {
+      mockQuery.mockResolvedValue({ ...sampleResult, ...result });
+      const ctx = createMockContext({ errors: queryWonder.errors });
+      const output = await queryWonder.handler(queryWonder.input.parse(input), ctx);
+      return { output, notice: z.string().optional().parse(getEnrichment(ctx).notice) };
+    }
+
+    const NESTING =
+      'Rows grouped by cause_113 nest: cause_level gives each cause\'s depth in CDC\'s 113-cause list, and a cause below level 1 is part of the cause one level up that contains it — "Respiratory tuberculosis (A16)" within "#Tuberculosis (A16-A19)" — so its deaths are counted in that row too, and summing deaths across levels counts them more than once.';
+
+    const CAUSE_113_ROWS = {
+      rows: [
+        {
+          cause_113: '#Tuberculosis (A16-A19)',
+          cause_level: 1,
+          deaths: 526,
+          population: 328239523,
+          crude_rate: 0.2,
+        },
+        {
+          cause_113: 'Respiratory tuberculosis (A16)',
+          cause_level: 2,
+          deaths: 346,
+          population: 328239523,
+          crude_rate: 0.1,
+        },
+      ],
+      rowCount: 2,
+      columns: ['cause_113', 'deaths', 'population', 'crude_rate'],
+    } satisfies Partial<WonderResult>;
+
+    it('says the cause_113 rows nest, and nothing of the kind for any other grouping', async () => {
+      expect((await run({ group_by: ['cause_113'] }, CAUSE_113_ROWS)).notice).toBe(NESTING);
+      expect((await run({ group_by: ['icd_subchapter'] })).notice).toBeUndefined();
+    });
+
+    it('leaves the nesting clause off a table with no rows', async () => {
+      const { notice } = await run({ group_by: ['cause_113'] }, { rows: [], rowCount: 0 });
+      expect(notice).not.toContain('nest');
+      expect(notice).toContain('No rows matched');
+    });
+
+    it('places the nesting clause after the flagged cells and before the twin database', async () => {
+      const { notice = '' } = await run(
+        { database: 'multiple_1999_2020', group_by: ['cause_113'], limit: 1 },
+        {
+          ...CAUSE_113_ROWS,
+          database: 'D77',
+          messages: HIDDEN_ROW_MESSAGES,
+          cellNotes: [{ row: 0, column: 'crude_rate', token: 'Not Applicable' }],
+        },
+      );
+      const order = [
+        'Showing rows 1–1 of 2.',
+        'CDC withheld whole rows',
+        'CDC returned a status token',
+        'Rows grouped by cause_113 nest',
+        'D77 records every cause listed',
+      ].map((clause) => notice.indexOf(clause));
+      expect(order.every((at) => at >= 0)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+    });
+
+    it('places the nesting clause before the provisional partial-year and lag clauses', async () => {
+      const { notice = '' } = await run(
+        { database: 'provisional', group_by: ['cause_113'], year_range: { from: 2026, to: 2026 } },
+        { ...CAUSE_113_ROWS, database: 'D176', dataThrough: '2026-10-17' },
+      );
+      const nesting = notice.indexOf('Rows grouped by cause_113 nest');
+      const partial = notice.indexOf('The provisional database holds 2026');
+      const lag = notice.indexOf('CDC withholds the cause');
+      expect(nesting).toBe(0);
+      expect(partial).toBeGreaterThan(nesting);
+      expect(lag).toBeGreaterThan(partial);
+    });
+
+    it('passes each new grouping through to the service in the order given', async () => {
+      await run({ group_by: ['hispanic_origin', 'month', 'injury_intent'] });
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.objectContaining({ groupBy: ['hispanic_origin', 'month', 'injury_intent'] }),
+        expect.anything(),
+      );
+    });
+
+    it('renders cause_code and cause_level as columns of the content[] table', () => {
+      const text = (
+        queryWonder.format!({
+          ...sampleResult,
+          rows: [
+            {
+              icd_chapter: 'Neoplasms',
+              cause_code: 'C00-D48',
+              deaths: 615191,
+              population: 328239523,
+              crude_rate: 187.4,
+            },
+          ],
+          rowCount: 1,
+        })[0] as { text: string }
+      ).text;
+      expect(text).toContain('| icd_chapter | cause_code | deaths | population | crude_rate |');
+      expect(text).toContain('| Neoplasms | C00-D48 | 615191 | 328239523 | 187.4 |');
+      const levels = (
+        queryWonder.format!({ ...sampleResult, ...CAUSE_113_ROWS, cellNotes: [] })[0] as {
+          text: string;
+        }
+      ).text;
+      expect(levels).toContain('| cause_113 | cause_level | deaths | population | crude_rate |');
+      expect(levels).toContain('| Respiratory tuberculosis (A16) | 2 | 346 | 328239523 | 0.1 |');
     });
   });
 
@@ -453,7 +918,7 @@ describe('cdc_query_wonder', () => {
       return { result, enrichment: getEnrichment(ctx) };
     }
 
-    it('returns a table inside the response budget whole when limit and offset are omitted', async () => {
+    it('returns a table under the row ceiling whole when limit and offset are omitted', async () => {
       const { result, enrichment } = await page({});
 
       expect(result.rows).toEqual(pagedResult.rows);
@@ -500,9 +965,7 @@ describe('cdc_query_wonder', () => {
       expect(structured.rowCount).toBe(6);
       expect(structured.truncated).toBeUndefined();
 
-      const text = (result.content as { type: string; text: string }[])
-        .map((c) => c.text)
-        .join('\n');
+      const text = contentText(result);
       expect(text).toContain('— 6 rows');
       expect(text.split('\n').filter((l) => /^\| 20\d\d \|/.test(l))).toHaveLength(6);
       expect(text).not.toMatch(/nextOffset|truncated/i);
@@ -743,6 +1206,14 @@ describe('cdc_query_wonder', () => {
       expect(queryWonder.input.shape.database.description).toContain('not comparable');
     });
 
+    it('says a coarser level grouped beside its finer one adds nothing to the row bound', () => {
+      const clause = 'year beside month, or icd_chapter beside icd_subchapter, adds nothing';
+      expect(queryWonder.description).toContain(clause);
+      expect(queryWonder.input.shape.group_by.description).toContain(
+        'year beside month, and icd_chapter beside icd_subchapter, add nothing to the product',
+      );
+    });
+
     it('counts six single-race categories with "More than one race" among them, not six plus one', () => {
       const description = queryWonder.input.shape.group_by.description ?? '';
       expect(description).toContain('six single-race categories');
@@ -898,10 +1369,35 @@ describe('cdc_query_wonder', () => {
     });
 
     it('accepts the withheld-cause marker on both cause inputs, which no ICD-10 form allows', () => {
-      /** `999--999` is CDC's own finder value, not an ICD-10 code — the pattern cannot spell it. */
+      /**
+       * `999--999` is CDC's own finder value, not an ICD-10 code — the pattern cannot spell it.
+       * `999-999` is the cause_code a sub-chapter row carries for the same stratum, so a row
+       * chains into the filter; no other spelling of the marker is accepted.
+       */
       expect(queryWonder.input.parse({ cause_icd10: '999--999' }).cause_icd10).toBe('999--999');
       expect(queryWonder.input.parse({ mcd_icd10: '999--999' }).mcd_icd10).toBe('999--999');
-      expect(() => queryWonder.input.parse({ cause_icd10: '999-999' })).toThrow();
+      expect(queryWonder.input.parse({ cause_icd10: '999-999' }).cause_icd10).toBe('999-999');
+      expect(queryWonder.input.parse({ cause_icd10: ['I21', '999-999'] }).cause_icd10).toEqual([
+        'I21',
+        '999-999',
+      ]);
+      expect(() => queryWonder.input.parse({ cause_icd10: '999---999' })).toThrow();
+      expect(() => queryWonder.input.parse({ cause_icd10: '999' })).toThrow();
+    });
+
+    it('says age_adjusted_rate is the rate that compares groups', () => {
+      expect(queryWonder.output.shape.rows.description).toContain(
+        "age_groups selects a single group, and it is the rate to compare across groups, since crude_rate moves with each group's age mix.",
+      );
+    });
+
+    it('says the sub-chapter withheld-cause code chains into cause_icd10', () => {
+      expect(queryWonder.output.shape.rows.description).toContain(
+        'reads "999--999" by chapter and "999-999" by sub-chapter, and cause_icd10 takes either as it stands',
+      );
+      expect(queryWonder.input.shape.cause_icd10.description).toContain(
+        '"999-999", the cause_code a sub-chapter row carries for the same deaths, is accepted too and sent as "999--999"',
+      );
     });
 
     it('states that age_groups matches any of the listed groups', () => {
@@ -946,18 +1442,59 @@ describe('cdc_query_wonder', () => {
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('| 2020 | Female | Suppressed | 100 |  |  |');
       expect(text).toContain('1 cell(s) withheld by CDC for confidentiality');
-      // The itemized block is for cells CDC published-but-flagged; a withheld cell
+      // The itemized block is for cells CDC flagged rather than suppressed; a withheld cell
       // must not also be listed there, which would contradict the suppression line.
-      expect(text).not.toContain('not withheld');
+      expect(text).not.toContain('Cells CDC returned as a status token');
     });
 
     it('renders an unreliable cell as its token and itemizes it below the table', () => {
       const blocks = queryWonder.format!(unreliableResult);
       const text = (blocks[0] as { type: 'text'; text: string }).text;
       expect(text).toContain('| 15-24 years | 10 | 42687510 | Unreliable |');
-      expect(text).toContain('row 0, `crude_rate` — `Unreliable`');
-      expect(text).toContain('fewer than 20 deaths');
+      expect(text).toContain(
+        '**Cells CDC returned as a status token in place of a number (null in the data, not suppressed for confidentiality):**',
+      );
+      expect(text).toContain(
+        "- row 0, `crude_rate` — `Unreliable`: no rate shown — CDC flags the rate as statistically unstable and puts the token in its place (on D76, when it is computed from 20 or fewer deaths), while the row's deaths and population stand",
+      );
       expect(text).not.toContain('withheld by CDC for confidentiality');
+    });
+
+    it('renders each rate’s interval bounds as the columns right after it', () => {
+      const blocks = queryWonder.format!({
+        ...sampleResult,
+        rows: [
+          {
+            age_group: '< 1 year',
+            deaths: 12,
+            population: 3795762,
+            crude_rate: null,
+            crude_rate_lower: 0.2,
+            crude_rate_upper: 0.6,
+          },
+          {
+            age_group: 'Not Stated',
+            deaths: 12,
+            population: null,
+            crude_rate: null,
+            crude_rate_lower: null,
+            crude_rate_upper: null,
+          },
+        ],
+        rowCount: 2,
+        cellNotes: [
+          { row: 0, column: 'crude_rate', token: 'Unreliable' },
+          { row: 1, column: 'population', token: 'Not Applicable' },
+          { row: 1, column: 'crude_rate', token: 'Not Applicable' },
+        ],
+      });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+      expect(text).toContain(
+        '| age_group | deaths | population | crude_rate | crude_rate_lower | crude_rate_upper |',
+      );
+      // An Unreliable rate shows its token beside the interval CDC published with it.
+      expect(text).toContain('| < 1 year | 12 | 3795762 | Unreliable | 0.2 | 0.6 |');
+      expect(text).toContain('| Not Stated | 12 | Not Applicable | Not Applicable |  |  |');
     });
 
     it('keeps a cell containing a newline or pipe inside its own row', () => {
@@ -1030,9 +1567,6 @@ describe('cdc_query_wonder', () => {
   });
 
   describe('empty pages on both surfaces', () => {
-    /** Text the caller reads in content[], every block joined. */
-    const contentOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
-      (result.content as { type: string; text: string }[]).map((c) => c.text).join('\n');
     const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
       (result.structuredContent as { notice?: string }).notice ?? '';
     const occurrences = (text: string, phrase: string) => text.split(phrase).length - 1;
@@ -1047,7 +1581,7 @@ describe('cdc_query_wonder', () => {
       const result = await runToolContract(queryWonder, { group_by: ['year', 'sex'], offset: 2 });
 
       expect(result.isError).toBeFalsy();
-      const text = contentOf(result);
+      const text = contentText(result);
       for (const claim of NO_CAUSE_CLAIMS) {
         expect(text).not.toContain(claim);
         expect(noticeOf(result)).not.toContain(claim);
@@ -1064,7 +1598,7 @@ describe('cdc_query_wonder', () => {
       const result = await runToolContract(queryWonder, { group_by: ['year'] });
 
       expect(noticeOf(result)).toContain('No rows matched. Broaden the filters');
-      expect(occurrences(contentOf(result), 'No rows matched')).toBe(1);
+      expect(occurrences(contentText(result), 'No rows matched')).toBe(1);
     });
 
     it('carries the withheld-rows wording once, through the notice, when CDC hid every row', async () => {
@@ -1077,8 +1611,24 @@ describe('cdc_query_wonder', () => {
       const result = await runToolContract(queryWonder, { group_by: ['year'] });
 
       expect(noticeOf(result)).toContain('not evidence that nothing matched');
-      expect(occurrences(contentOf(result), 'No rows came back')).toBe(1);
-      expect(occurrences(contentOf(result), 'No rows matched')).toBe(0);
+      expect(occurrences(contentText(result), 'No rows came back')).toBe(1);
+      expect(occurrences(contentText(result), 'No rows matched')).toBe(0);
+    });
+
+    it('carries the no-deaths wording once, through the notice, when CDC hid only zero-death rows', async () => {
+      mockQuery.mockResolvedValue({
+        ...sampleResult,
+        rows: [],
+        rowCount: 0,
+        messages: [ZERO_ROWS_HIDDEN],
+      });
+      const result = await runToolContract(queryWonder, { group_by: ['year'] });
+
+      const text = contentText(result);
+      expect(noticeOf(result)).toContain('CDC recorded no deaths for this combination');
+      expect(occurrences(text, 'CDC recorded no deaths for this combination')).toBe(1);
+      expect(occurrences(text, 'No rows matched')).toBe(0);
+      expect(text).not.toMatch(/Widen|partial/);
     });
   });
 
