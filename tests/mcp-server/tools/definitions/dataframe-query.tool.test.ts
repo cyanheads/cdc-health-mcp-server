@@ -13,10 +13,14 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { DuckDBConnection, DuckDBResultReader } from '@duckdb/node-api';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dataframeQuery } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
+import {
+  dataframeQuery,
+  leadingWord,
+} from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import type { WonderGroupBy, WonderRow } from '@/services/wonder/types.js';
 import { getWonderService, initWonderService } from '@/services/wonder/wonder-service.js';
 import { contentText } from '../../../helpers/contract-text.js';
+import { expectLinearDoublings, fill } from '../../../helpers/cpu-cost.js';
 import { readBack, renderedCells, renderMarkdown } from '../../../helpers/markdown-render.js';
 import {
   createStagingCanvas,
@@ -630,5 +634,90 @@ describe('cdc_dataframe_query', () => {
         'Columns: icd_chapter, deaths',
       );
     });
+
+    /**
+     * Timing: the rows are whatever the caller's SELECT builds, up to the reply ceiling. Each
+     * shape doubles from 5,000 characters to 320,000, and at every size the least of several
+     * measurements stays under four times the growth against the 5,000-character base re-timed
+     * beside it — under 256× at the full 64× span. The table, fenced-JSON, and empty renderings
+     * are each covered.
+     */
+    describe('timing', () => {
+      const inCell = (value: string) => ({
+        columns: ['label'],
+        rows: [{ label: value }],
+        rowCount: 1,
+      });
+      const asColumn = (name: string) => ({ columns: [name], rows: [], rowCount: 0 });
+
+      it.each<[string, (n: number) => string, typeof inCell, number]>([
+        ['one long line ending in a break', (n) => `${fill('§1 x', n)}\ny`, inCell, 20],
+        ['line breaks throughout', (n) => fill('  \r\n', n), inCell, 20],
+        ['a table cell of Markdown punctuation', (n) => fill('*_|<&\\`x', n), inCell, 5],
+        ['backtick runs in fenced JSON', (n) => `${fill('`a``', n)}\n`, inCell, 20],
+        ['one backtick run in fenced JSON', (n) => `${fill('`', n)}\n`, inCell, 20],
+        ['a long column name with no rows', (n) => fill('`a``', n), asColumn, 20],
+      ])(
+        'stays linear on %s',
+        (_name, build, wrap, repeats) =>
+          expectLinearDoublings(
+            build,
+            320_000,
+            (text) => dataframeQuery.format!(wrap(text)),
+            repeats,
+          ),
+        0,
+      );
+    });
+  });
+});
+
+describe('leadingWord', () => {
+  it.each([
+    ['a statement keyword', 'TRUNCATE wonder_x', 'TRUNCATE'],
+    ['a bare keyword', 'CHECKPOINT', 'CHECKPOINT'],
+    ['a word behind a line comment', '-- tidy up\nvacuum', 'vacuum'],
+    ['a word inside an opening parenthesis', '(USE memory)', 'USE'],
+    ['a SELECT', 'SELECT * FROM wonder_gone', 'SELECT'],
+    ['a word behind a block comment and parentheses', '/* note */ ( (\tcheckpoint', 'checkpoint'],
+    ['a word behind comments of both kinds', '/* a */ -- b\r\n/**/\n_x9 y', '_x9'],
+    ['a word right after an empty block comment', '/**/USE', 'USE'],
+  ])('reads the opening word of %s', (_label, sql, word) => {
+    expect(leadingWord(sql)).toBe(word);
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['whitespace and parentheses alone', ' ( \n( '],
+    ['a quoted name first', '"wonder_x"'],
+    ['a quoted name behind a line comment', '-- wonder_x\n"wonder_x"'],
+    ['a number first', '1 + 1'],
+    ['a line comment left open', '-- vacuum'],
+    ['a block comment left open', '/* vacuum'],
+    ['a block comment whose */ shares the opener’s *', '/*/ vacuum'],
+  ])('reads no opening word from %s', (_label, sql) => {
+    expect(leadingWord(sql)).toBeUndefined();
+  });
+
+  /**
+   * Timing: the SQL is the caller's, so its length is bounded only by the request body. Each
+   * input doubles from 5,000 characters to 320,000, and at every size the least of several
+   * measurements stays under four times the growth against the 5,000-character base re-timed
+   * beside it — under 256× at the full 64× span.
+   */
+  describe('timing', () => {
+    it.each<[(n: number) => string]>([
+      [(n) => `-- ${fill('§1 x', n)}\ny`],
+      [(n) => fill('  \r\n', n)],
+      [(n) => fill('--\r\n', n)],
+      [(n) => fill('--', n)],
+      [(n) => `/*${fill('*//*', n)}`],
+      [(n) => fill('/**/(', n)],
+      [(n) => `${fill('/**/', n)}/*`],
+    ])(
+      'stays linear on input %#',
+      (build) => expectLinearDoublings(build, 320_000, leadingWord, 50),
+      0,
+    );
   });
 });

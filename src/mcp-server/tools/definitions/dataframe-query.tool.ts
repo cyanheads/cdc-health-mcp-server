@@ -44,9 +44,30 @@ function replyQuery(sql: string, limit: number): string {
   return `SELECT * FROM (SELECT unnest(CASE WHEN m.reply_bytes <= ${MAX_REPLY_BYTES} THEN m.r END), m.reply_rows, m.reply_bytes FROM (SELECT p.r, p.ord, count(*) OVER ()::DOUBLE AS reply_rows, (sum(strlen(CAST(to_json(p.r) AS VARCHAR))) FILTER (WHERE p.ord <= ${limit}) OVER ())::DOUBLE AS reply_bytes FROM (SELECT struct_pack(*COLUMNS(*)) AS r, row_number() OVER () AS ord FROM (SELECT * FROM (\n${sql}\n)\nLIMIT ${limit + 1})) AS p) AS m\nWHERE m.ord <= ${limit} AND (m.reply_bytes <= ${MAX_REPLY_BYTES} OR m.ord = 1)\nORDER BY m.ord\n)`;
 }
 
-/** The first word of the caller's SQL past leading whitespace, comments, and opening parentheses. */
-function leadingWord(sql: string): string | undefined {
-  return /^(?:\s|--[^\n]*|\/\*[\s\S]*?\*\/|\()*([A-Za-z_][A-Za-z0-9_]*)/.exec(sql)?.[1];
+/**
+ * The first word of the caller's SQL past leading whitespace, comments, and opening parentheses;
+ * undefined when anything else comes first, a comment left open included. One forward pass: a
+ * comment is skipped to its end with a single search, so the scan is linear in the SQL's length.
+ */
+export function leadingWord(sql: string): string | undefined {
+  let at = 0;
+  while (at < sql.length) {
+    const char = sql.charAt(at);
+    if (char === '(' || /\s/.test(char)) {
+      at += 1;
+    } else if (sql.startsWith('--', at)) {
+      const end = sql.indexOf('\n', at + 2);
+      if (end === -1) return;
+      at = end + 1;
+    } else if (sql.startsWith('/*', at)) {
+      const end = sql.indexOf('*/', at + 2);
+      if (end === -1) return;
+      at = end + 2;
+    } else {
+      break;
+    }
+  }
+  return /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(at))?.[0];
 }
 
 /** The caller's SQL without one trailing semicolon, which cannot sit inside a subquery. */
