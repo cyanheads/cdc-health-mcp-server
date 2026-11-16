@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.12.0](changelog/0.12.x/0.12.0.md) — 2026-11-16
+
+cdc_query_wonder stages the whole table on a DataCanvas for SQL through the new cdc_dataframe_describe and cdc_dataframe_query. ICD-10 codes and dataset IDs are case-folded before validation, file entries carry download URLs, and tools/list is smaller.
+
 ## [0.11.0](changelog/0.11.x/0.11.0.md) — 2026-11-01 · 🛡️ Security
 
 cdc_query_wonder groups by cause, Hispanic origin, and month, returns 95% confidence intervals, and flags the provisional database's partial year. Socrata failures become retryable upstream_error, both upstreams get a 20-second deadline, and the cdc-health-guide Agent Skill is published.
