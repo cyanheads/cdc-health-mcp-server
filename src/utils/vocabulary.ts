@@ -15,10 +15,17 @@ import type { VocabularyTerm } from '@/services/socrata/types.js';
  */
 export const MIN_CONTAINMENT_LENGTH = 3;
 
-/** Whether two tokens name the same thing — one contains the other, or they are equal. */
-function related(a: string, b: string): boolean {
-  if (a.length < MIN_CONTAINMENT_LENGTH || b.length < MIN_CONTAINMENT_LENGTH) return a === b;
-  return a.includes(b) || b.includes(a);
+/**
+ * Whether a filter token and a value token name the same thing: the value token contains the
+ * filter token ("vaccin" in "vaccinations"), or starts it ("vaccination" starts "vaccinations",
+ * "child" starts "children"). A value token anywhere else inside the filter token is no match —
+ * "national" sits inside "international", "age" inside "teenage", "flu" inside "influenza".
+ */
+function related(filterToken: string, valueToken: string): boolean {
+  if (filterToken.length < MIN_CONTAINMENT_LENGTH || valueToken.length < MIN_CONTAINMENT_LENGTH) {
+    return filterToken === valueToken;
+  }
+  return valueToken.includes(filterToken) || filterToken.startsWith(valueToken);
 }
 
 /**
@@ -52,12 +59,13 @@ export function isShortFilter(value: string): boolean {
 /**
  * The vocabulary values related to `value`, in the order they were given.
  *
- * A value qualifies when every token on one side is related to some token on the other — in
- * either direction, because the two cover different mistakes. Forward covers a caller less
- * specific than the vocabulary ("Vaccination" → "Vaccinations", "Child Vaccinations");
- * reverse covers one who was more specific ("nndss weekly" → "nndss"). A token under the
- * containment floor relates only to an equal one, so a short filter ("TB", "h5") matches the
- * values carrying it as a whole word.
+ * A value qualifies when every filter token is related to some value token, or every value
+ * token to some filter token — the one relation, tested from either side, because the two
+ * cover different mistakes. Forward covers a caller less specific than the vocabulary
+ * ("Vaccination" → "Vaccinations", "Child Vaccinations") or one who wrote a plural
+ * ("vaccinations" → "vaccination"); reverse covers one who was more specific ("nndss weekly"
+ * → "nndss", "week"). A token under the containment floor relates only to an equal one, so a
+ * short filter ("TB", "h5") matches the values carrying it as a whole word.
  *
  * Deliberately not fuzzy: relatedness is containment, so a transposed or misspelled filter
  * resolves to nothing rather than to a confident wrong answer. Ranking is inherited from
