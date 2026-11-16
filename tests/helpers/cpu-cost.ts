@@ -86,8 +86,9 @@ export function fill(unit: string, n: number): string {
 /**
  * Asserts `scan` stays linear while the input doubles from 5,000 characters to `largest`: at every
  * size the least CPU of several measurements of `repeats` scans stays under four times the
- * growth, so a quadratic scan breaks the bound by the second doubling, before an expensive size
- * runs.
+ * growth against the 5,000-character base, so a quadratic scan, whose cost grows as the square,
+ * breaks the bound by the third doubling, before an expensive size runs. The base is re-timed
+ * beside each size, so a change in clock speed or load between sizes moves both sides of the ratio.
  *
  * @param build - Builds the worst-case input of roughly `n` characters.
  * @param largest - The last size to check.
@@ -101,12 +102,13 @@ export function expectLinearDoublings(
   repeats: number,
 ) {
   const cost = (input: string): number => leastCost(() => scan(input), repeats);
-  cost(build(SMALL)); // warm the JIT before measuring
-  const base = Math.max(cost(build(SMALL)), 1);
+  const small = build(SMALL);
+  cost(small); // warm the JIT before measuring
   for (let n = SMALL * 2; n <= largest; n *= 2) {
-    const growth = n / SMALL;
-    const at = cost(build(n));
-    expect(at / base, `${n} characters`).toBeLessThan(4 * growth);
+    const input = build(n);
+    const base = Math.max(cost(small), 1);
+    const at = cost(input);
+    expect(at / base, `${n} characters`).toBeLessThan(4 * (n / SMALL));
     expect(at, `${n} characters`).toBeLessThan(1_000_000);
   }
 }

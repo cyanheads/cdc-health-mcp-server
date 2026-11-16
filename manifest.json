@@ -22,6 +22,7 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
+        "CANVAS_PROVIDER_TYPE": "none",
         "CDC_APP_TOKEN": "${user_config.CDC_APP_TOKEN}",
         "MCP_LOG_LEVEL": "${user_config.MCP_LOG_LEVEL}"
       }

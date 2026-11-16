@@ -688,4 +688,83 @@ describe('cdc_query_wonder input handling over the real service', () => {
       expect(message).toContain('multiple_2018_2024');
     });
   });
+
+  describe('the letter case of an ICD-10 code', () => {
+    /**
+     * ICD-10 codes ignore case and the advertised pattern takes uppercase, so a lowercase letter
+     * is uppercased before the check — and so before the request builder, effectiveQuery, and
+     * the lag notice read the code.
+     */
+    it('sends a lowercase range uppercased and echoes it that way on both surfaces', async () => {
+      respondWith(FOUR_MEASURE_TABLE);
+      const result = await runToolContract(queryWonder, {
+        group_by: ['year'],
+        cause_icd10: 'x40-x49',
+        year_range: { from: 2019, to: 2019 },
+      });
+
+      expect(result.isError).toBeFalsy();
+      const [xml] = sentRequests();
+      expect(values(xml!, 'F_D76.V2')).toEqual(['X40-X49']);
+      expect(values(xml!, 'I_D76.V2')).toEqual(['X40-X49']);
+      expect(structuredOf(result).effectiveQuery).toContain('underlying cause X40-X49, ');
+      expect(textOf(result)).toContain('underlying cause X40-X49, ');
+    });
+
+    it('uppercases each entry of a cause list and a multiple-cause code', async () => {
+      respondWith(FOUR_MEASURE_TABLE);
+      await runToolContract(queryWonder, {
+        database: 'multiple_1999_2020',
+        group_by: ['year'],
+        cause_icd10: ['I21', 'i22'],
+        mcd_icd10: 't40.1',
+        year_range: { from: 2019, to: 2019 },
+      });
+
+      const [xml] = sentRequests();
+      expect(values(xml!, 'F_D77.V2')).toEqual(['I21', 'I22']);
+      expect(values(xml!, 'F_D77.V13')).toEqual(['T40.1']);
+    });
+
+    it('reads a lowercase code as the withheld cause it names on the provisional database', async () => {
+      respondWith(FOUR_MEASURE_TABLE);
+      const result = await runToolContract(queryWonder, {
+        database: 'provisional',
+        group_by: ['year'],
+        cause_icd10: 'v01-y89',
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect((result.structuredContent as { notice?: string }).notice).toContain(
+        'so the cause filter here misses them',
+      );
+    });
+
+    it('rejects a code no case makes valid, keeping the error shape and naming the form', async () => {
+      respondWith(FOUR_MEASURE_TABLE);
+      const result = await runToolContract(queryWonder, {
+        group_by: ['year'],
+        cause_icd10: ['I21', 'x4-x49'],
+      });
+
+      expect(result.isError).toBe(true);
+      const error = errorOf(result) as ReturnType<typeof errorOf> & {
+        data: { issues?: unknown[] };
+      };
+      const named =
+        'cause_icd10.1: Expected an ICD-10 code such as "I21" or a tree-node range such as "X40-X49".';
+      expect(error.code).toBe(-32602);
+      expect(error.data.reason).toBe('invalid_arguments');
+      expect(error.message).toContain(named);
+      expect(textOf(result)).toContain(named);
+      expect(error.data.issues).toEqual([
+        expect.objectContaining({
+          code: 'invalid_format',
+          path: ['cause_icd10', 1],
+          pattern: '/^[A-Z][0-9]{2}(\\.[0-9]+)?(-[A-Z][0-9]{2}(\\.[0-9]+)?)?$/',
+        }),
+      ]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -83,6 +83,39 @@ const unreliableResult: WonderResult = {
   columns: ['age_group', 'deaths', 'population', 'crude_rate'],
 };
 
+/**
+ * Every prose string the tool advertises, labelled by where it sits: `description` for the tool
+ * description, the property path for a schema description (`input.limit`,
+ * `output.cellNotes.items.token`), and `when.<reason>` for an error contract's `when`.
+ */
+function proseSurfaces(): [field: string, text: string][] {
+  const surfaces: [string, string][] = [['description', queryWonder.description]];
+  const walk = (node: unknown, path: string): void => {
+    if (Array.isArray(node)) {
+      node.forEach((child, index) => {
+        walk(child, `${path}.${index}`);
+      });
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'description' && typeof value === 'string') surfaces.push([path, value]);
+      else walk(value, key === 'properties' ? path : `${path}.${key}`);
+    }
+  };
+  walk(z.toJSONSchema(queryWonder.input), 'input');
+  walk(z.toJSONSchema(queryWonder.output), 'output');
+  walk(z.toJSONSchema(z.object({ ...queryWonder.enrichment })), 'enrichment');
+  for (const { reason, when } of queryWonder.errors ?? []) surfaces.push([`when.${reason}`, when]);
+  return surfaces;
+}
+
+/** The fields whose prose matches `pattern`. */
+const fieldsStating = (pattern: RegExp) =>
+  proseSurfaces()
+    .filter(([, text]) => pattern.test(text))
+    .map(([field]) => field);
+
 describe('cdc_query_wonder', () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -228,14 +261,16 @@ describe('cdc_query_wonder', () => {
       return { result, notice: getEnrichment(ctx).notice ?? '' };
     }
 
-    it('reads an empty table with only zero-death rows hidden as no deaths recorded', async () => {
+    it('reads an empty table with only zero-death rows hidden as no deaths recorded, once', async () => {
+      /**
+       * An empty table has no rows to sum, so the hidden-rows clause (its "deaths summed from
+       * rows are complete") would only restate the empty-table sentence a second time.
+       */
       const { result, notice } = await noticeFor([ZERO_ROWS_HIDDEN], []);
 
-      expect(notice).toContain('CDC recorded no deaths for this combination');
-      expect(notice).toContain(ZERO_ROWS_HIDDEN);
-      expect(notice).toContain('deaths summed from rows are complete');
-      expect(notice).not.toMatch(/suppress|Widen|partial|not evidence that nothing matched/i);
-      expect(notice).not.toContain('No rows matched');
+      expect(notice).toBe(
+        'No rows came back because CDC recorded no deaths for this combination: the only rows it reported withholding are strata with zero deaths.',
+      );
       expect(result.messages).toEqual([ZERO_ROWS_HIDDEN]);
     });
 
@@ -261,6 +296,16 @@ describe('cdc_query_wonder', () => {
       expect(notice).toContain('recorded zero deaths');
       expect(notice).toContain('deaths summed from rows are complete');
       expect(notice).not.toMatch(/partial|suppress|may have been dropped/i);
+      expect(notice).not.toContain('recorded no deaths for this combination');
+    });
+
+    it('keeps the hidden-rows clause on a page past the end of a table that has rows', async () => {
+      /** The page is empty but the table is not: its deaths still sum, so the reading stays. */
+      const { notice } = await noticeFor([ZERO_ROWS_HIDDEN], sampleResult.rows, { offset: 5 });
+
+      expect(notice).toContain('offset 5 is past the end of this table');
+      expect(notice).toContain(`CDC withheld whole rows from this table — ${ZERO_ROWS_HIDDEN}`);
+      expect(notice).toContain('deaths summed from rows are complete');
       expect(notice).not.toContain('recorded no deaths for this combination');
     });
 
@@ -354,11 +399,63 @@ describe('cdc_query_wonder', () => {
     });
 
     it('never calls an Unreliable rate published on any surface that names the token', () => {
+      const naming = proseSurfaces().filter(([, text]) => text.includes('Unreliable'));
+      expect(naming.map(([field]) => field)).toContain('output.cellNotes.items.token');
+      for (const [field, text] of naming) {
+        expect(text, field).not.toMatch(/published, not withheld|fewer than 20 deaths/);
+      }
+    });
+
+    it('states each database’s rule on the token description', () => {
       const token = queryWonder.output.shape.cellNotes.element.shape.token.description ?? '';
-      for (const surface of [queryWonder.description, token]) {
-        expect(surface).not.toMatch(/published, not withheld|fewer than 20 deaths/);
-        expect(surface).toContain('D76 and D77 when it is computed from 20 or fewer deaths');
-        expect(surface).toContain(`D176, D158, and D157 ${INTERVAL_WIDTH}`);
+      expect(token).toContain('D76 and D77 when it is computed from 20 or fewer deaths');
+      expect(token).toContain(`D176, D158, and D157 ${INTERVAL_WIDTH}`);
+    });
+  });
+
+  describe('each restated fact lives on the field it governs', () => {
+    /**
+     * Every client loads tools/list before its first call, so a fact stated on several fields
+     * costs each session its bytes several times and leaves the copies free to drift. Each fact
+     * here has one home; the notice and content[] still state what applies to the response in
+     * hand, the Unreliable rule of the database queried included.
+     */
+    it.each([
+      ['month rows carry deaths only', /(?:returns|carry) deaths only/, 'input.group_by'],
+      ['cause_icd10 takes a row’s cause_code', /cause_icd10 (?:takes|accepts)/, 'input.group_by'],
+      ['cause_113 rows nest', /nested|across levels|already counted/, 'input.group_by'],
+      ['a coarser level adds nothing to the bound', /adds? nothing/, 'input.group_by'],
+      ['the table bound', /10,000 or fewer|more than 10,000 rows/, 'input.group_by'],
+      [
+        'the per-call ceiling',
+        /at most 10,000 rows|per-call ceiling|the most one call returns/,
+        'input.limit',
+      ],
+      [
+        'every page carries the same caveats and messages',
+        /every page|whichever page/,
+        'input.limit',
+      ],
+      [
+        'the per-database Unreliable rule',
+        /20 or fewer deaths|wider than 160%/,
+        'output.cellNotes.items.token',
+      ],
+      ['CDC hides whole rows', /are hidden|drops whole rows/, 'output.messages'],
+    ] as const)('states that %s on one field', (_fact, pattern, home) => {
+      expect(fieldsStating(pattern)).toEqual([home]);
+    });
+
+    it('names 10,000 only on the two fields whose rules it bounds', () => {
+      expect(fieldsStating(/10,000/)).toEqual(['input.group_by', 'input.limit']);
+    });
+
+    it('gives the list-entry ICD-10 code a description of its own', () => {
+      for (const field of ['cause_icd10', 'mcd_icd10']) {
+        const entry = fieldsStating(/^ICD-10 code or range\.$/).filter((f) =>
+          f.startsWith(`input.${field}`),
+        );
+        expect(entry, field).toEqual([`input.${field}.anyOf.3.items.anyOf.1`]);
       }
     });
   });
@@ -1207,8 +1304,6 @@ describe('cdc_query_wonder', () => {
     });
 
     it('says a coarser level grouped beside its finer one adds nothing to the row bound', () => {
-      const clause = 'year beside month, or icd_chapter beside icd_subchapter, adds nothing';
-      expect(queryWonder.description).toContain(clause);
       expect(queryWonder.input.shape.group_by.description).toContain(
         'year beside month, and icd_chapter beside icd_subchapter, add nothing to the product',
       );
@@ -1391,10 +1486,11 @@ describe('cdc_query_wonder', () => {
       );
     });
 
-    it('says the sub-chapter withheld-cause code chains into cause_icd10', () => {
-      expect(queryWonder.output.shape.rows.description).toContain(
-        'reads "999--999" by chapter and "999-999" by sub-chapter, and cause_icd10 takes either as it stands',
+    it('says on cause_icd10 that the withheld-cause code of either cause row chains into it', () => {
+      expect(queryWonder.input.shape.cause_icd10.description).toContain(
+        'and the cause_code a chapter row carries for them',
       );
+      expect(queryWonder.output.shape.rows.description).not.toContain('999');
       expect(queryWonder.input.shape.cause_icd10.description).toContain(
         '"999-999", the cause_code a sub-chapter row carries for the same deaths, is accepted too and sent as "999--999"',
       );
@@ -1519,14 +1615,31 @@ describe('cdc_query_wonder', () => {
       for (const caveat of caveats) expect(text).toContain(caveat);
     });
 
-    it('renders the CDC notices below the table so a filtered row set is visible in content[]', () => {
+    it('renders the CDC messages below the table so a filtered row set is visible in content[]', () => {
       const blocks = queryWonder.format!({ ...sampleResult, messages: HIDDEN_ROW_MESSAGES });
       const text = (blocks[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('rows may have been withheld');
-      for (const message of HIDDEN_ROW_MESSAGES) expect(text).toContain(message);
+      expect(text).toContain(
+        ['**CDC messages on this table:**', ...HIDDEN_ROW_MESSAGES.map((m) => `- ${m}`)].join('\n'),
+      );
+      expect(text).not.toContain('rows may have been withheld');
     });
 
-    it('renders an empty page as its heading, the CDC notices, and the caveats, stating no cause', () => {
+    it('heads a message that withholds nothing without claiming rows were withheld', () => {
+      /**
+       * CDC attaches messages that withhold nothing — here the ordering note on every
+       * leading_causes table. The heading names the block after the field; what a hidden-row
+       * message means for the counts is the handler's notice to say.
+       */
+      const ordering =
+        'When you group results by 15 Leading Causes, results are initially ordered by Death counts; also, total rows, zero rows, suppressed rows, and Percent of Total are not available. Click any green up/down arrow to change the order. #Top15#';
+      const blocks = queryWonder.format!({ ...sampleResult, messages: [ordering] });
+      const text = (blocks[0] as { type: 'text'; text: string }).text;
+
+      expect(text).toContain(`**CDC messages on this table:**\n- ${ordering}`);
+      expect(text).not.toMatch(/withheld|hidden/i);
+    });
+
+    it('renders an empty page as its heading, the CDC messages, and the caveats, stating no cause', () => {
       /**
        * `format()` cannot tell an exhausted page from a query that matched nothing, so it says
        * neither — the cause reaches content[] through the notice the handler writes.
@@ -1542,7 +1655,7 @@ describe('cdc_query_wonder', () => {
         [
           '**D76 — Underlying Cause of Death, 1999-2020 — 0 rows**',
           '',
-          '**CDC notices on this table — rows may have been withheld before it was sent:**',
+          '**CDC messages on this table:**',
           `- ${HIDDEN_ROW_MESSAGES[0]}`,
           `- ${HIDDEN_ROW_MESSAGES[1]}`,
           '',
@@ -1590,7 +1703,10 @@ describe('cdc_query_wonder', () => {
       expect(noticeOf(result)).toContain(pastTheEnd);
       expect(occurrences(text, pastTheEnd)).toBe(1);
       expect(text).toContain('**D76 — Underlying Cause of Death, 1999-2020 — 0 rows**');
-      expect(occurrences(text, '**CDC notices on this table')).toBe(messages.length > 0 ? 1 : 0);
+      expect(occurrences(text, '**CDC messages on this table:**')).toBe(
+        messages.length > 0 ? 1 : 0,
+      );
+      expect(text).not.toContain('rows may have been withheld');
     });
 
     it('carries "no rows matched" once, through the notice, when the table is empty', async () => {
@@ -1625,10 +1741,14 @@ describe('cdc_query_wonder', () => {
       const result = await runToolContract(queryWonder, { group_by: ['year'] });
 
       const text = contentText(result);
-      expect(noticeOf(result)).toContain('CDC recorded no deaths for this combination');
-      expect(occurrences(text, 'CDC recorded no deaths for this combination')).toBe(1);
+      const notice =
+        'No rows came back because CDC recorded no deaths for this combination: the only rows it reported withholding are strata with zero deaths.';
+      expect(noticeOf(result)).toBe(notice);
+      expect(occurrences(text, notice)).toBe(1);
+      // CDC's message reaches content[] once, under the messages heading, not again in the notice.
+      expect(occurrences(text, ZERO_ROWS_HIDDEN)).toBe(1);
       expect(occurrences(text, 'No rows matched')).toBe(0);
-      expect(text).not.toMatch(/Widen|partial/);
+      expect(text).not.toMatch(/Widen|partial|summed from rows/);
     });
   });
 

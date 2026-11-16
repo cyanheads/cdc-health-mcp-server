@@ -10,8 +10,13 @@ import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datase
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import { queryWonder } from '@/mcp-server/tools/definitions/query-wonder.tool.js';
+import { serverTools } from '@/mcp-server/tools/server-tools.js';
 
+/** The tools the workflow prescribes; every one must be named. */
 const TOOLS = [discoverDatasets, getDatasetSchema, queryDataset, queryWonder];
+
+/** Every tool the server can list, a canvas's included; the prompt may borrow names from any. */
+const SURFACE = serverTools('duckdb');
 
 type PromptMessages = Awaited<ReturnType<typeof analyzeHealthTrend.generate>>;
 
@@ -48,8 +53,8 @@ function schemaVocabulary(node: unknown, into: Set<string>): Set<string> {
 
 /** Tool names plus every input/output field name and enum member across the tool surface. */
 const TOOL_VOCABULARY = (() => {
-  const vocabulary = new Set<string>(TOOLS.map((t) => t.name));
-  for (const t of TOOLS) {
+  const vocabulary = new Set<string>(SURFACE.map((t) => t.name));
+  for (const t of SURFACE) {
     schemaVocabulary(z.toJSONSchema(t.input), vocabulary);
     schemaVocabulary(z.toJSONSchema(t.output), vocabulary);
   }

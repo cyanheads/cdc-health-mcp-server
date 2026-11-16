@@ -350,6 +350,27 @@ describe('cdc_query_dataset — edge cases', () => {
       expect(err.data.recovery?.hint).toContain('cdc_get_dataset_schema');
       expect(err.data.recovery?.hint).not.toMatch(/temporarily unavailable|retry after/i);
     });
+
+    it('points a file at the schema tool for its download URL, still as access_denied', async () => {
+      /**
+       * SODA answers a file, a story, and a link with the same 403 body, and this path holds no
+       * metadata document, so the reason stays and the recovery says where a file's URL is.
+       */
+      mockQuery.mockRejectedValue(
+        new McpError(
+          JsonRpcErrorCode.Forbidden,
+          'Socrata denied access to this resource (403): no row or column access to non-tabular tables.',
+          { reason: 'access_denied' },
+        ),
+      );
+
+      const err = await contractError(queryDataset, { datasetId: '235m-gsry' });
+      expect(err.data.reason).toBe('access_denied');
+      expect(err.data.recovery?.hint).toBe(
+        'Call cdc_get_dataset_schema on this ID: for a file, its failure names the URL to download the file from; otherwise query an ID whose schema lists columns. Retrying this ID returns the same refusal.',
+      );
+      expect(mockGetMetadata).not.toHaveBeenCalled();
+    });
   });
 
   describe('handler — fieldless rows alongside truncation', () => {

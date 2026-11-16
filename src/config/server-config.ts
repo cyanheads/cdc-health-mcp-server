@@ -18,6 +18,12 @@ const ServerConfigSchema = z.object({
     .url()
     .default('https://api.us.socrata.com/api/catalog/v1')
     .describe('Base URL for Socrata Discovery API'),
+  normalizeInputCase: z
+    .stringbool()
+    .default(true)
+    .describe(
+      'Fold the letter case of ICD-10 codes and four-by-four dataset IDs before their pattern check',
+    ),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -29,6 +35,7 @@ export function getServerConfig(): ServerConfig {
     appToken: 'CDC_APP_TOKEN',
     baseUrl: 'CDC_BASE_URL',
     catalogUrl: 'CDC_CATALOG_URL',
+    normalizeInputCase: 'CDC_NORMALIZE_INPUT_CASE',
   });
   return _config;
 }

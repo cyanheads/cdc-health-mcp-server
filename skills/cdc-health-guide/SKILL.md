@@ -1,10 +1,10 @@
 ---
 name: cdc-health-guide
-description: Gates for comparing, ranking, and trending cdc_* results — which CDC WONDER rate to compare, race beside Hispanic origin, the provisional database's partial year and withheld causes, finding a peak month, splicing WONDER databases, and reading stratified Socrata tables. Use before saying a CDC mortality or health figure rose, fell, peaks, or differs between groups or places.
+description: Gates for comparing, ranking, and trending cdc_* results — which CDC WONDER rate to compare, race beside Hispanic origin, the provisional database's partial year and withheld causes, finding a peak month, splicing WONDER databases, ranking or comparing a staged WONDER table, reading stratified Socrata tables, and reaching a file entry. Use before saying a CDC mortality or health figure rose, fell, peaks, or differs between groups or places.
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -24,6 +24,12 @@ CDC public health data, keyless. cdc_query_wonder pins every request to the whol
 **`month` is a year-month.** Grouping by `month` returns one row per month of each year ("Jan., 2019"), with deaths only. For the month a cause peaks in, use several full years: add up each calendar month across them, or read each year's peak. Months differ in length, so compare deaths per day. January 2019's 257,649 deaths are 8,311 a day and February's 232,821 are 8,315: February runs higher per day, which the raw counts reverse.
 
 **Take both sides of a comparison from one database.** A gap between two databases lands in the difference being reported. `provisional` holds 2018 through the current year, so one call carries 2023 beside the latest year. A series from 1999 on joins `underlying_1999_2020` to `underlying_2018_2024` or `provisional`, which share 2018–2020: splice only once those years agree, and never splice a race breakdown.
+
+**Rank, compare, or page a staged WONDER table with SQL, not with more WONDER calls.** Where `cdc_dataframe_query` is listed, a `cdc_query_wonder` call at offset 0 that leaves rows past its page stages the whole table and names it in `stagedTable`. Every further `cdc_query_wonder` page re-runs the query behind a 16-second gap; a SELECT over the staged table does not. A change since a base year, a ranking across causes, and a comparison of strata all need every row, so read them from the staged table. Staging happens only on a first page that leaves rows: a table that fits the page arrives whole inline and stages nothing, and a call at a later offset stages nothing either, so call again at offset 0. The table is dropped an hour after the last query that read it, or earlier, earliest-expiring first, once 200 are staged, and `cdc_dataframe_describe` lists what is staged; on a `missing_table` failure, check the name against that list, and call `cdc_query_wonder` again at offset 0 for a table that is gone.
+
+**Filter or report the `<measure>_status` columns.** In a staged table a rate CDC flagged is null, and its `<measure>_status` column holds the token: `Unreliable`, `Suppressed`, or `Not Applicable`. A null sorts last in `ORDER BY` either direction, so a ranking quietly drops those rows to the bottom. Filter on the status column, or report the flagged rows beside the ranking, instead of reading a null as a low or missing rate. Dimension columns are text, so a year compares as `'2024'`, and `count(*)` comes back as a string.
+
+**A file entry is downloaded, not queried.** `cdc_discover_datasets` gives a `file` entry a `downloadUrl`, and `cdc_get_dataset_schema` on a file fails `not_queryable` naming it. Fetch it with a GET request; it redirects to the file. `cdc_query_dataset` on a file returns `access_denied`.
 
 **Enumerate a Socrata table's categories before reading a value.** Many CDC tables are long: each row is one location, period, question, and stratum, with the overall row stored beside its breakdowns. In hn4x-zwk7 the 2022 adult-obesity question alone fills 1,540 rows across six `stratificationcategory1` values (Total, Sex, Age (years), Education, Income, Race/Ethnicity), 55 of them Total rows, one per location. Run the grouped count that cdc_query_dataset's `select` describes on each categorical column first, then filter to one question, one value type, and the overall stratum. Summing or averaging a value across strata counts the same people more than once, and a percentage never sums. Locations mix too: those 55 rows are the 50 states, DC, Guam, Puerto Rico, the Virgin Islands, and a "US" row labelled "National". Drop the ones the question leaves out before ranking states.
 

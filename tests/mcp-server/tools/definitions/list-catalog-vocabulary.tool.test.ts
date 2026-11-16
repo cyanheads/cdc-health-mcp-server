@@ -326,6 +326,35 @@ describe('cdc_list_catalog_vocabulary', () => {
       expect(enrichment.vocabularySize).toEqual({ categories: 5, tags: 6 });
     });
 
+    it('matches a value word inside a filter word only where it starts that word', async () => {
+      /**
+       * The matcher's start-of-word rule, wired: "national" sits inside "international" past
+       * its start and no longer matches, while "vaccination" starts "vaccinations" and does.
+       */
+      const international = await runToolContract(listCatalogVocabulary, {
+        filter: 'international',
+      });
+      expect(international.structuredContent).toMatchObject({
+        categories: [],
+        tags: [],
+        categoryCount: 0,
+        tagCount: 0,
+      });
+
+      const plural = await runToolContract(listCatalogVocabulary, { filter: 'vaccinations' });
+      expect(plural.structuredContent).toMatchObject({
+        categories: [
+          { value: 'Vaccinations', datasetCount: 89 },
+          { value: 'Child Vaccinations', datasetCount: 15 },
+        ],
+        tags: [
+          { value: 'vaccination', datasetCount: 41 },
+          { value: 'covid-19 vaccination', datasetCount: 35 },
+          { value: 'flu vaccination', datasetCount: 28 },
+        ],
+      });
+    });
+
     it('filters the whole vocabulary rather than the page', async () => {
       /**
        * `zoster` is the least-used tag in the fixture, so it falls outside any small page.

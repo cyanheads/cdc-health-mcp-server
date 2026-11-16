@@ -48,8 +48,26 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
   });
 
   describe('params schema validation', () => {
-    it('rejects ID with uppercase letters', () => {
-      expect(() => datasetDetailResource.params!.parse({ datasetId: 'AB12-cd34' })).toThrow();
+    it('lowercases an ID with uppercase letters before it reaches Socrata', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'Cased',
+        columns: [{ fieldName: 'id', dataType: 'text' }],
+      });
+      const params = datasetDetailResource.params!.parse({ datasetId: 'AB12-cd34' });
+      expect(params.datasetId).toBe('ab12-cd34');
+
+      await datasetDetailResource.handler(
+        params,
+        createMockContext({ errors: datasetDetailResource.errors }),
+      );
+      expect(mockGetMetadata).toHaveBeenCalledWith('ab12-cd34', expect.anything());
+    });
+
+    it('rejects an ID no case makes valid with -32007, naming the four-by-four form', async () => {
+      const err = await readResourceError(datasetDetailResource, 'cdc://datasets/AB12-cd3');
+
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(err.message).toContain('datasetId: Expected a four-by-four ID such as "bi63-dtpu".');
     });
 
     it('rejects ID with special characters', () => {
@@ -126,6 +144,41 @@ describe('cdc://datasets/{datasetId} — edge cases', () => {
         'Read cdc://datasets/saz5-9hgg, the dataset this asset is built on, then query that ID with cdc_query_dataset.',
       );
       expect(mockGetMetadata).toHaveBeenCalledTimes(1);
+    });
+
+    it('names a file, its size in bytes, and its download URL in the message and the hint', async () => {
+      const download = 'https://data.cdc.gov/download/235m-gsry';
+      mockGetMetadata.mockResolvedValue({
+        name: 'Pulmonary evaluation of 3D printer emissions',
+        columns: [],
+        file: { downloadUrl: download, name: 'rd-1083-2024-0.zip', sizeBytes: 306191 },
+      });
+
+      const err = await readResourceError(datasetDetailResource, 'cdc://datasets/235m-gsry');
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(err.data.reason).toBe('not_queryable');
+      expect(err.message).toBe(
+        `Dataset 235m-gsry ("Pulmonary evaluation of 3D printer emissions") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it. It is a file, "rd-1083-2024-0.zip" (306,191 bytes), downloadable from ${download}, which redirects to the file.`,
+      );
+      expect(err.data.recovery?.hint).toBe(
+        `Download the file with a GET request to ${download} rather than querying this ID.`,
+      );
+      // The read names no host, so the service resolves it, and the URL, from CDC_BASE_URL.
+      expect(mockGetMetadata).toHaveBeenCalledWith('235m-gsry', expect.anything());
+    });
+
+    it('still names the download URL of a file document recording no name or size', async () => {
+      const download = 'https://data.cdc.gov/download/235m-gsry';
+      mockGetMetadata.mockResolvedValue({
+        name: 'Pulmonary evaluation of 3D printer emissions',
+        columns: [],
+        file: { downloadUrl: download },
+      });
+
+      const err = await readResourceError(datasetDetailResource, 'cdc://datasets/235m-gsry');
+      expect(err.message).toContain(`It is a file, downloadable from ${download},`);
+      expect(err.message).not.toContain('bytes');
+      expect(err.data.recovery?.hint).toContain(download);
     });
 
     it('carries parentId on a filter it reads', async () => {

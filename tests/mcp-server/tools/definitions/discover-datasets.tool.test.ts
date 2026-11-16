@@ -401,7 +401,7 @@ describe('cdc_discover_datasets', () => {
      * near miss returns nothing and reads identically to a real value with no datasets. The
      * notice resolves the filter against the vocabulary and names what is actually there.
      */
-    it('names the closest category with its dataset count instead of advising a broader search', async () => {
+    it('names the closest category with its entry count instead of advising a broader search', async () => {
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
       mockListCategories.mockResolvedValue(CATEGORY_VOCABULARY);
       const ctx = createMockContext({ errors: discoverDatasets.errors });
@@ -412,13 +412,13 @@ describe('cdc_discover_datasets', () => {
 
       const notice = getEnrichment(ctx).notice as string;
       expect(notice).toContain('No datasets found for category "Vaccination"');
-      expect(notice).toContain('"Vaccinations" (89 datasets)');
+      expect(notice).toContain('"Vaccinations" (89 entries)');
       // The broadening advice is what the near miss replaces — the search itself was fine.
       expect(notice).not.toContain('Try broader search terms');
       expect(mockListCategories).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
     });
 
-    it('ranks several near misses by dataset count and caps the list at three', async () => {
+    it('ranks several near misses by entry count and caps the list at three', async () => {
       mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
       mockListCategories.mockResolvedValue(CATEGORY_VOCABULARY);
       const ctx = createMockContext({ errors: discoverDatasets.errors });
@@ -428,7 +428,7 @@ describe('cdc_discover_datasets', () => {
       );
 
       const notice = getEnrichment(ctx).notice as string;
-      const named = [...notice.matchAll(/"([^"]+)" \((\d+) datasets\)/g)].map((m) => m[1]);
+      const named = [...notice.matchAll(/"([^"]+)" \((\d+) entries\)/g)].map((m) => m[1]);
       expect(named).toEqual(['Vaccinations', 'Child Vaccinations', 'Flu Vaccinations']);
       // Unrelated vocabulary must not leak in, or "closest" means nothing.
       expect(notice).not.toContain('Motor Vehicle');
@@ -449,7 +449,7 @@ describe('cdc_discover_datasets', () => {
 
       const notice = getEnrichment(ctx).notice as string;
       expect(notice).toContain(
-        'Closest category values in the catalog vocabulary: "National Center for HIV, Viral Hepatitis, STD, and TB Prevention" (7 datasets).',
+        'Closest category values in the catalog vocabulary: "National Center for HIV, Viral Hepatitis, STD, and TB Prevention" (7 entries).',
       );
       expect(notice).not.toContain('Try broader search terms');
     });
@@ -464,12 +464,52 @@ describe('cdc_discover_datasets', () => {
       );
 
       const notice = getEnrichment(ctx).notice as string;
-      const named = [...notice.matchAll(/"([^"]+)" \((\d+) datasets\)/g)].map((m) => m[1]);
+      const named = [...notice.matchAll(/"([^"]+)" \((\d+) entries\)/g)].map((m) => m[1]);
       expect(named.length).toBeGreaterThan(0);
       // "nndss weekly" resolves by the reverse direction (the value sits inside the filter),
       // "vaccinations" by the forward one, and the merged list is count-ranked.
       expect(named).toEqual(['nndss', 'vaccination', 'covid-19 vaccination']);
       expect(mockListTags).toHaveBeenCalledWith('data.cdc.gov', ctx.signal);
+    });
+
+    it('names a tag whose word starts the filter word, not one inside it', async () => {
+      /** "teen" starts "teenage"; "age" sits inside it past its start and is no near miss. */
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      mockListTags.mockResolvedValue([
+        { value: 'age', datasetCount: 64 },
+        { value: 'teen births', datasetCount: 3 },
+      ]);
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      await discoverDatasets.handler(discoverDatasets.input.parse({ tags: ['teenage'] }), ctx);
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain(
+        'Closest tag values in the catalog vocabulary: "teen births" (3 entries).',
+      );
+      expect(notice).not.toContain('"age"');
+    });
+
+    it('counts each near miss in catalog entries, one entry in the singular', async () => {
+      /**
+       * The counts are the vocabulary's entry counts, which take in charts, maps, files, and
+       * links beside datasets, so the notice calls them entries.
+       */
+      mockDiscover.mockResolvedValue({ datasets: [], totalCount: 0 });
+      mockListCategories.mockResolvedValue([
+        { value: 'Vaccinations', datasetCount: 89 },
+        { value: 'Teen Vaccinations', datasetCount: 1 },
+      ]);
+      const ctx = createMockContext({ errors: discoverDatasets.errors });
+      await discoverDatasets.handler(
+        discoverDatasets.input.parse({ category: 'Vaccination' }),
+        ctx,
+      );
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain(
+        'Closest category values in the catalog vocabulary: "Vaccinations" (89 entries), "Teen Vaccinations" (1 entry).',
+      );
+      expect(notice).not.toContain('datasets)');
     });
 
     it('resolves only the dimension that was filtered', async () => {
@@ -528,7 +568,7 @@ describe('cdc_discover_datasets', () => {
       const notice = getEnrichment(ctx).notice as string;
       expect(notice).toContain('Try broader search terms');
       expect(notice).toContain('cdc_list_catalog_vocabulary');
-      expect(notice).not.toMatch(/\(\d+ datasets\)/);
+      expect(notice).not.toMatch(/\(\d+ entr(?:y|ies)\)/);
     });
 
     it('keeps the discovery answer when the vocabulary lookup fails', async () => {
@@ -591,7 +631,7 @@ describe('cdc_discover_datasets', () => {
         ctx,
       );
 
-      expect(getEnrichment(ctx).notice).toContain('"Vaccinations" (89 datasets)');
+      expect(getEnrichment(ctx).notice).toContain('"Vaccinations" (89 entries)');
       expect(discoverDatasets.enrichment?.notice).toBeDefined();
       const text = (discoverDatasets.format!(result)[0] as { type: 'text'; text: string }).text;
       expect(text).not.toContain('Vaccinations');
@@ -870,6 +910,72 @@ describe('cdc_discover_datasets', () => {
       expect(text).not.toContain('Permalink');
       expect(text).not.toContain('Built on');
       expect(text).not.toContain('Access points');
+      expect(text).not.toContain('Download');
+      expect(text).not.toContain('MIME type');
+    });
+
+    describe('file entries', () => {
+      const FILE: CatalogDataset = {
+        id: '235m-gsry',
+        name: 'Pulmonary evaluation of 3D printer emissions',
+        assetType: 'file',
+        permalink: 'https://data.cdc.gov/d/235m-gsry',
+        downloadUrl: 'https://data.cdc.gov/download/235m-gsry',
+        mimeType: 'application/x-zip-compressed',
+        columnNames: [],
+      };
+
+      it('carries downloadUrl and mimeType through the output schema on a file alone', async () => {
+        mockDiscover.mockResolvedValue({ datasets: [FILE, CHART, DATASET], totalCount: 3 });
+        const [file, chart, dataset] = entries(await runToolContract(discoverDatasets, {}));
+
+        expect(file).toMatchObject({
+          permalink: 'https://data.cdc.gov/d/235m-gsry',
+          downloadUrl: 'https://data.cdc.gov/download/235m-gsry',
+          mimeType: 'application/x-zip-compressed',
+          columnCount: 0,
+        });
+        for (const other of [chart, dataset]) {
+          expect(other).not.toHaveProperty('downloadUrl');
+          expect(other).not.toHaveProperty('mimeType');
+        }
+      });
+
+      it('renders the URL as a link and the MIME type as its literal text in content[]', async () => {
+        /** A MIME type holding Markdown syntax reads back exactly as structuredContent has it. */
+        const odd: CatalogDataset = { ...FILE, mimeType: 'application/x_odd*type; charset=binary' };
+        mockDiscover.mockResolvedValue({ datasets: [odd], totalCount: 1 });
+        const result = await runToolContract(discoverDatasets, {});
+
+        expect(entries(result)[0]?.mimeType).toBe('application/x_odd*type; charset=binary');
+        const html = renderMarkdown(contentText(result));
+        expect(strayElements(html, ['h3', 'p', 'strong', 'code'])).toEqual([]);
+        expect(html).toContain(`<a href="${FILE.downloadUrl}">${FILE.downloadUrl}</a>`);
+        const text = readBack(html);
+        expect(text).toContain(`Download: ${FILE.downloadUrl}`);
+        expect(text).toContain('MIME type: application/x_odd*type; charset=binary');
+        expect(text).toContain('so download the file instead');
+      });
+
+      it('keeps the download URL of a file the catalog records no MIME type for', async () => {
+        const { mimeType: _omitted, ...sparse } = FILE;
+        mockDiscover.mockResolvedValue({ datasets: [sparse], totalCount: 1 });
+        const result = await runToolContract(discoverDatasets, {});
+
+        const [file] = entries(result);
+        expect(file?.downloadUrl).toBe(FILE.downloadUrl);
+        expect(file).not.toHaveProperty('mimeType');
+        const text = contentText(result);
+        expect(text).toContain(`**Download:** ${FILE.downloadUrl}`);
+        expect(text).not.toContain('MIME type');
+      });
+
+      it('says how to reach a file in the tool description, rather than through its permalink', () => {
+        expect(discoverDatasets.description).toContain('download a file from its downloadUrl');
+        expect(
+          discoverDatasets.output.shape.datasets.element.shape.downloadUrl.description,
+        ).toMatch(/file entries only/);
+      });
     });
   });
 

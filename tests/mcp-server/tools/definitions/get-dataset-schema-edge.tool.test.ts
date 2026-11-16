@@ -4,11 +4,12 @@
  */
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import type { DatasetMetadata } from '@/services/socrata/types.js';
 import { contractError } from '../../../helpers/contract-error.js';
+import { contentText, readBack, renderMarkdown } from '../../../helpers/markdown-render.js';
 
 const mockGetMetadata = vi.fn<() => Promise<DatasetMetadata>>();
 
@@ -62,15 +63,15 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       expect(err.message).toContain('has no columns');
     });
 
-    it('keeps the parentless failure text for a file, which names no dataset', async () => {
+    it('keeps the parentless failure text for a story or link, which names neither a dataset nor a file', async () => {
       mockGetMetadata.mockResolvedValue({
-        name: 'Pulmonary evaluation of 3D printer emissions',
+        name: 'Vaccine Hesitancy for COVID-19',
         columns: [],
       });
 
-      const err = await contractError(getDatasetSchema, { datasetId: '235m-gsry' });
+      const err = await contractError(getDatasetSchema, { datasetId: 'cnd2-a6zw' });
       expect(err.message).toBe(
-        'Dataset 235m-gsry ("Pulmonary evaluation of 3D printer emissions") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.',
+        'Dataset cnd2-a6zw ("Vaccine Hesitancy for COVID-19") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.',
       );
       expect(err.data.recovery?.hint).toBe(
         getDatasetSchema.errors?.find((e) => e.reason === 'not_queryable')?.recovery,
@@ -94,6 +95,71 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       );
       // The parent comes off the document the check already read: one metadata call, as before.
       expect(mockGetMetadata).toHaveBeenCalledTimes(1);
+    });
+
+    describe('a file', () => {
+      const DOWNLOAD = 'https://data.cdc.gov/download/235m-gsry';
+      const NO_SCHEMA =
+        'Dataset 235m-gsry ("Pulmonary evaluation of 3D printer emissions") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.';
+
+      it('names the file, its size in bytes, and its download URL in the message and the hint', async () => {
+        mockGetMetadata.mockResolvedValue({
+          name: 'Pulmonary evaluation of 3D printer emissions',
+          columns: [],
+          file: { downloadUrl: DOWNLOAD, name: 'rd-1083-2024-0.zip', sizeBytes: 306191 },
+        });
+
+        const err = await contractError(getDatasetSchema, { datasetId: '235m-gsry' });
+        expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+        expect(err.data.reason).toBe('not_queryable');
+        expect(err.message).toBe(
+          `${NO_SCHEMA} It is a file, "rd-1083-2024-0.zip" (306,191 bytes), downloadable from ${DOWNLOAD}, which redirects to the file.`,
+        );
+        expect(err.data.recovery?.hint).toBe(
+          `Download the file with a GET request to ${DOWNLOAD} rather than querying this ID.`,
+        );
+        // Read off the document the check already fetched: one metadata call.
+        expect(mockGetMetadata).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        ['no file name', { sizeBytes: 306191 }, ' (306,191 bytes)'],
+        ['no size', { name: 'rd-1083-2024-0.zip' }, ', "rd-1083-2024-0.zip"'],
+        ['neither', {}, ''],
+      ])('still names the URL of a file document recording %s', async (_label, detail, named) => {
+        mockGetMetadata.mockResolvedValue({
+          name: 'Pulmonary evaluation of 3D printer emissions',
+          columns: [],
+          file: { downloadUrl: DOWNLOAD, ...detail },
+        });
+
+        const err = await contractError(getDatasetSchema, { datasetId: '235m-gsry' });
+        expect(err.message).toBe(
+          `${NO_SCHEMA} It is a file${named}, downloadable from ${DOWNLOAD}, which redirects to the file.`,
+        );
+        expect(err.data.recovery?.hint).toContain(DOWNLOAD);
+      });
+
+      it('carries the URL through content[] as the address it spells', async () => {
+        mockGetMetadata.mockResolvedValue({
+          name: 'Legislation glossary',
+          columns: [],
+          file: {
+            downloadUrl: 'https://data.cdc.gov/download/5qag-uzp2',
+            name: 'Legislation_Glossary_Methodology_12.17.2024.xls',
+            sizeBytes: 297984,
+          },
+        });
+
+        const result = await runToolContract(getDatasetSchema, { datasetId: '5qag-uzp2' });
+        const html = renderMarkdown(contentText(result));
+        expect(html).toContain(
+          '<a href="https://data.cdc.gov/download/5qag-uzp2">https://data.cdc.gov/download/5qag-uzp2</a>',
+        );
+        expect(readBack(html)).toContain(
+          '"Legislation_Glossary_Methodology_12.17.2024.xls" (297,984 bytes)',
+        );
+      });
     });
 
     it('handles column with no description', async () => {
@@ -261,8 +327,30 @@ describe('cdc_get_dataset_schema — edge cases', () => {
       expect(input.datasetId).toBe('abcd-efgh');
     });
 
-    it('rejects ID with uppercase letters', () => {
-      expect(() => getDatasetSchema.input.parse({ datasetId: 'AB12-cd34' })).toThrow();
+    it('lowercases an ID with uppercase letters before it reaches Socrata', async () => {
+      mockGetMetadata.mockResolvedValue({
+        name: 'Cased',
+        columns: [{ fieldName: 'id', dataType: 'number' }],
+      });
+      const result = await runToolContract(getDatasetSchema, { datasetId: 'AB12-cd34' });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockGetMetadata).toHaveBeenCalledWith('ab12-cd34', expect.anything(), 'data.cdc.gov');
+    });
+
+    it('rejects an ID no case makes valid, keeping the error shape and naming the form', async () => {
+      const err = await contractError(getDatasetSchema, { datasetId: 'AB12-cd3' });
+
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(err.data.reason).toBe('invalid_arguments');
+      expect(err.message).toContain('datasetId: Expected a four-by-four ID such as "bi63-dtpu".');
+      expect(err.data.issues).toEqual([
+        expect.objectContaining({
+          code: 'invalid_format',
+          path: ['datasetId'],
+          pattern: '/^[a-z0-9]{4}-[a-z0-9]{4}$/',
+        }),
+      ]);
     });
 
     it('rejects ID that is only 7 chars (too short)', () => {

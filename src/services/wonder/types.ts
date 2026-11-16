@@ -599,9 +599,9 @@ export interface WonderResult {
    */
   dataThrough?: string;
   /**
-   * Informational messages WONDER returned with the table. Present when the row set was
-   * filtered before it was sent (rows with zero or suppressed deaths are hidden by default);
-   * empty when nothing was withheld.
+   * Every message WONDER attached to the table, empty when it attached none. Some say the row set
+   * was filtered before it was sent (rows with zero or suppressed deaths are hidden by default);
+   * others withhold nothing, such as the ordering note on a leading-causes table.
    */
   messages: string[];
   /** Number of rows returned. */

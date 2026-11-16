@@ -19,6 +19,7 @@ vi.mock('@/config/server-config.js', () => ({
   }),
 }));
 
+import { datasetDetailResource } from '@/mcp-server/resources/definitions/dataset-detail.resource.js';
 import { discoverDatasets } from '@/mcp-server/tools/definitions/discover-datasets.tool.js';
 import { getDatasetSchema } from '@/mcp-server/tools/definitions/get-dataset-schema.tool.js';
 import { queryDataset } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
@@ -113,6 +114,17 @@ describe('domain input semantics', () => {
       expect(text).not.toMatch(/hosts? chronic-disease/i);
       expect(text).not.toMatch(/must match the (portal|host|domain)/i);
       expect(text).not.toMatch(/(same|matching) (portal|host) (you|the dataset)/i);
+    });
+
+    it.each([
+      ['cdc_get_dataset_schema', getDatasetSchema.errors],
+      ['cdc_query_dataset', queryDataset.errors],
+      ['cdc://datasets/{datasetId}', datasetDetailResource.errors],
+    ] as const)('%s names no one host as the one that may be down', (_, errors) => {
+      /** A call can address either host, so an outage hint naming one misleads on the other. */
+      const recovery = errors?.find((e) => e.reason === 'upstream_error')?.recovery;
+      expect(recovery).toBeDefined();
+      for (const domain of CDC_SOCRATA_DOMAINS) expect(recovery).not.toContain(domain);
     });
 
     it('cdc_discover_datasets names the chronic-disease collections as reachable from either host', () => {

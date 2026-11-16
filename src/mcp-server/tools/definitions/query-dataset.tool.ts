@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { datasetIdSchema } from '@/mcp-server/schemas/dataset-id.js';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import {
   CDC_SOCRATA_DOMAINS,
@@ -196,7 +197,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       code: JsonRpcErrorCode.Forbidden,
       when: 'Socrata returned 403 — typically an ID naming a story, file, or external link rather than a tabular dataset.',
       recovery:
-        'Confirm the ID with cdc_get_dataset_schema, then query one whose schema lists columns; retrying this ID returns the same refusal.',
+        'Call cdc_get_dataset_schema on this ID: for a file, its failure names the URL to download the file from; otherwise query an ID whose schema lists columns. Retrying this ID returns the same refusal.',
     },
     {
       reason: 'rate_limited',
@@ -210,7 +211,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: `Socrata data API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
-      recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
+      recovery: 'Retry after a brief delay; the Socrata portal may be temporarily unavailable.',
     },
   ],
 
@@ -221,12 +222,9 @@ export const queryDataset = tool('cdc_query_dataset', {
       .describe(
         'CDC Socrata host to query. "data.cdc.gov" (default) and "chronicdata.cdc.gov" front the same catalog, so a four-by-four ID returns the same rows from either and the default works whichever host the dataset was found on.',
       ),
-    datasetId: z
-      .string()
-      .regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/)
-      .describe(
-        'Four-by-four dataset identifier (e.g., "bi63-dtpu"). Obtain from cdc_discover_datasets.',
-      ),
+    datasetId: datasetIdSchema('cdc_query_dataset').describe(
+      'Four-by-four dataset identifier (e.g., "bi63-dtpu"). Obtain from cdc_discover_datasets.',
+    ),
     search: z
       .string()
       .optional()
@@ -317,7 +315,7 @@ export const queryDataset = tool('cdc_query_dataset', {
       .string()
       .optional()
       .describe(
-        `Guidance when no rows matched, when offset ran past the end of the result set (or the offset-0 check that tells the two apart could not complete), when every matched row came back with no fields for the projection, or when further rows remain (naming a limit above ${MAX_LIMIT_TEXT} that was capped) — how to verify filters, lower offset, pick columns the matched rows populate, resume paging under the same order or restart it from offset 0 under one that makes the walk gap-free, or broaden the query.`,
+        'Guidance when no rows matched, when offset ran past the end of the result set, when every matched row came back with no fields, or when further rows remain — how to check the filters, lower offset, pick columns the rows populate, or page on without gaps.',
       ),
   },
 
@@ -333,12 +331,13 @@ export const queryDataset = tool('cdc_query_dataset', {
 
     /**
      * Re-raise a service failure through this tool's contract so it reaches the caller with
-     * the declared reason and recovery instead of an unclassified upstream error.
+     * the declared reason and recovery instead of an unclassified upstream error. The values its
+     * message quotes for the caller to send back ride along, so `content[]` renders them as code.
      */
     const asContractError = (err: unknown): unknown => {
       if (err instanceof McpError && typeof err.data?.reason === 'string') {
         const reason = err.data.reason as Parameters<typeof ctx.fail>[0];
-        return ctx.fail(reason, err.message);
+        return ctx.fail(reason, err.message, undefined, err.literals && { literals: err.literals });
       }
       return err;
     };

@@ -11,6 +11,7 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import {
   forbidden,
+  McpError,
   notFound,
   rateLimited,
   serviceUnavailable,
@@ -19,12 +20,13 @@ import {
 import { httpErrorFromResponse } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import { USER_AGENT } from '@/services/user-agent.js';
-import { nonBlank, toPlainText } from '@/utils/text.js';
+import { nonBlank, toPlainText, truncatePlainText } from '@/utils/text.js';
 import {
   type AccessPoint,
   type CatalogAssetType,
   type CatalogDataset,
   type DatasetColumn,
+  type DatasetFile,
   type DatasetMetadata,
   type DiscoverResult,
   type QueryResult,
@@ -72,6 +74,12 @@ const CatalogSearchBody = z.object({
         page_views: z.object({ page_views_total: z.number().nullish() }).nullish(),
         // Empty, not absent, on an entry built on no other dataset.
         parent_fxf: z.array(z.string()).nullish(),
+        /**
+         * Carried by `file` entries alone, parameters included (`application/pdf; charset=binary`).
+         * Left `unknown` and read in `discover()`, so a type change in a field only a file uses
+         * cannot fail the search page for every entry on it.
+         */
+        blob_mime_type: z.unknown().optional(),
       }),
       classification: z
         .object({
@@ -100,6 +108,14 @@ const MetadataDocumentBody = z.object({
   description: z.string().nullish(),
   // The dataset a chart, map, or filter is a view of; absent on every other asset.
   modifyingViewUid: z.string().nullish(),
+  /**
+   * `file` on a file asset, the only one whose `blob*` fields are set — `null` on every other.
+   * Left `unknown` and read by `fileOf`, so a type change in fields that matter only to a file
+   * cannot fail the document of a dataset.
+   */
+  assetType: z.unknown().optional(),
+  blobFilename: z.unknown().optional(),
+  blobFileSize: z.unknown().optional(),
   rowsUpdatedAt: z.number().nullish(),
   attribution: z.string().nullish(),
   // `null` on a dataset the publisher gave no license.
@@ -168,6 +184,25 @@ function ownValue(value: unknown, key: string): unknown {
  */
 function customField(customFields: unknown, section: string, field: string): string | undefined {
   return publisherText(ownValue(ownValue(customFields, section), field));
+}
+
+/**
+ * A file asset's download URL with the file name and size in bytes its metadata document
+ * records, each kept only when usable; undefined for every other asset type.
+ */
+function fileOf(
+  document: z.infer<typeof MetadataDocumentBody>,
+  downloadUrl: string,
+): DatasetFile | undefined {
+  if (document.assetType !== 'file') return;
+  const { blobFilename: name, blobFileSize: sizeBytes } = document;
+  return {
+    downloadUrl,
+    ...(typeof name === 'string' && name.length > 0 ? { name } : {}),
+    ...(typeof sizeBytes === 'number' && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0
+      ? { sizeBytes }
+      : {}),
+  };
 }
 
 /** Options for discovering datasets. */
@@ -283,6 +318,9 @@ function decodedQueryString(params: URLSearchParams): string {
   return [...params].map(([key, value]) => `${key}=${value}`).join('&');
 }
 
+/** Characters of upstream detail — a JSON `message` or a page title — an error message relays. */
+const DETAIL_CAP = 200;
+
 /**
  * Pull Socrata's own `message` out of a JSON error body. Returns undefined when the body
  * isn't JSON or carries no message, so callers can fall back to a status-only description.
@@ -291,10 +329,69 @@ function socrataMessage(body: string): string | undefined {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
     const message = parsed.message;
-    return typeof message === 'string' && message.length > 0 ? message.slice(0, 200) : undefined;
+    return typeof message === 'string' && message.length > 0
+      ? message.slice(0, DETAIL_CAP)
+      : undefined;
   } catch {
     return;
   }
+}
+
+/** A `<title` opener or `</title` closer, its name ended by whitespace, `/`, or `>` — `<titles>` is neither. */
+const TITLE_OPENER = /<title[\s/>]/i;
+const TITLE_CLOSER = /<\/title[\s/>]/i;
+
+/**
+ * The text of an HTML page's first `<title>` — where an edge proxy's error page names its
+ * failure — with tags off and entities decoded once (`toPlainText`), cut to {@link DETAIL_CAP}
+ * characters; undefined when the body holds no complete title element or the title has no text.
+ *
+ * One forward pass over a body of any size. Only the first opener is read: a later one could
+ * close only on the closer this one meets first, and when this one has no `>` or no closer after
+ * it, no later opener has one either.
+ */
+export function pageTitle(body: string): string | undefined {
+  const opener = body.search(TITLE_OPENER);
+  if (opener === -1) return;
+  const start = body.indexOf('>', opener + '<title'.length);
+  if (start === -1) return;
+  const rest = body.slice(start + 1);
+  const end = rest.search(TITLE_CLOSER);
+  if (end === -1) return;
+  return truncatePlainText(toPlainText(rest.slice(0, end)), DETAIL_CAP) || undefined;
+}
+
+/**
+ * The error for a status the `fetchJson` ladder gives no handling of its own: a 5xx, which
+ * carries `upstream_error`, or an unexpected 3xx or 4xx, which carries no reason.
+ *
+ * `httpErrorFromResponse` classifies the status and captures the body as a server-only field —
+ * logged, never sent to the client — where a `body` passed in `data` would be the service's own
+ * field and reach the client as given. The body was read already, so the helper gets a copy of the
+ * response carrying its text, `null` when empty since a 304 can carry none. `Response` refuses a
+ * status above 599, which `fetch` still returns, so that response goes as it arrived, and the
+ * body it already gave up is captured by no one.
+ *
+ * The message is the helper's status line, extended by the first detail that says more than it
+ * does: Socrata's JSON `message`, else the page's `<title>`. A plain-text body adds nothing.
+ */
+async function statusError(response: Response, body: string, url: string): Promise<McpError> {
+  const { status, statusText } = response;
+  const failure = await httpErrorFromResponse(
+    status <= 599
+      ? new Response(body || null, { status, statusText, headers: response.headers })
+      : response,
+    { service: 'Socrata', data: { ...(status >= 500 ? { reason: 'upstream_error' } : {}), url } },
+  );
+  const detail = socrataMessage(body) ?? pageTitle(body);
+  if (!detail || failure.message.toLowerCase().includes(detail.toLowerCase())) return failure;
+  const end = /[.!?…]$/.test(detail) ? '' : '.';
+  // `failure.data` carries the helper's marker that keeps the captured body off the wire.
+  return new McpError(
+    failure.code,
+    `Socrata returned HTTP ${status}${statusText ? ` ${statusText}` : ''}: ${detail}${end}`,
+    failure.data,
+  );
 }
 
 export class SocrataService {
@@ -308,6 +405,15 @@ export class SocrataService {
    */
   private baseUrlFor(domain: SocrataDomain | undefined): string {
     return domain ? `https://${domain}` : getServerConfig().baseUrl;
+  }
+
+  /**
+   * Where a `file` asset is downloaded: `/download/{id}` on the host `baseUrlFor` resolves,
+   * which redirects to the file. The route serves files alone — it answers HTTP 500 for a
+   * dataset, filter, chart, map, story, or link — so only a file is ever given one.
+   */
+  private downloadUrlFor(domain: SocrataDomain | undefined, id: string): string {
+    return `${this.baseUrlFor(domain)}/download/${id}`;
   }
 
   /**
@@ -346,11 +452,15 @@ export class SocrataService {
         const pageViews = resource.page_views?.page_views_total;
         const accessPoints = accessPointsOf(metadata?.access_points);
         const parentIds = resource.parent_fxf;
+        const isFile = resource.type === 'file';
+        const mimeType = typeof resource.blob_mime_type === 'string' ? resource.blob_mime_type : '';
         return {
           id: resource.id,
           name: resource.name,
           ...(resource.type ? { assetType: resource.type } : {}),
           ...(permalink ? { permalink } : {}),
+          ...(isFile ? { downloadUrl: this.downloadUrlFor(domain, resource.id) } : {}),
+          ...(isFile && mimeType ? { mimeType } : {}),
           ...(accessPoints.length > 0 ? { accessPoints } : {}),
           ...(parentIds?.length ? { parentIds } : {}),
           ...(resource.description ? { description: resource.description } : {}),
@@ -494,11 +604,14 @@ export class SocrataService {
     const citation = customField(customFields, 'Data Quality', 'Suggested Citation');
     const license = publisherText(data.license?.name);
     const attribution = publisherText(data.attribution);
+    // Built on the host this document came from, so the URL answers wherever the read did.
+    const file = fileOf(data, this.downloadUrlFor(domain, datasetId));
 
     return {
       name: data.name,
       columns,
       ...(description ? { description } : {}),
+      ...(file ? { file } : {}),
       ...(data.modifyingViewUid ? { parentId: data.modifyingViewUid } : {}),
       ...(Number.isFinite(rowCount) ? { rowCount, rowCountSource: 'cached' as const } : {}),
       ...(updatedAt ? { updatedAt } : {}),
@@ -626,9 +739,11 @@ export class SocrataService {
           { reason: 'invalid_query', column: col, url },
         );
       }
+      // The column is the value to send as `group`, so `content[]` renders it as copyable code.
       throw validationError(
         `Column "${col}" must appear in GROUP BY or be wrapped in an aggregate (e.g. sum()). Add group="${col}" or aggregate it in select.`,
         { reason: 'invalid_query', column: col, url },
+        { literals: [String(col)] },
       );
     }
     if (
@@ -636,9 +751,11 @@ export class SocrataService {
       rawMessage &&
       /Expected an expression, but got/i.test(rawMessage)
     ) {
+      const example = "`group`='By Year'";
       throw validationError(
-        `SoQL parse error: ${stripPositionTail(rawMessage).slice(0, 200)}. If a column name matches a SoQL keyword (group, select, where, order, limit, offset, having, search), wrap it in backticks — e.g. \`group\`='By Year'.`,
+        `SoQL parse error: ${stripPositionTail(rawMessage).slice(0, 200)}. If a column name matches a SoQL keyword (group, select, where, order, limit, offset, having, search), wrap it in backticks — e.g. ${example}.`,
         { reason: 'invalid_query', url },
+        { literals: [example] },
       );
     }
 
@@ -774,15 +891,7 @@ export class SocrataService {
        * into an InternalError whose data carries their declared-reason list to the client.
        * With no reason the callers rethrow this error unchanged.
        */
-      throw await httpErrorFromResponse(response, {
-        service: 'Socrata',
-        captureBody: false,
-        data: {
-          ...(response.status >= 500 ? { reason: 'upstream_error' } : {}),
-          url,
-          body: body.slice(0, 500),
-        },
-      });
+      throw await statusError(response, body, url);
     }
 
     let json: unknown;

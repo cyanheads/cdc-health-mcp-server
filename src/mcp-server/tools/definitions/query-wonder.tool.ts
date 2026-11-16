@@ -6,6 +6,9 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { caseNormalizedString } from '@/mcp-server/schemas/case-normalized-string.js';
+import { getCanvas } from '@/services/canvas-accessor.js';
+import { MAX_STAGED_TABLES, stagedTable, stageTable } from '@/services/wonder/staged-table.js';
 import {
   groupingValueCounts,
   hiddenRowsKind,
@@ -37,7 +40,8 @@ import { escapeTableCell, markdownCodeSpan } from '@/utils/markdown.js';
  * An ICD-10 code or range, e.g. "I21", "X40-X49", "V01-Y89". Shared by cause_icd10 and
  * mcd_icd10, whose descriptions say they take the same form — one pattern keeps that true. The
  * pattern checks spelling only: WONDER accepts a range only when it is a node of its own ICD-10
- * tree (a chapter or a block), and rejects any other span as an invalid code.
+ * tree (a chapter or a block), and rejects any other span as an invalid code. ICD-10 codes ignore
+ * case, so a lowercase letter is uppercased before the check rather than rejected.
  */
 const ICD10_CODE_OR_RANGE = /^[A-Z][0-9]{2}(\.[0-9]+)?(-[A-Z][0-9]{2}(\.[0-9]+)?)?$/;
 
@@ -55,10 +59,17 @@ const MAX_ICD10_CODES = 50;
  * two matched as a union. An empty list filters nothing, so it reads as omitted, as
  * `age_groups: []` does; a `''` inside a list stays rejected, since "every cause" beside a code
  * has no single reading. The single-value branches sit flat in the top-level union — a nested
- * union emits an `anyOf` branch with no `type`, which some clients reject.
+ * union emits an `anyOf` branch with no `type`, which some clients reject. The list entry carries
+ * the code under a short description of its own: the long one already reads on the single value.
  */
-const icd10Filter = (codeDescription: string) => {
-  const code = z.string().regex(ICD10_CODE_OR_RANGE).describe(codeDescription);
+const icd10Filter = (field: 'cause_icd10' | 'mcd_icd10', codeDescription: string) => {
+  const code = caseNormalizedString({
+    definition: 'cdc_query_wonder',
+    error: 'Expected an ICD-10 code such as "I21" or a tree-node range such as "X40-X49".',
+    field,
+    letterCase: 'upper',
+    pattern: ICD10_CODE_OR_RANGE,
+  }).describe(codeDescription);
   const marker = z.literal([WONDER_LAG_WITHHELD_CAUSE, WONDER_LAG_WITHHELD_SUBCHAPTER_CODE]);
   return z.union([
     z.literal(''),
@@ -67,7 +78,7 @@ const icd10Filter = (codeDescription: string) => {
     z
       .array(
         z
-          .union([marker, code])
+          .union([marker, code.describe('ICD-10 code or range.')])
           .describe('One list entry: an ICD-10 code or range, or the withheld-cause marker.'),
       )
       .max(MAX_ICD10_CODES)
@@ -98,12 +109,18 @@ function causeCodes(value: string | string[] | undefined): string[] {
 const MAX_OFFSET = WONDER_MAX_TABLE_ROWS;
 /**
  * Most rows one call returns. `limit` takes any positive integer and is lowered to this in the
- * handler rather than rejected; an omitted `limit` reads as the rest of the table up to it.
- * WONDER's request carries no limit of its own, so every call re-runs the whole query behind
- * the 16-second gap and repeats the caveats and messages: a small default would multiply both,
- * so the ceiling is the table bound itself and any table a query may produce fits in one call.
+ * handler rather than rejected; without a canvas, an omitted `limit` reads as the rest of the
+ * table up to it. WONDER's request carries no limit of its own, so every call re-runs the whole
+ * query behind the 16-second gap and repeats the caveats and messages: a small default would
+ * multiply both, so the ceiling is the table bound itself and any table a query may produce
+ * fits in one call.
  */
 const MAX_ROWS_PER_CALL = WONDER_MAX_TABLE_ROWS;
+/**
+ * The page an omitted `limit` takes where the deployment has a canvas. The rows past it are
+ * staged at offset 0 and read by SQL, so the small default costs no further WONDER request.
+ */
+const STAGED_DEFAULT_PAGE = 100;
 
 /**
  * A row count as the notices print it (`2,014`). Values a caller passes back — `offset=N`,
@@ -143,9 +160,9 @@ function renderTableHeader(columns: readonly string[]): string[] {
 }
 
 /**
- * Which databases apply which Unreliable rule, as the tool and token descriptions state them —
- * "D76 and D77 when it is computed from 20 or fewer deaths, and D176, D158, and D157 when …" —
- * read off `WONDER_DATABASE_SPECS` so the text cannot drift from the specs.
+ * Which databases apply which Unreliable rule, as the token description states it — "D76 and
+ * D77 when it is computed from 20 or fewer deaths, and D176, D158, and D157 when …" — read off
+ * `WONDER_DATABASE_SPECS` so the text cannot drift from the specs.
  */
 function unreliableRules(): string {
   const byCriterion = new Map<string, string[]>();
@@ -302,14 +319,14 @@ function tallyOtherTokens(cellNotes: WonderCellNote[], database: WonderDatabaseS
 }
 
 export const queryWonder = tool('cdc_query_wonder', {
-  description: `Query CDC WONDER for national US mortality statistics — deaths, population, and crude/age-adjusted death rates — across its five mortality databases, selected with the database input: final underlying-cause data for 1999–2020 (the default) or 2018–2024, provisional data running from 2018 through the current year (its latest year partial, with a notice saying so), and two multiple-cause databases covering the same two eras. Break results out by year, month, age group, sex, race, Hispanic origin, or underlying cause of death — ICD-10 chapter or sub-chapter, CDC's 113-cause list, its 15 leading causes, or injury intent — and filter by ICD-10 cause of death, sex, age group, or year range; on a multiple-cause database, mcd_icd10 additionally matches a cause listed anywhere on the death certificate rather than only the one certified as underlying. Each database holds a different span of years (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last} across all of them) and a request whose year_range falls outside the selected one's span is rejected with that span named. WONDER is a separate CDC system from the Socrata datasets the other cdc_* tools query. Data is national only — sub-national (state/county) breakdowns are not available through the API (CDC vital-statistics policy). Chapter and sub-chapter rows carry their ICD-10 code range as cause_code, which cause_icd10 accepts as it stands; 113-cause-list rows carry cause_level, their depth in that nested list, whose deeper causes are already counted in the cause containing them; leading_causes ranks the 15 leading causes by deaths and combines with no other grouping, while the filters still apply; month rows carry deaths only — CDC publishes no monthly population, so population and both rates come back "Not Applicable". The values each grouping dimension can take multiply to bound the table — year beside month, or icd_chapter beside icd_subchapter, adds nothing, since the finer level already enumerates the coarser — and a grouping that could produce more than ${count(WONDER_MAX_TABLE_ROWS)} rows is refused before any request with the product named, since WONDER takes longer than the request deadline to answer a table that large; narrow year_range, sex or age_groups, or drop a dimension. Some measure cells come back as a CDC status token rather than a number — "Suppressed" (withheld for confidentiality), "Unreliable" (a rate CDC judges statistically unstable and does not show — on ${unreliableRules()}), or "Not Applicable" (no population denominator); those cells read null in rows and each one is listed in cellNotes with its token. Each rate comes with the 95% confidence interval CDC publishes for it, as <rate>_lower and <rate>_upper right after the rate — null where CDC published none — so two rates can be compared by their intervals rather than their point values. CDC also drops whole rows before sending the table — strata with zero deaths, and strata whose death count is suppressed — so a stratum can be missing from rows entirely; messages carries CDC's statement whenever that happened. One call returns at most ${count(MAX_ROWS_PER_CALL)} rows: with limit omitted it returns the rest of the table up to that ceiling, a larger limit is lowered to it, and a smaller limit takes smaller pages; a page that stops short of the end reports the table's totalCount and a nextOffset to continue from. Paging shapes the response only — every call fetches the whole table from WONDER and returns a slice of it, so the figures, caveats and hidden-row notices are the same on every page and a smaller page saves no time. CDC rejects requests made less than 15 seconds apart across all five databases, so calls are spaced automatically: calls made while another is running wait their turn and run one after another, each queued call adding about 16 seconds plus its own query time before it returns. A request WONDER has not finished answering within 20 seconds fails as a retryable upstream_error, so one call queued behind another returns within about 56 seconds.`,
+  description: `Query CDC WONDER for national US mortality statistics — deaths, population, and crude and age-adjusted death rates with their 95% confidence intervals — from one of five mortality databases, final and provisional, underlying-cause and multiple-cause, together covering ${WONDER_YEAR_BOUNDS.first} through the current year. Break results out by year, month, age group, sex, race, Hispanic origin, or underlying cause of death — ICD-10 chapter or sub-chapter, CDC's 113-cause list, its 15 leading causes, or injury intent — and filter by ICD-10 cause of death, sex, age group, or year range; on a multiple-cause database, mcd_icd10 matches a cause listed anywhere on the death certificate rather than only the one certified as underlying. WONDER is a separate CDC system from the Socrata datasets the other cdc_* tools query. Data is national only — sub-national (state/county) breakdowns are not available through the API (CDC vital-statistics policy). Where this server stages tables (cdc_dataframe_query is listed), a first page that leaves rows past it also stages the whole table, which cdc_dataframe_query ranks, compares, or pages with SQL without another WONDER request. CDC rejects requests made less than 15 seconds apart across all five databases, so calls are spaced automatically: calls made while another is running wait their turn and run one after another, each queued call adding about 16 seconds plus its own query time before it returns. A request WONDER has not finished answering within 20 seconds fails as a retryable upstream_error, so one call queued behind another returns within about 56 seconds.`,
   annotations: { readOnlyHint: true },
 
   errors: [
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: `The request contradicts itself — a year_range whose from is later than its to, or a group_by dimension listed twice — or asks for a combination CDC refuses — age_groups holding "NS" beside only some of the known age groups, or leading_causes beside another group_by value — or groups by dimensions whose values could make a table of more than ${count(WONDER_MAX_TABLE_ROWS)} rows, or does not fit the selected database — a year_range outside the years it holds, mcd_icd10 against a database that records only the underlying cause, or the withheld-cause marker against one that keeps no withheld backlog — or WONDER itself rejected it, e.g. an ICD-10 code or range its tree does not hold, or a filter/grouping combination it does not allow.`,
+      when: 'The request contradicts itself (a reversed year_range, a group_by dimension listed twice), asks for a combination CDC refuses (age_groups holding "NS" beside only some of the known age groups, leading_causes beside another dimension), groups into a table past the bound group_by states, does not fit the selected database (a year_range outside its span, mcd_icd10 or the withheld-cause marker where it is not offered), or WONDER itself rejected it, e.g. an ICD-10 code or range its tree does not hold.',
       recovery:
         'Read the returned message: it names the input at fault, the span the selected database holds, the databases that accept mcd_icd10 or the withheld-cause marker, the row count a grouping could reach, or the part WONDER rejected. Fix year_range, group_by, or age_groups, narrow the grouping or its filters, switch database, drop the filter, or correct the ICD-10 code, then retry.',
     },
@@ -328,6 +345,13 @@ export const queryWonder = tool('cdc_query_wonder', {
       retryable: true,
       recovery: 'Retry after a brief delay; wonder.cdc.gov may be temporarily unavailable.',
     },
+    {
+      reason: 'staging_failed',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'WONDER answered, but the whole table could not be staged for SQL beside the page.',
+      retryable: true,
+      recovery: `Retry the same call, which runs the WONDER query again and stages the table afresh, or pass a limit as large as the table (up to ${count(MAX_ROWS_PER_CALL)}) to take every row inline with nothing to stage.`,
+    },
   ],
 
   input: z.object({
@@ -335,7 +359,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .enum(WONDER_DATABASES)
       .default('underlying_1999_2020')
       .describe(
-        'Which WONDER mortality database to query. "underlying_1999_2020" (D76) is final data for 1999–2020 and the default. "provisional" (D176) runs 2018 through the current year, updated weekly, and returns the most recent years labelled e.g. "2025 (provisional)". Its latest year is partial — deaths only through the data-through date the response names, against a full-year population — so its counts and rates read low next to a finished year, and a notice says so whenever the years queried include it. "underlying_2018_2024" (D158) is settled — not provisional — data for 2018–2024. "multiple_1999_2020" (D77) and "multiple_2018_2024" (D157) record every cause listed on the death certificate; without an mcd_icd10 filter they return the same figures as the underlying-cause database for the same era, so pick one only to use that filter. The two 1999–2020 databases report race in CDC\'s four bridged groups; the other three use the six single-race groups — figures broken out by race are not comparable between the two families.',
+        'Which WONDER mortality database to query. "underlying_1999_2020" (D76) is final data for 1999–2020 and the default. "provisional" (D176) runs 2018 through the current year, updated weekly; its latest year is partial — deaths only through the data-through date the response names, against a full-year population — so its counts and rates read low next to a finished year, and a notice says so whenever the years queried include it. "underlying_2018_2024" (D158) is settled data for 2018–2024. "multiple_1999_2020" (D77) and "multiple_2018_2024" (D157) record every cause listed on the death certificate; without an mcd_icd10 filter they return the same figures as the underlying-cause database for the same era, so pick one only to use that filter. The two 1999–2020 databases report race in CDC\'s four bridged groups and the other three in six single-race groups, so figures broken out by race are not comparable between the two families.',
       ),
     group_by: z
       .array(z.enum(WONDER_GROUP_BY))
@@ -343,16 +367,18 @@ export const queryWonder = tool('cdc_query_wonder', {
       .max(4)
       .default(['year'])
       .describe(
-        `Dimensions to break results out by (1–4, each at most once), in output-column order — e.g. ["year"], ["year","sex"], ["icd_chapter","year"]. Results are always national. "race" resolves to whichever race vocabulary the selected database uses — four bridged groups (Asian and Pacific Islander combined) on the 1999–2020 databases, six single-race categories on the others, one of them "More than one race" — so a race series from one family cannot be spliced onto one from the other. "hispanic_origin" splits Hispanic or Latino, Not Hispanic or Latino, and Not Stated. "month" groups by calendar month (labels such as "Jan., 2019") and returns deaths only: population and both rates are "Not Applicable". The rest group by underlying cause: "icd_chapter" and "icd_subchapter" by node of CDC's ICD-10 tree, each row carrying the node's code range as cause_code (e.g. "C00-D48"), which cause_icd10 takes as it stands; "cause_113" by CDC's 113-cause list, each row carrying cause_level, its depth in that nested list (1 for a top-level cause) — a deeper cause is already counted in the one containing it; "leading_causes" by the 15 leading causes, ranked by deaths, and only on its own — CDC refuses it beside any other dimension, though the filters still apply; "injury_intent" by intent (unintentional, suicide, homicide, undetermined, legal intervention, or no injury). The most values the listed dimensions can take, multiplied, must be ${count(WONDER_MAX_TABLE_ROWS)} or fewer — e.g. icd_subchapter (177) × year (22 on the 1999–2020 databases) × sex (2) fits, and adding age_group (12) does not — or the call is refused before any request. year beside month, and icd_chapter beside icd_subchapter, add nothing to the product, since each month names its year and each sub-chapter sits inside one chapter.`,
+        `Dimensions to break results out by (1–4, each at most once), in output-column order — e.g. ["year"], ["year","sex"], ["icd_chapter","year"]. Results are always national. "race" resolves to whichever race vocabulary the selected database uses — four bridged groups (Asian and Pacific Islander combined) on the 1999–2020 databases, six single-race categories on the others, one of them "More than one race" — so a race series from one family cannot be spliced onto one from the other. "hispanic_origin" splits Hispanic or Latino, Not Hispanic or Latino, and Not Stated. "month" groups by calendar month (labels such as "Jan., 2019") and returns deaths only: CDC publishes no monthly population, so population and both rates are "Not Applicable". The rest group by underlying cause: "icd_chapter" and "icd_subchapter" by node of CDC's ICD-10 tree, each row carrying the node's code range as cause_code (e.g. "C00-D48"; the sub-chapter's when both are grouped, null where CDC sent none), which cause_icd10 takes as it stands; "cause_113" by CDC's 113-cause list, each row carrying cause_level, its depth in that nested list (1 for a top-level cause) — a deeper cause is already counted in the one containing it, so deaths do not sum across levels; "leading_causes" by the 15 leading causes, ranked by deaths, and only on its own — CDC refuses it beside any other dimension, though the filters still apply; "injury_intent" by intent (unintentional, suicide, homicide, undetermined, legal intervention, or no injury). The most values the listed dimensions can take, multiplied, must be ${count(WONDER_MAX_TABLE_ROWS)} or fewer — e.g. icd_subchapter (177) × year (22 on the 1999–2020 databases) × sex (2) fits, and adding age_group (12) does not — or the call is refused before any request, since WONDER takes longer than the request deadline to answer a larger table. year beside month, and icd_chapter beside icd_subchapter, add nothing to the product, since each month names its year and each sub-chapter sits inside one chapter.`,
       ),
     cause_icd10: icd10Filter(
+      'cause_icd10',
       'ICD-10 underlying-cause code or range. WONDER takes a node of its ICD-10 tree — a chapter such as "A00-B99" (infectious) or "V01-Y89" (external causes), a block such as "X40-X49" (accidental poisoning) or "C00-C97" (malignant neoplasms), or a single code such as "I21" — and rejects any other span, e.g. "X40-X44", naming it in the error. List the codes (or blocks) to cover a span that is not a tree node.',
     )
       .optional()
       .describe(
-        `Filter to ICD-10 underlying causes of death — the single condition CDC certified as having started the chain of events leading to death. Takes one code or range, or a list of them for a cause defined as a code set, e.g. drug overdose as ["X40","X41","X42","X43","X44","X60","X61","X62","X63","X64","X85","Y10","Y11","Y12","Y13","Y14"]. Omit for all causes. Accepted by every database. "${WONDER_LAG_WITHHELD_CAUSE}" is not an ICD-10 code but CDC's own marker for deaths whose cause it is still withholding under the provisional database's six-month reporting lag; it counts that backlog, and only the "provisional" database offers it. "${WONDER_LAG_WITHHELD_SUBCHAPTER_CODE}", the cause_code a sub-chapter row carries for the same deaths, is accepted too and sent as "${WONDER_LAG_WITHHELD_CAUSE}". On that database CDC withholds external-cause (V01-Y89) and sudden-death (R95, R96) causes for the 24 weeks before its data-through date, so a filter reaching them — a block or chapter containing one included — undercounts those weeks; the notice names the cutoff.`,
+        `Filter to ICD-10 underlying causes of death — the single condition CDC certified as having started the chain of events leading to death. Takes one code or range, or a list of them for a cause defined as a code set, e.g. drug overdose as ["X40","X41","X42","X43","X44","X60","X61","X62","X63","X64","X85","Y10","Y11","Y12","Y13","Y14"]. Omit for all causes. Accepted by every database. "${WONDER_LAG_WITHHELD_CAUSE}" is not an ICD-10 code but CDC's own marker for deaths whose cause it is still withholding under the provisional database's six-month reporting lag, and the cause_code a chapter row carries for them; it counts that backlog, and only the "provisional" database offers it. "${WONDER_LAG_WITHHELD_SUBCHAPTER_CODE}", the cause_code a sub-chapter row carries for the same deaths, is accepted too and sent as "${WONDER_LAG_WITHHELD_CAUSE}". On that database CDC withholds external-cause (V01-Y89) and sudden-death (R95, R96) causes for the 24 weeks before its data-through date, so a filter reaching them — a block or chapter containing one included — undercounts those weeks; the notice names the cutoff.`,
       ),
     mcd_icd10: icd10Filter(
+      'mcd_icd10',
       'ICD-10 code or range, same form as cause_icd10 — a chapter such as "S00-T98" (injury and poisoning, a chapter the underlying-cause finder does not list), a block such as "J09-J18" (influenza and pneumonia), or a single code such as "T40.1" (heroin).',
     )
       .optional()
@@ -373,21 +399,17 @@ export const queryWonder = tool('cdc_query_wonder', {
           .int()
           .min(WONDER_YEAR_BOUNDS.first)
           .max(WONDER_YEAR_BOUNDS.last)
-          .describe(
-            `First year (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last} across all databases; the selected one holds a narrower span).`,
-          ),
+          .describe('First year of the range.'),
         to: z
           .number()
           .int()
           .min(WONDER_YEAR_BOUNDS.first)
           .max(WONDER_YEAR_BOUNDS.last)
-          .describe(
-            `Last year (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last} across all databases; the selected one holds a narrower span).`,
-          ),
+          .describe('Last year of the range.'),
       })
       .optional()
       .describe(
-        `Inclusive year range; from must not be later than to. These bounds span every database (${WONDER_YEAR_BOUNDS.first}–${WONDER_YEAR_BOUNDS.last}); the years the selected one actually holds are narrower, and a range outside them is rejected with that database's span named. Omit for all years the database holds.`,
+        "Inclusive year range; from must not be later than to. Its bounds span every database; the selected one holds a narrower span, and a range outside it is rejected with that database's span named. Omit for all years the database holds.",
       ),
     limit: z
       .number()
@@ -395,7 +417,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .min(1)
       .optional()
       .describe(
-        `Rows to return from the table CDC sent — any positive integer. Omit to take the rest of the table from offset, up to ${count(MAX_ROWS_PER_CALL)} rows. One call returns at most ${count(MAX_ROWS_PER_CALL)} rows: a larger limit is lowered to ${count(MAX_ROWS_PER_CALL)}, and the response says so and gives a nextOffset when rows remain. WONDER's request carries no limit of its own, so this pages a table already fetched in full rather than narrowing the query: the deaths, rates, caveats and hidden-row notices are the same whichever page is read.`,
+        `Rows to return from the table CDC sent — any positive integer. One call returns at most ${count(MAX_ROWS_PER_CALL)} rows: a larger limit is lowered to ${count(MAX_ROWS_PER_CALL)}, and the response says so and gives a nextOffset when rows remain. Omitted, it is ${STAGED_DEFAULT_PAGE} where this server stages tables for SQL (cdc_dataframe_query is listed), and otherwise the rest of the table from offset, up to ${count(MAX_ROWS_PER_CALL)} rows. WONDER's request carries no limit of its own, so every call fetches the whole table and returns a slice of it: the figures, caveats and messages are the same on every page, and a smaller page saves no time. Where tables are staged, a call at offset 0 that leaves rows past its page stages the whole table and names it in stagedTable, and cdc_dataframe_query reads the rest of it without another WONDER request; a call at a later offset stages nothing.`,
       ),
     offset: z
       .number()
@@ -404,7 +426,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .max(MAX_OFFSET)
       .default(0)
       .describe(
-        `Index of the first row to return, for continuing past a previous call (default 0, max ${MAX_OFFSET.toLocaleString('en-US')}). Rows keep the order CDC returned them in, which is stable for a given query, so offset plus limit walks the table without gaps or repeats. An offset at or past the row total returns an empty page rather than an error.`,
+        "Index of the first row to return, for continuing past a previous call. Rows keep CDC's order, which is stable for a given query, so offset plus limit walks the table without gaps or repeats. An offset at or past the row total returns an empty page rather than an error.",
       ),
   }),
 
@@ -412,25 +434,21 @@ export const queryWonder = tool('cdc_query_wonder', {
     rows: z
       .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
       .describe(
-        `Result rows. Each carries the requested group-by dimensions, then cause_code when grouped by icd_chapter or icd_subchapter — CDC's code range for the row's ICD-10 node (the sub-chapter's when both are grouped), null where CDC sent none; the provisional database's withheld-cause row reads "${WONDER_LAG_WITHHELD_CAUSE}" by chapter and "${WONDER_LAG_WITHHELD_SUBCHAPTER_CODE}" by sub-chapter, and cause_icd10 takes either as it stands — then cause_level when grouped by cause_113, the row's depth in that nested list as an integer, then deaths, population, crude_rate, and age_adjusted_rate (per 100,000) when age standardization is possible — it is omitted when age_group is a grouping dimension or age_groups selects a single group, and it is the rate to compare across groups, since crude_rate moves with each group's age mix. Each rate is followed by its 95% confidence interval: crude_rate_lower and crude_rate_upper, then age_adjusted_rate_lower and age_adjusted_rate_upper when the row has age_adjusted_rate. The bounds are CDC's own published figures, never computed here, and are null wherever CDC sent no interval (a "Not Applicable" rate, for one); an "Unreliable" rate reads null but keeps the interval CDC published with it. Dimension values are CDC's own labels with only surrounding whitespace removed, so the same year keys identically across databases; nothing inside a label is changed, and on the provisional database a year reads "2025 (provisional)" or "2026 (provisional and partial)" rather than a bare year. A measure cell CDC returned as a status token instead of a number is null here; cellNotes names the cell and the token. These are one page of the table CDC sent, in its order, bounded by limit and by the ${count(MAX_ROWS_PER_CALL)}-row per-call ceiling; totalCount says how many rows the whole table holds.`,
+        `One page of the table CDC sent, in its order. Each row carries the group-by dimensions, then cause_code or cause_level when group_by adds one, then deaths, population, crude_rate, and age_adjusted_rate (per 100,000) when age standardization is possible — it is omitted when age_group is a grouping dimension or age_groups selects a single group, and it is the rate to compare across groups, since crude_rate moves with each group's age mix. Each rate is followed by its 95% confidence interval: crude_rate_lower and crude_rate_upper, then age_adjusted_rate_lower and age_adjusted_rate_upper when the row has age_adjusted_rate. The bounds are CDC's own published figures, never computed here, and are null wherever CDC sent no interval (a "Not Applicable" rate, for one); an "Unreliable" rate reads null but keeps the interval CDC published with it. Dimension values are CDC's own labels with only surrounding whitespace removed, so the same year keys identically across databases; nothing inside a label is changed, and on the provisional database a year reads "2025 (provisional)" or "2026 (provisional and partial)" rather than a bare year. A measure cell CDC returned as a status token instead of a number is null here; cellNotes names the cell and the token. totalCount says how many rows the whole table holds, and stagedTable, when present, holds all of them for SQL.`,
       ),
-    rowCount: z
-      .number()
-      .describe(
-        'Number of rows returned in this response — the page size whenever it falls short of totalCount.',
-      ),
+    rowCount: z.number().describe('Number of rows returned in this response.'),
     database: z
       .string()
       .describe('WONDER dataset code the rows came from — e.g. "D76", "D176", "D157".'),
     databaseTitle: z
       .string()
       .describe(
-        'CDC\'s own title for that database, e.g. "Underlying Cause of Death, 1999-2020". Names the era and record type the rows describe, so a result read on its own is self-describing.',
+        'CDC\'s own title for that database, naming the era and record type the rows describe — e.g. "Underlying Cause of Death, 1999-2020".',
       ),
     caveats: z
       .array(z.string())
       .describe(
-        'CDC-provided caveats and footnotes: data revisions, population-estimate sources, suppression and rate-reliability rules. CDC\'s links to its methodology pages are kept as Markdown links, e.g. "[More information.](https://wonder.cdc.gov/wonder/help/ucd-expanded.html#Confidence-Intervals)". They describe the whole table CDC assembled, so they come back complete on every page rather than scoped to the rows returned.',
+        'CDC-provided caveats and footnotes: data revisions, population-estimate sources, suppression and rate-reliability rules. CDC\'s links to its methodology pages are kept as Markdown links, e.g. "[More information.](https://wonder.cdc.gov/wonder/help/ucd-expanded.html#Confidence-Intervals)".',
       ),
     cellNotes: z
       .array(
@@ -439,7 +457,7 @@ export const queryWonder = tool('cdc_query_wonder', {
             row: z
               .number()
               .describe(
-                'Zero-based index into rows — the rows in this response, so it is relative to the page rather than to the whole table.',
+                "Zero-based index into this response's rows, relative to the page rather than the whole table.",
               ),
             column: z.string().describe('Measure column whose numeric value the token replaced.'),
             token: z
@@ -451,17 +469,23 @@ export const queryWonder = tool('cdc_query_wonder', {
           .describe('One flagged measure cell: where it is and what CDC put there.'),
       )
       .describe(
-        'One entry per measure cell CDC returned as a status token rather than a number, covering the rows in this response only. Those cells read null in rows, so this is what tells a withheld value apart from an unreliable one or a genuinely absent one.',
+        "One entry per measure cell in this response's rows that CDC returned as a status token rather than a number — the cells that read null in rows.",
       ),
     messages: z
       .array(z.string())
       .describe(
-        'Notices CDC attached to this table, verbatim apart from links, which are kept as Markdown links. The ones that matter say rows were withheld before the table was sent — "Rows with zero Deaths are hidden." and "Rows with suppressed Deaths are hidden." A withheld row is absent from rows entirely, with nothing in the table marking the gap. A stratum hidden for zero deaths recorded none, so deaths summed from rows stay complete; while the suppressed-deaths message is present, a stratum missing from rows may have been dropped rather than unobserved, and any count, ranking, or completeness claim drawn from rows is partial. The notice says which reading applies. These describe the whole table, so they come back complete on every page. Empty when CDC withheld no rows.',
+        'Every message CDC attached to this table, verbatim apart from links, which are kept as Markdown links; empty when it attached none. Some say rows were withheld before the table was sent — "Rows with zero Deaths are hidden." and "Rows with suppressed Deaths are hidden." — and others withhold nothing, such as the note that a leading_causes table is ordered by deaths. A withheld row is absent from rows entirely, with nothing in the table marking the gap. A stratum hidden for zero deaths recorded none, so deaths summed from rows stay complete; while the suppressed-deaths message is present, a stratum missing from rows may have been dropped rather than unobserved, and any count, ranking, or completeness claim drawn from rows is partial. The notice says which reading applies.',
       ),
     suppressedCount: z
       .number()
       .describe(
-        'How many cellNotes carry the "Suppressed" token — cells CDC withheld for confidentiality. Counted over the rows in this response, so it tracks the page rather than the whole table.',
+        'How many cellNotes carry the "Suppressed" token, counted over the rows in this response.',
+      ),
+    stagedTable: z
+      .string()
+      .optional()
+      .describe(
+        `Name of the table holding all totalCount rows for SQL with cdc_dataframe_query — e.g. "wonder_k3x9q2m7ab" — in CDC's row order, with the columns of rows followed by a <measure>_status column per measure holding the token CDC returned in place of the value (null where the value is a number). Present when this call staged the table, which is dropped an hour after the last query that read it, or earlier, earliest-expiring first, once ${MAX_STAGED_TABLES} are staged.`,
       ),
   }),
 
@@ -475,9 +499,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .describe('Human-readable summary of the grouping and filters sent to WONDER.'),
     totalCount: z
       .number()
-      .describe(
-        'Rows in the whole table CDC returned, before any page was taken. Exact rather than estimated — the table is parsed in full before a page is taken from it.',
-      ),
+      .describe('Rows in the whole table CDC returned — an exact count, taken before any page.'),
     truncated: z
       .boolean()
       .optional()
@@ -489,7 +511,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .number()
       .optional()
       .describe(
-        `Page size that ended this response — limit, or ${count(MAX_ROWS_PER_CALL)} (the most one call returns) when limit was omitted or set higher. Present only when rows remain past the page.`,
+        'Page size that ended this response — limit as applied, or its default when omitted. Present only when rows remain past the page.',
       ),
     nextOffset: z
       .number()
@@ -501,7 +523,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       .string()
       .optional()
       .describe(
-        `Guidance when no rows matched or CDC recorded no deaths for the query, when the returned rows are a page of a larger table — naming whether limit or the ${count(MAX_ROWS_PER_CALL)}-row per-call ceiling ended it — or the offset ran past it, whether the rows CDC withheld leave the deaths in rows complete or partial, a note when CDC returned a status token in place of a measure value, that rows grouped by cause_113 nest and do not sum across levels, on a multiple-cause database queried without mcd_icd10, that its figures match the underlying-cause database for the same years, and on the provisional database, when the years queried include its partial latest year (naming the partial month too when grouped by month) or a cause filter or cause grouping reaches causes CDC is still withholding under its 24-week reporting lag.`,
+        'Guidance on reading this response: where the page sits in the table and how to reach the rest, what CDC withheld or flagged and what that means for the counts, how the rows relate, and what the selected database means for the figures.',
       ),
   },
 
@@ -644,10 +666,15 @@ export const queryWonder = tool('cdc_query_wonder', {
      * rather than asked of CDC. That makes the total exact and free, and it makes the page a
      * pure view: every row CDC sent is reachable at some offset, and nothing about the query
      * changes between pages. The page is `limit` rows lowered to the per-call ceiling — with
-     * `limit` omitted, the rest of the table up to that ceiling.
+     * `limit` omitted, 100 rows where a canvas holds the rest for SQL, and otherwise the rest of
+     * the table up to that ceiling.
      */
+    const canvas = getCanvas();
     const total = result.rows.length;
-    const pageSize = Math.min(input.limit ?? MAX_ROWS_PER_CALL, MAX_ROWS_PER_CALL);
+    const pageSize = Math.min(
+      input.limit ?? (canvas ? STAGED_DEFAULT_PAGE : MAX_ROWS_PER_CALL),
+      MAX_ROWS_PER_CALL,
+    );
     const rows = result.rows.slice(input.offset, input.offset + pageSize);
 
     /**
@@ -664,10 +691,42 @@ export const queryWonder = tool('cdc_query_wonder', {
     const suppressedCount = cellNotes.filter((n) => isSuppressedToken(n.token)).length;
 
     /**
+     * Where the deployment has a canvas, a page at offset 0 that leaves rows past it stages the
+     * whole parsed table, so the rest is read by SQL rather than by another WONDER request. A
+     * later offset never stages — it would register the whole table again for every page — and
+     * neither does a page that already reaches the end. `acquireShared` mints the tenant's canvas
+     * at most once, concurrent first calls included, and `stageTable` makes room on it first
+     * when it already holds `MAX_STAGED_TABLES`. Any failure to project or stage the table fails
+     * the call rather than returning a page whose remainder nothing holds; the caller's
+     * cancellation is passed through as it arrived.
+     */
+    let staged: string | undefined;
+    let evictedTableCount = 0;
+    if (canvas && input.offset === 0 && hasMore) {
+      try {
+        const table = stagedTable(result.rows, result.cellNotes);
+        const instance = await canvas.acquireShared(ctx);
+        evictedTableCount = await stageTable(instance, table, ctx.signal);
+        staged = table.name;
+      } catch (err) {
+        if (ctx.signal.aborted) throw err;
+        throw ctx.fail(
+          'staging_failed',
+          `WONDER returned the ${count(total)}-row table, but it could not be staged for SQL beside this page.`,
+          { totalCount: total },
+          { cause: err },
+        );
+      }
+    }
+
+    /**
      * CDC's statements that it withheld whole rows, and what they mean for the counts. A stratum
      * hidden for recording zero deaths takes nothing from the deaths in `rows`; one hidden for a
-     * suppressed count does, and so does one hidden for a reason CDC does not name. The wording
-     * keys on the messages alone — never on the row count or the cause filter.
+     * suppressed count does, and so does one hidden for a reason CDC does not name. Which reading
+     * applies keys on the messages alone — never on the row count or the cause filter. The row
+     * count decides only where it is said: an empty table hidden for zero deaths alone says it in
+     * its empty-table sentence, having no rows to sum, and every other table in the hidden-rows
+     * clause below.
      */
     const hiddenRows = result.messages.flatMap((message) => {
       const kind = hiddenRowsKind(message);
@@ -702,6 +761,15 @@ export const queryWonder = tool('cdc_query_wonder', {
       notices.push(
         `offset ${input.offset} is past the end of this table, which holds ${count(total)} row(s) — the query itself matched. Lower offset below ${count(total)} to see rows.`,
       );
+    } else if (staged) {
+      /**
+       * The staged table keeps the order rows were registered in, so the next page is the
+       * stored order's next slice; an ORDER BY added here would read a different order.
+       */
+      const readPage = Math.min(pageSize, STAGED_DEFAULT_PAGE);
+      notices.push(
+        `Showing rows ${count(input.offset + 1)}–${count(consumed)} of ${count(total)}. The whole table is staged as ${staged}: cdc_dataframe_query reads the rows after this page with SELECT * FROM ${staged} LIMIT ${readPage} OFFSET ${consumed}, in CDC's row order, and answers any other SELECT over it without another WONDER request; calling again with offset=${consumed} re-runs the WONDER query.`,
+      );
     } else if (hasMore && pageSize === MAX_ROWS_PER_CALL) {
       const lowered = input.limit !== undefined && input.limit > MAX_ROWS_PER_CALL;
       notices.push(
@@ -721,7 +789,7 @@ export const queryWonder = tool('cdc_query_wonder', {
         `${suppressedCount} cell(s) were withheld by CDC for confidentiality (Suppressed) and are null. Aggregate over more years or a broader cause/age range to reduce suppression.`,
       );
     }
-    if (hiddenRows.length > 0) {
+    if (hiddenRows.length > 0 && !(total === 0 && zeroDeathsOnly)) {
       notices.push(
         `CDC withheld whole rows from this table — ${hiddenRows.map(({ message }) => message).join(' ')} (that is CDC's own wording, aimed at its web form; this tool has no input that unhides them). ${
           zeroDeathsOnly
@@ -790,6 +858,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       cellNoteCount: cellNotes.length,
       suppressedCount,
       hiddenRowMessageCount: hiddenRows.length,
+      evictedTableCount,
     });
 
     return {
@@ -801,6 +870,7 @@ export const queryWonder = tool('cdc_query_wonder', {
       cellNotes,
       messages: result.messages,
       suppressedCount,
+      ...(staged ? { stagedTable: staged } : {}),
     };
   },
 
@@ -813,6 +883,12 @@ export const queryWonder = tool('cdc_query_wonder', {
     const lines: string[] = [
       `**${result.database} — ${result.databaseTitle} — ${result.rowCount} rows**`,
     ];
+    if (result.stagedTable) {
+      lines.push(
+        '',
+        `**Whole table staged for SQL as ${markdownCodeSpan(result.stagedTable)}** — every row, readable with cdc_dataframe_query.`,
+      );
+    }
     const firstRow = result.rows[0];
 
     if (firstRow) {
@@ -840,15 +916,14 @@ export const queryWonder = tool('cdc_query_wonder', {
       }
     }
 
-    // Rendered for every result, not just the hidden-row case: a withheld row leaves no trace
-    // in the table above, so this block is the only thing standing between a filtered row set
-    // and a reader who takes it as complete.
+    /**
+     * CDC's messages, verbatim, under a heading named for the field and making no claim about
+     * them: some say rows were withheld, and others withhold nothing, such as the ordering note
+     * on a leading_causes table. What a hidden-row message means for the counts reaches
+     * content[] through the handler's notice, which keys it on the kind of message CDC sent.
+     */
     if (result.messages.length > 0) {
-      lines.push(
-        '',
-        '**CDC notices on this table — rows may have been withheld before it was sent:**',
-        ...result.messages.map((m) => `- ${m}`),
-      );
+      lines.push('', '**CDC messages on this table:**', ...result.messages.map((m) => `- ${m}`));
     }
 
     if (result.caveats.length > 0) {

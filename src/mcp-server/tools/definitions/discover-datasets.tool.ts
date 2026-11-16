@@ -15,12 +15,7 @@ import {
   type VocabularyTerm,
 } from '@/services/socrata/types.js';
 import { escapeMarkdownText, markdownBlockquote, markdownCodeSpan } from '@/utils/markdown.js';
-import {
-  DATASET_DESCRIPTION_CAP_TEXT,
-  nonBlank,
-  toPlainText,
-  truncatePlainText,
-} from '@/utils/text.js';
+import { nonBlank, toPlainText, truncatePlainText } from '@/utils/text.js';
 import { matchVocabulary } from '@/utils/vocabulary.js';
 
 /**
@@ -47,9 +42,14 @@ const CATALOG_PAGE_WINDOW_MAX = 10_000;
  */
 const NEAR_MISS_MAX = 3;
 
-/** `"Vaccinations" (89 datasets), "Child Vaccinations" (15 datasets)` */
+/**
+ * `"Vaccinations" (89 entries), "Teen Vaccinations" (1 entry)`. The counts are the vocabulary's
+ * catalog entry counts, which take in charts, maps, files, and links beside datasets.
+ */
 function renderTerms(terms: VocabularyTerm[]): string {
-  return terms.map((t) => `"${t.value}" (${t.datasetCount} datasets)`).join(', ');
+  return terms
+    .map((t) => `"${t.value}" (${t.datasetCount} ${t.datasetCount === 1 ? 'entry' : 'entries'})`)
+    .join(', ');
 }
 
 /**
@@ -116,7 +116,7 @@ const AppliedFiltersSchema = z.object({
 
 export const discoverDatasets = tool('cdc_discover_datasets', {
   description:
-    'Search the CDC dataset catalog by keyword, category, tag, or asset type. Returns IDs, names, truncated descriptions, asset types, column counts, update timestamps, and portal links. The catalog also holds charts, maps, stories, files, and links; an entry whose columnCount is 0 is one of those and yields no data from the other tools — reach a file or link through its permalink or accessPoints, and a chart or map through the dataset its parentIds name. Use cdc_get_dataset_schema for the full column list of a chosen dataset.',
+    'Search the CDC dataset catalog by keyword, category, tag, or asset type. Returns IDs, names, truncated descriptions, asset types, column counts, update timestamps, portal links, and for a file its download URL and MIME type. The catalog also holds charts, maps, stories, files, and links; an entry whose columnCount is 0 is one of those and yields no data from the other tools — download a file from its downloadUrl, reach a link through its accessPoints, and a chart or map through the dataset its parentIds name. Use cdc_get_dataset_schema for the full column list of a chosen dataset.',
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -235,7 +235,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
               .string()
               .optional()
               .describe(
-                `Dataset description when provided by the catalog, as plain text — markup stripped and entity references decoded — then truncated to ${DESCRIPTION_MAX} characters, so the limit bounds visible text. Fetch the full text via cdc_get_dataset_schema with full_description: true; without it, that tool caps the description at ${DATASET_DESCRIPTION_CAP_TEXT} characters.`,
+                `Dataset description when provided by the catalog, as plain text — markup stripped and entity references decoded — then truncated to ${DESCRIPTION_MAX} characters, so the limit bounds visible text. Fetch the full text via cdc_get_dataset_schema with full_description: true.`,
               ),
             assetType: z
               .string()
@@ -247,7 +247,19 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
               .string()
               .optional()
               .describe(
-                "The entry's page on the CDC portal. For a link (href) entry it is a catalog landing page; the destination itself is in accessPoints.",
+                "The entry's page on the CDC portal. For a link (href) entry it is a catalog landing page, the destination itself in accessPoints; for a file entry the file itself is at downloadUrl.",
+              ),
+            downloadUrl: z
+              .string()
+              .optional()
+              .describe(
+                'URL that downloads a file entry, on the host this search addressed. It redirects to the file itself; fetch it with GET. Present on file entries only — no other asset type has a file to download.',
+              ),
+            mimeType: z
+              .string()
+              .optional()
+              .describe(
+                'MIME type of a file entry as the catalog records it, parameters included (e.g. "application/x-zip-compressed", "application/pdf; charset=binary"). Present on file entries only, and absent on one the catalog records no type for.',
               ),
             accessPoints: z
               .array(
@@ -306,7 +318,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       .string()
       .optional()
       .describe(
-        'Guidance when the page came back empty — the catalog values closest to a category or tag filter that matched nothing, each with its entry count; how to broaden a search when no value is close; or the size of the result set when the offset ran past its end. On a relevance-ordered page with matches remaining past it, also that relevance order varies between calls, so offset paging can repeat or skip entries, and that order: "dataset_id" walks every match.',
+        'Guidance on an empty page — the catalog values closest to a category or tag filter that matched nothing, how to broaden the search, or where the result set ends — and, on a relevance-ordered page with matches past it, that offset paging can repeat or skip entries.',
       ),
   },
 
@@ -504,6 +516,8 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
         name: d.name,
         ...(d.assetType ? { assetType: d.assetType } : {}),
         ...(d.permalink ? { permalink: d.permalink } : {}),
+        ...(d.downloadUrl ? { downloadUrl: d.downloadUrl } : {}),
+        ...(d.mimeType ? { mimeType: d.mimeType } : {}),
         ...(d.accessPoints ? { accessPoints: d.accessPoints } : {}),
         ...(d.parentIds ? { parentIds: d.parentIds } : {}),
         ...(description ? { description } : {}),
@@ -549,7 +563,7 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
       }
       if (d.columnCount === 0) {
         lines.push(
-          '**Columns:** none — not a tabular asset; cdc_get_dataset_schema and cdc_query_dataset return no data for this ID.',
+          `**Columns:** none — not a tabular asset; cdc_get_dataset_schema and cdc_query_dataset return no data for this ID${d.downloadUrl ? ', so download the file instead' : ''}.`,
         );
       } else if (typeof d.columnCount === 'number') {
         const sample = d.columnSample?.map(markdownCodeSpan).join(', ');
@@ -562,6 +576,8 @@ export const discoverDatasets = tool('cdc_discover_datasets', {
         lines.push(`**Columns:** ${d.columnCount}${preview}`);
       }
       if (d.permalink) lines.push(`**Permalink:** ${escapeMarkdownText(d.permalink)}`);
+      if (d.downloadUrl) lines.push(`**Download:** ${escapeMarkdownText(d.downloadUrl)}`);
+      if (d.mimeType) lines.push(`**MIME type:** ${escapeMarkdownText(d.mimeType)}`);
       if (d.parentIds?.length) {
         lines.push(`**Built on:** ${d.parentIds.map(markdownCodeSpan).join(', ')}`);
       }

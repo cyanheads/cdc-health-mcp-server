@@ -316,8 +316,9 @@ describe('cdc_query_wonder — paging and the row ceiling', () => {
       queryWonder.enrichment?.notice.description ?? '',
     ];
     for (const field of describedFields) expect(field).not.toMatch(/budget|character/i);
-    expect(queryWonder.input.shape.limit.description).toContain('10,000');
-    expect(queryWonder.description).toContain('10,000 rows');
+    expect(queryWonder.input.shape.limit.description).toContain(
+      'One call returns at most 10,000 rows',
+    );
 
     const sc = structured(await call({ group_by: ['year'] }, PAST_CEILING));
     expect(sc.notice).not.toMatch(/budget|character/i);

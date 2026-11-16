@@ -1,6 +1,6 @@
 # cdc-health-mcp-server - Directory Structure
 
-Generated on: 2026-11-01 08:20:40
+Generated on: 2026-11-16 16:55:04
 
 ```text
 cdc-health-mcp-server/
@@ -161,25 +161,34 @@ cdc-health-mcp-server/
 │   │   │   └── definitions/
 │   │   │       ├── dataset-detail.resource.ts
 │   │   │       └── datasets.resource.ts
+│   │   ├── schemas/
+│   │   │   ├── case-normalized-string.ts
+│   │   │   └── dataset-id.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── discover-datasets.tool.ts
-│   │           ├── get-dataset-schema.tool.ts
-│   │           ├── list-catalog-vocabulary.tool.ts
-│   │           ├── query-dataset.tool.ts
-│   │           └── query-wonder.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── dataframe-describe.tool.ts
+│   │       │   ├── dataframe-query.tool.ts
+│   │       │   ├── discover-datasets.tool.ts
+│   │       │   ├── get-dataset-schema.tool.ts
+│   │       │   ├── list-catalog-vocabulary.tool.ts
+│   │       │   ├── query-dataset.tool.ts
+│   │       │   └── query-wonder.tool.ts
+│   │       └── server-tools.ts
 │   ├── services/
 │   │   ├── socrata/
 │   │   │   ├── socrata-service.ts
 │   │   │   └── types.ts
 │   │   ├── wonder/
+│   │   │   ├── staged-table.ts
 │   │   │   ├── types.ts
 │   │   │   ├── wonder-service.ts
 │   │   │   ├── xml-builder.ts
 │   │   │   └── xml-parser.ts
+│   │   ├── canvas-accessor.ts
 │   │   └── user-agent.ts
 │   ├── utils/
 │   │   ├── markdown.ts
+│   │   ├── non-queryable-asset.ts
 │   │   ├── text.ts
 │   │   └── vocabulary.ts
 │   └── index.ts
@@ -218,7 +227,9 @@ cdc-health-mcp-server/
 │   │   ├── contract-text.ts
 │   │   ├── cpu-cost.ts
 │   │   ├── markdown-render.ts
-│   │   └── resource-read.ts
+│   │   ├── resource-read.ts
+│   │   ├── staging-canvas.ts
+│   │   └── tools-list.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
@@ -229,20 +240,30 @@ cdc-health-mcp-server/
 │   │   │       ├── dataset-detail.resource.test.ts
 │   │   │       ├── datasets-edge.resource.test.ts
 │   │   │       └── datasets.resource.test.ts
+│   │   ├── schemas/
+│   │   │   └── case-normalized-string.test.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── discover-datasets-edge.tool.test.ts
-│   │           ├── discover-datasets.tool.test.ts
-│   │           ├── get-dataset-schema-edge.tool.test.ts
-│   │           ├── get-dataset-schema.tool.test.ts
-│   │           ├── list-catalog-vocabulary.tool.test.ts
-│   │           ├── query-dataset-edge.tool.test.ts
-│   │           ├── query-dataset-response.tool.test.ts
-│   │           ├── query-dataset.tool.test.ts
-│   │           ├── query-wonder.input-seam.test.ts
-│   │           ├── query-wonder.paging.test.ts
-│   │           ├── query-wonder.service-seam.test.ts
-│   │           └── query-wonder.tool.test.ts
+│   │       ├── definitions/
+│   │       │   ├── __snapshots__/
+│   │       │   │   └── tools-list-structure.json.snap
+│   │       │   ├── dataframe-describe.tool.test.ts
+│   │       │   ├── dataframe-query.tool.test.ts
+│   │       │   ├── discover-datasets-edge.tool.test.ts
+│   │       │   ├── discover-datasets.tool.test.ts
+│   │       │   ├── get-dataset-schema-edge.tool.test.ts
+│   │       │   ├── get-dataset-schema.tool.test.ts
+│   │       │   ├── list-catalog-vocabulary.tool.test.ts
+│   │       │   ├── query-dataset-edge.tool.test.ts
+│   │       │   ├── query-dataset-response.tool.test.ts
+│   │       │   ├── query-dataset.tool.test.ts
+│   │       │   ├── query-wonder.input-seam.test.ts
+│   │       │   ├── query-wonder.paging.test.ts
+│   │       │   ├── query-wonder.service-seam.test.ts
+│   │       │   ├── query-wonder.staging-cap.test.ts
+│   │       │   ├── query-wonder.staging.test.ts
+│   │       │   ├── query-wonder.tool.test.ts
+│   │       │   └── tools-list-prose.test.ts
+│   │       └── server-tools.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
@@ -253,6 +274,7 @@ cdc-health-mcp-server/
 │   │   ├── socrata/
 │   │   │   ├── socrata-contract-parity.test.ts
 │   │   │   ├── socrata-domain-semantics.test.ts
+│   │   │   ├── socrata-error-body-wire.test.ts
 │   │   │   ├── socrata-service-errors.test.ts
 │   │   │   ├── socrata-service-failures.test.ts
 │   │   │   ├── socrata-service-token.test.ts
@@ -260,6 +282,7 @@ cdc-health-mcp-server/
 │   │   │   └── socrata-upstream-error-wiring.test.ts
 │   │   └── wonder/
 │   │       ├── database-ids.test.ts
+│   │       ├── staged-table.test.ts
 │   │       ├── types.test.ts
 │   │       ├── wonder-service.test.ts
 │   │       ├── xml-builder.test.ts

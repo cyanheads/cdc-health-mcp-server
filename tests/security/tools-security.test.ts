@@ -33,6 +33,7 @@ vi.mock('@/config/server-config.js', () => ({
     appToken: APP_TOKEN,
     baseUrl: 'https://data.cdc.gov',
     catalogUrl: 'https://api.us.socrata.com/api/catalog/v1',
+    normalizeInputCase: true,
   }),
 }));
 
@@ -68,7 +69,6 @@ describe('Security — input validation', () => {
 
   describe('dataset ID format enforcement', () => {
     const invalidIds = [
-      'ABCD-1234', // uppercase
       'ab12-cd3', // too short
       'ab12-cd345', // too long
       'ab12cd34', // no hyphen
@@ -77,6 +77,8 @@ describe('Security — input validation', () => {
       'ab12-cd34; DROP TABLE datasets;', // SQL-style injection
       '../../../../etc/shadow', // deep path traversal
       '',
+      'Kab1-cd34', // Kelvin sign, whose toLowerCase() is "k"
+      'AB12-CD34; DROP TABLE datasets;', // uppercase, but no case makes it a four-by-four
     ];
 
     it.each(invalidIds)('rejects datasetId %j in getDatasetSchema', (id) => {
@@ -85,6 +87,11 @@ describe('Security — input validation', () => {
 
     it.each(invalidIds)('rejects datasetId %j in queryDataset', (id) => {
       expect(() => queryDataset.input.parse({ datasetId: id })).toThrow();
+    });
+
+    it('lowercases an uppercase ID on both tools, since every catalog ID is lowercase', () => {
+      expect(getDatasetSchema.input.parse({ datasetId: 'ABCD-1234' }).datasetId).toBe('abcd-1234');
+      expect(queryDataset.input.parse({ datasetId: 'ABCD-1234' }).datasetId).toBe('abcd-1234');
     });
   });
 
@@ -660,10 +667,13 @@ describe('Security — input validation', () => {
       'I21<script>',
       'I21&amp;',
       "I21' or '1'='1",
-      'i21', // lowercase — the code vocabulary is uppercase
       'I2', // too short
       '*All*',
       'I00-',
+      // Letters whose toUpperCase() is an ASCII letter: dotless i and long s.
+      'ı21',
+      'ſ00',
+      'i21<script>', // uppercased, still markup
     ];
 
     it.each(icd10Injections)('rejects cause_icd10 %j', (cause) => {
@@ -689,6 +699,14 @@ describe('Security — input validation', () => {
       expect(queryWonder.input.parse({ cause_icd10: 'I21' }).cause_icd10).toBe('I21');
       expect(queryWonder.input.parse({ cause_icd10: 'C00-C97' }).cause_icd10).toBe('C00-C97');
       expect(queryWonder.input.parse({ cause_icd10: '' }).cause_icd10).toBe('');
+    });
+
+    it('uppercases a lowercase code before the guard, on both fields and in a list', () => {
+      expect(queryWonder.input.parse({ cause_icd10: 'i21' }).cause_icd10).toBe('I21');
+      expect(queryWonder.input.parse({ mcd_icd10: ['I21', 'i22'] }).mcd_icd10).toEqual([
+        'I21',
+        'I22',
+      ]);
     });
 
     it.each([
@@ -761,7 +779,7 @@ describe('Security — input validation', () => {
       expect(() => queryWonder.input.parse({ year_range: { from: 2020.5, to: 2021 } })).toThrow();
     });
 
-    it.each(['J00-J98</value><value>*All*', 'j00-j98', 'J0', 'anything'])(
+    it.each(['J00-J98</value><value>*All*', 'j00-j98</value><value>*All*', 'J0', 'anything'])(
       'rejects mcd_icd10 %j',
       (code) => {
         /** The second free-text field reaching the request XML gets the same regex guard. */
@@ -803,8 +821,9 @@ describe('Security — input validation', () => {
 
     it('leaves limit unset and offset at zero when neither is supplied', () => {
       /**
-       * An omitted limit reads as the rest of the table up to the 10,000-row ceiling, applied in
-       * the handler and disclosed with truncated and nextOffset rather than capped silently.
+       * An omitted limit takes its default in the handler — the rest of the table up to the
+       * 10,000-row ceiling, or 100 rows where a canvas stages the table. A page that stops short
+       * is disclosed with truncated and nextOffset rather than capped silently.
        */
       const input = queryWonder.input.parse({});
       expect(input.limit).toBeUndefined();

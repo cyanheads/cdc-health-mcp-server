@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { datasetIdSchema } from '@/mcp-server/schemas/dataset-id.js';
 import { getSocrataService } from '@/services/socrata/socrata-service.js';
 import {
   CDC_SOCRATA_DOMAINS,
@@ -18,6 +19,7 @@ import {
   markdownCodeSpan,
   markdownTableCodeSpan,
 } from '@/utils/markdown.js';
+import { nonQueryableFailure } from '@/utils/non-queryable-asset.js';
 import {
   DATASET_DESCRIPTION_CAP,
   DATASET_DESCRIPTION_CAP_TEXT,
@@ -35,7 +37,7 @@ import {
 const DEFAULT_COLUMN_LIMIT = 100;
 
 export const getDatasetSchema = tool('cdc_get_dataset_schema', {
-  description: `Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, last-updated timestamp, and, for a filter, the dataset it is a view of — with the period and area it covers, how often it is updated, its suggested citation, license, and attribution wherever the publisher recorded them. A chart or map has no schema of its own; the failure names the dataset it is built on. Returns the first 100 columns by default; wide datasets continue via column_offset. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default; pass full_description: true for the whole text. Get dataset IDs from cdc_discover_datasets.`,
+  description: `Fetch the column schema for a CDC dataset — names, data types, descriptions, row count, last-updated timestamp, and, for a filter, the dataset it is a view of — with the period and area it covers, how often it is updated, its suggested citation, license, and attribution wherever the publisher recorded them. A chart, map, or file has no schema of its own: the failure names the dataset a chart or map is built on, and a file's name, size in bytes, and download URL. Returns the first 100 columns by default; wide datasets continue via column_offset. The dataset description is capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default; pass full_description: true for the whole text. Get dataset IDs from cdc_discover_datasets.`,
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -79,7 +81,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: `Socrata metadata API returned a 5xx server error, could not be reached, did not finish answering within ${REQUEST_TIMEOUT_TEXT}, or answered with a body that is not the JSON it serves.`,
       retryable: true,
-      recovery: 'Retry after a brief delay; data.cdc.gov may be temporarily unavailable.',
+      recovery: 'Retry after a brief delay; the Socrata portal may be temporarily unavailable.',
     },
   ],
 
@@ -90,12 +92,9 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .describe(
         'CDC Socrata host to fetch the dataset from. "data.cdc.gov" (default) and "chronicdata.cdc.gov" front the same catalog, so a four-by-four ID resolves on either and the default works whichever host the dataset was found on.',
       ),
-    datasetId: z
-      .string()
-      .regex(/^[a-z0-9]{4}-[a-z0-9]{4}$/)
-      .describe(
-        'Four-by-four dataset identifier (e.g., "bi63-dtpu"). Obtain from cdc_discover_datasets.',
-      ),
+    datasetId: datasetIdSchema('cdc_get_dataset_schema').describe(
+      'Four-by-four dataset identifier (e.g., "bi63-dtpu"). Obtain from cdc_discover_datasets.',
+    ),
     column_limit: z
       .number()
       .int()
@@ -131,7 +130,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
       .string()
       .optional()
       .describe(
-        `Dataset description when provided, as plain text — markup stripped and entity references decoded. Capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default and ending in "…" when cut, with descriptionTruncated and descriptionLength set; pass full_description: true for the whole text. Column descriptions are never shortened.`,
+        `Dataset description when provided, as plain text — markup stripped and entity references decoded. Capped at ${DATASET_DESCRIPTION_CAP_TEXT} characters by default and ending in "…" when cut, with descriptionTruncated and descriptionLength set.`,
       ),
     descriptionTruncated: z
       .boolean()
@@ -142,9 +141,7 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
     descriptionLength: z
       .number()
       .optional()
-      .describe(
-        'Character count of the whole description, present only when description was cut. Call again with full_description: true to read all of it.',
-      ),
+      .describe('Character count of the whole description, present only when description was cut.'),
     rowCount: z
       .number()
       .optional()
@@ -266,22 +263,17 @@ export const getDatasetSchema = tool('cdc_get_dataset_schema', {
      * stories, files, and external links. Those come back with an empty `columns` array —
      * the one signal that lines up with what `/resource/{id}.json` will actually serve.
      * `resource.type` does not: `filter` assets carry real columns and query successfully.
-     * A chart or map names the dataset it draws on in the same document, so the failure can
-     * point there at no extra request.
+     * A chart or map names the dataset it draws on in the same document, and a file its name,
+     * size, and download URL, so the failure can point there at no extra request.
      */
     if (metadata.columns.length === 0) {
-      const { parentId } = metadata;
-      throw ctx.fail(
-        'not_queryable',
-        `Dataset ${input.datasetId} ("${metadata.name}") has no columns. The ID names a non-tabular catalog asset, so there is no schema to return and cdc_query_dataset cannot read it.${parentId ? ` It is a view of dataset ${parentId}, which carries the rows behind it.` : ''}`,
-        parentId
-          ? {
-              recovery: {
-                hint: `Call cdc_get_dataset_schema with datasetId "${parentId}", the dataset this asset is built on, then query that ID with cdc_query_dataset.`,
-              },
-            }
-          : undefined,
+      const { message, options } = nonQueryableFailure(
+        input.datasetId,
+        metadata,
+        (parentId) =>
+          `Call cdc_get_dataset_schema with datasetId "${parentId}", the dataset this asset is built on, then query that ID with cdc_query_dataset.`,
       );
+      throw ctx.fail('not_queryable', message, options);
     }
 
     const total = metadata.columns.length;

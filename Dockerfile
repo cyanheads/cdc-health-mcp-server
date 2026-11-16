@@ -45,8 +45,8 @@ RUN bun run build
 # here can run JavaScript — bunfig.toml's security scanner runs as a Bun
 # program, and so do the OTel and musl-prune scripts — so the stage runs on
 # $BUILDPLATFORM and cross-installs with `--os`/`--cpu`, which pick each
-# platform-specific optional dependency for the target. Only `node_modules`
-# leaves this stage.
+# platform-specific optional dependency (native bindings such as DuckDB's) for
+# the target. Only `node_modules` leaves this stage.
 #
 # A clean image rather than `FROM build`: the build stage's node_modules holds
 # devDependencies.
@@ -99,10 +99,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
     fi
 
 # `--os`/`--cpu` have no libc counterpart, so a native dependency published in
-# glibc and musl variants installs both. The runtime image is Debian (glibc)
-# and never loads the musl copy; the script deletes every package whose own
-# `libc` admits only musl. It follows every install, since a later
-# `bun install` restores what it removes.
+# glibc and musl variants (DuckDB's bindings, for one) installs both. The
+# runtime image is Debian (glibc) and never loads the musl copy; the script
+# deletes every package whose own `libc` admits only musl. It follows every
+# install, since a later `bun install` restores what it removes.
 COPY scripts/prune-musl-packages.ts ./scripts/
 RUN bun scripts/prune-musl-packages.ts
 

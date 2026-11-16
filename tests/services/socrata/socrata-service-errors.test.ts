@@ -15,8 +15,8 @@ vi.mock('@/config/server-config.js', () => ({
   }),
 }));
 
-import { SocrataService } from '@/services/socrata/socrata-service.js';
-import { expectLinearCostAsync } from '../../helpers/cpu-cost.js';
+import { pageTitle, SocrataService } from '@/services/socrata/socrata-service.js';
+import { expectLinearCostAsync, expectLinearDoublings, fill } from '../../helpers/cpu-cost.js';
 
 function mockFetch(body: unknown, status = 200) {
   return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -107,9 +107,17 @@ describe('SocrataService — error handling', () => {
     it('truncates body to 300 chars when JSON has neither message nor error', async () => {
       const longBody = JSON.stringify({ unknown: 'x'.repeat(400) });
       mockFetchText(longBody, 400);
-      await expect(service.query({ datasetId: 'ab12-cd34' })).rejects.toThrow(
-        /Socrata API error 400/,
-      );
+      const err = (await service.query({ datasetId: 'ab12-cd34' }).catch((e) => e)) as McpError;
+
+      expect(err.message).toBe(`Socrata API error 400: ${longBody.slice(0, 300)}`);
+    });
+
+    it('relays the first 300 characters of a longer JSON message on a generic 400', async () => {
+      const message = Array.from({ length: 500 }, (_, i) => String.fromCharCode(97 + (i % 26)));
+      mockFetchText(JSON.stringify({ message: message.join('') }), 400);
+      const err = (await service.query({ datasetId: 'ab12-cd34' }).catch((e) => e)) as McpError;
+
+      expect(err.message).toBe(`Socrata query error: ${message.slice(0, 300).join('')}`);
     });
 
     it('normalizes column-not-in-group-bys using the structured column name', async () => {
@@ -482,6 +490,302 @@ describe('SocrataService — error handling', () => {
       const err = (await service.discover({ query: 'x' }).catch((e) => e)) as McpError;
       expect(err.code).toBe(JsonRpcErrorCode.Unauthorized);
       expect((err.data as Record<string, unknown> | undefined)?.reason).toBeUndefined();
+    });
+  });
+
+  describe('the body of a 5xx or an unexpected 4xx', () => {
+    /** Every request answered afresh, so a parallel pair never reads one consumed body. */
+    function mockStatus(body: string, status: number, statusText = '', contentType = 'text/html') {
+      return vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(
+          async () =>
+            new Response(body, { status, statusText, headers: { 'Content-Type': contentType } }),
+        );
+    }
+
+    async function failure(call: Promise<unknown>): Promise<McpError> {
+      const err = await call.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(McpError);
+      return err as McpError;
+    }
+
+    /** The page openresty serves for a 502, whose title restates the status line. */
+    const OPENRESTY_502 =
+      '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>openresty</center>\r\n</body>\r\n</html>\r\n';
+
+    it('names only the status when the body is empty', async () => {
+      mockStatus('', 414, 'URI Too Long');
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidRequest);
+      expect(err.message).toBe('Socrata returned HTTP 414 URI Too Long.');
+      expect(err.data).toMatchObject({ status: 414 });
+      expect(err.data?.reason).toBeUndefined();
+    });
+
+    it('names only the status of an empty 5xx and keeps it upstream_error', async () => {
+      mockStatus('', 502, 'Bad Gateway');
+      const err = await failure(service.getMetadata('ab12-cd34'));
+
+      expect(err.message).toBe('Socrata returned HTTP 502 Bad Gateway.');
+      expect(err.data).toMatchObject({ reason: 'upstream_error', status: 502 });
+    });
+
+    it('classifies a 304, which carries no body at all', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(
+        async () => new Response(null, { status: 304, statusText: 'Not Modified' }),
+      );
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidRequest);
+      expect(err.message).toBe('Socrata returned HTTP 304 Not Modified.');
+      expect(err.data?.reason).toBeUndefined();
+    });
+
+    it('carries the Retry-After header and the request URL', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(
+        async () =>
+          new Response('Service unavailable', {
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: { 'Retry-After': '120' },
+          }),
+      );
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.data).toMatchObject({
+        reason: 'upstream_error',
+        retryAfter: '120',
+        url: 'https://data.cdc.gov/resource/ab12-cd34.json?%24limit=101&%24offset=0',
+      });
+    });
+
+    it('classifies a status above 599, which fetch returns but Response refuses to build', async () => {
+      /**
+       * Both runtimes' fetch hand back a status of 600 or more as received, while `new Response`
+       * accepts only 200 through 599 — so a mock built that way is relabelled after the fact.
+       */
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        const response = new Response('origin unreachable', { status: 503, statusText: 'Odd' });
+        Object.defineProperty(response, 'status', { value: 600 });
+        return response;
+      });
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(err.message).toBe('Socrata returned HTTP 600 Odd.');
+      expect(err.data).toMatchObject({ reason: 'upstream_error', status: 600 });
+    });
+
+    it('keeps the body on the thrown error, where the server log reads it', async () => {
+      mockStatus(OPENRESTY_502, 502, 'Bad Gateway');
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.data?.body).toBe(OPENRESTY_502);
+    });
+
+    it('adds nothing to the status line when the page title restates it', async () => {
+      mockStatus(OPENRESTY_502, 502, 'Bad Gateway');
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.message).toBe('Socrata returned HTTP 502 Bad Gateway.');
+    });
+
+    it.each([
+      ['a page with no title', '<html><body><h1>Request rejected</h1></body></html>', 'text/html'],
+      ['an empty title', '<html><head><title>  </title></head></html>', 'text/html'],
+      ['a title left unclosed', '<html><head><title>Request rejected', 'text/html'],
+      ['plain text', 'upstream connect error or disconnect/reset before headers', 'text/plain'],
+      ['JSON without a message', '{"code":"bad_gateway","error":true}', 'application/json'],
+      ['JSON with an empty message', '{"error":true,"message":""}', 'application/json'],
+      ['JSON that is not an object', 'null', 'application/json'],
+    ])('names only the status for %s', async (_name, body, contentType) => {
+      mockStatus(body, 503, 'Service Unavailable', contentType);
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.message).toBe('Socrata returned HTTP 503 Service Unavailable.');
+    });
+
+    it.each([
+      [
+        'a title in another case',
+        '<html><head><title>502 BAD GATEWAY</title></head></html>',
+        'text/html',
+      ],
+      [
+        'a JSON message naming the status',
+        '{"error":true,"message":"Bad gateway"}',
+        'application/json',
+      ],
+    ])('adds nothing for %s that restates the status line', async (_name, body, contentType) => {
+      mockStatus(body, 502, 'Bad Gateway', contentType);
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.message).toBe('Socrata returned HTTP 502 Bad Gateway.');
+    });
+
+    it("relays a JSON body's message, keeping the body on the error and the status's code", async () => {
+      const body = '{"error":true,"message":"This dataset has been retired"}';
+      mockStatus(body, 410, 'Gone', 'application/json');
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.code).toBe(JsonRpcErrorCode.InvalidRequest);
+      expect(err.message).toBe('Socrata returned HTTP 410 Gone: This dataset has been retired.');
+      expect(err.data).toMatchObject({ status: 410, body });
+      expect(err.data?.reason).toBeUndefined();
+    });
+
+    it('relays a page title when the status line has no reason phrase', async () => {
+      /** An HTTP/2 response carries no reason phrase, so the status line is the bare code. */
+      mockStatus(
+        '<!DOCTYPE html><html><head><title>data.cdc.gov | 522: Connection timed out</title></head><body><h1>Connection timed out</h1></body></html>',
+        502,
+      );
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(err.message).toBe(
+        'Socrata returned HTTP 502: data.cdc.gov | 522: Connection timed out.',
+      );
+      expect(err.data).toMatchObject({ reason: 'upstream_error', status: 502 });
+    });
+
+    it('reads an upper-case title with attributes, tags inside it, and entities decoded once', async () => {
+      mockStatus(
+        '<HTML><HEAD><TITLE lang="en">Quota &amp; <B>rate</B> limits &amp;lt;exceeded&amp;gt;</TITLE></HEAD></HTML>',
+        503,
+        'Service Unavailable',
+      );
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.message).toBe(
+        'Socrata returned HTTP 503 Service Unavailable: Quota & rate limits &lt;exceeded&gt;.',
+      );
+    });
+
+    it('cuts a title past 200 characters and ends it with the ellipsis alone', async () => {
+      const title = 'Scheduled maintenance window '.repeat(12).trim();
+      mockStatus(`<html><head><title>${title}</title></head></html>`, 503, 'Service Unavailable');
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      const prefix = 'Socrata returned HTTP 503 Service Unavailable: ';
+      expect(err.message.startsWith(prefix)).toBe(true);
+      const detail = err.message.slice(prefix.length);
+      expect(detail.endsWith('…')).toBe(true);
+      expect(detail.length).toBeLessThanOrEqual(201);
+      expect(detail.length).toBeGreaterThan(150);
+      expect(title.startsWith(detail.slice(0, -1).trimEnd())).toBe(true);
+    });
+
+    it.each([
+      [
+        'a 503',
+        503,
+        'Service Unavailable',
+        (detail: string) => `Socrata returned HTTP 503 Service Unavailable: ${detail}.`,
+      ],
+      [
+        'a 403',
+        403,
+        'Forbidden',
+        (detail: string) =>
+          `Socrata denied access to this resource (403): ${detail}. This is an access decision, not an outage — the same request will keep failing.`,
+      ],
+    ])(
+      'relays the first 200 characters of a longer JSON message from %s',
+      async (_label, status, statusText, expected) => {
+        const message = Array.from({ length: 500 }, (_, i) => String.fromCharCode(97 + (i % 26)));
+        mockStatus(
+          JSON.stringify({ error: true, message: message.join('') }),
+          status,
+          statusText,
+          'application/json',
+        );
+        const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+        expect(err.message).toBe(expected(message.slice(0, 200).join('')));
+      },
+    );
+
+    it.each(['.', '!', '?'])('adds no period after a title that ends in %s', async (mark) => {
+      mockStatus(`<title>Down for maintenance${mark}</title>`, 503, 'Service Unavailable');
+      const err = await failure(service.query({ datasetId: 'ab12-cd34' }));
+
+      expect(err.message).toBe(
+        `Socrata returned HTTP 503 Service Unavailable: Down for maintenance${mark}`,
+      );
+    });
+
+    it('reads a page title in time linear in the length of the body', async () => {
+      /** The body is the upstream's, so its length is unbounded: openers that never close. */
+      await expectLinearCostAsync(
+        (n) => '<title x'.repeat(n / 8),
+        (body) => {
+          mockStatus(body, 503, 'Service Unavailable');
+          return service.query({ datasetId: 'ab12-cd34' }).catch(() => undefined);
+        },
+      );
+    });
+  });
+
+  describe('pageTitle', () => {
+    it.each([
+      ['the first title of two', '<title>One</title><title>Two</title>', 'One'],
+      ['a self-closing-looking opener', '<title/>Edge error</title>', 'Edge error'],
+      ['a closer carrying whitespace', '<title>Edge error</title \n>', 'Edge error'],
+      [
+        'a title after a lookalike tag',
+        '<titles>no</titles><title>Edge error</title>',
+        'Edge error',
+      ],
+      ['a closer after a lookalike closer', '<title>Edge </titles>error</title>', 'Edge error'],
+    ])('reads %s', (_name, body, title) => {
+      expect(pageTitle(body)).toBe(title);
+    });
+
+    it.each([
+      ['no title', '<html><body>Edge error</body></html>'],
+      ['an opener with no >', '<title Edge error'],
+      ['an opener with no closer', '<title>Edge error'],
+      ['a lookalike tag alone', '<titles>Edge error</titles>'],
+      ['a title of tags and whitespace', '<title> <b> </b> </title>'],
+    ])('reads nothing from %s', (_name, body) => {
+      expect(pageTitle(body)).toBeUndefined();
+    });
+
+    /**
+     * Timing: the body is the upstream's, so its size is unbounded. Each shape doubles from 5,000
+     * characters to 320,000, and at every size the least of several measurements stays under four
+     * times the growth against the 5,000-character base re-timed beside it — under 256× at the
+     * full 64× span. A scan that restarts at every opener costs quadratic and fails by the third
+     * doubling.
+     */
+    describe('timing', () => {
+      /**
+       * Scans per size: enough that the 5,000-character base costs well above timer jitter, few
+       * enough that the 320,000-character size stays inside the per-measurement bound. A shape
+       * whose title is converted whole (`toPlainText` over the body) costs the most per scan.
+       */
+      it.each([
+        ['<title openers with no >', (n: number) => fill('<title x', n), 400],
+        ['<title> openers with no closer', (n: number) => fill('<title>', n), 400],
+        ['lookalike openers', (n: number) => fill('<titles>', n), 400],
+        ['lookalike closers after an opener', (n: number) => `<title>${fill('</titles>', n)}`, 400],
+        [
+          'openers nested inside one title',
+          (n: number) => `<title>${fill('<title>', n)}</title>`,
+          50,
+        ],
+        ['a title of text', (n: number) => `<title>${fill('Edge error &amp; ', n)}</title>`, 50],
+      ])(
+        'stays linear on %s',
+        (_name, build, repeats) => expectLinearDoublings(build, 320_000, pageTitle, repeats),
+        0,
+      );
     });
   });
 

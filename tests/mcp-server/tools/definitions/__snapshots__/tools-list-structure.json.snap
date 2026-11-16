@@ -1,0 +1,1646 @@
+{
+  "tools": [
+    {
+      "name": "cdc_discover_datasets",
+      "title": "Cdc Discover Datasets",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "domain": {
+            "default": "data.cdc.gov",
+            "type": "string",
+            "enum": [
+              "data.cdc.gov",
+              "chronicdata.cdc.gov"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "asset_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "dataset",
+                "filter",
+                "chart",
+                "map",
+                "story",
+                "file",
+                "href"
+              ]
+            }
+          },
+          "limit": {
+            "default": 10,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "dataset_id",
+              "relevance"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "datasets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "assetType": {
+                  "type": "string"
+                },
+                "permalink": {
+                  "type": "string"
+                },
+                "downloadUrl": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "accessPoints": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "url"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "parentIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "category": {
+                  "type": "string"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "columnCount": {
+                  "type": "number"
+                },
+                "columnSample": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "pageViews": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "totalCount": {
+            "type": "number"
+          },
+          "appliedFilters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "category": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "assetTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "dataset",
+                    "filter",
+                    "chart",
+                    "map",
+                    "story",
+                    "file",
+                    "href"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "rate_limited",
+                      "dataset_not_found",
+                      "access_denied",
+                      "upstream_error",
+                      "page_out_of_range",
+                      "invalid_query"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "datasets",
+              "totalCount",
+              "appliedFilters"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cdc_get_dataset_schema",
+      "title": "Cdc Get Dataset Schema",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "domain": {
+            "default": "data.cdc.gov",
+            "type": "string",
+            "enum": [
+              "data.cdc.gov",
+              "chronicdata.cdc.gov"
+            ]
+          },
+          "datasetId": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{4}-[a-z0-9]{4}$"
+          },
+          "column_limit": {
+            "default": 100,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "column_offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "full_description": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "datasetId"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "descriptionTruncated": {
+            "type": "boolean"
+          },
+          "descriptionLength": {
+            "type": "number"
+          },
+          "rowCount": {
+            "type": "number"
+          },
+          "rowCountSource": {
+            "type": "string",
+            "enum": [
+              "live",
+              "cached"
+            ]
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": "string"
+          },
+          "temporalCoverage": {
+            "type": "string"
+          },
+          "updateFrequency": {
+            "type": "string"
+          },
+          "geographicCoverage": {
+            "type": "string"
+          },
+          "citation": {
+            "type": "string"
+          },
+          "license": {
+            "type": "string"
+          },
+          "attribution": {
+            "type": "string"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "fieldName": {
+                  "type": "string"
+                },
+                "dataType": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fieldName",
+                "dataType"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "totalCount": {
+            "type": "number"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "shown": {
+            "type": "number"
+          },
+          "cap": {
+            "type": "number"
+          },
+          "nextOffset": {
+            "type": "number"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "dataset_not_found",
+                      "not_queryable",
+                      "access_denied",
+                      "invalid_query",
+                      "rate_limited",
+                      "upstream_error"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "name",
+              "columns",
+              "totalCount"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cdc_list_catalog_vocabulary",
+      "title": "List CDC Catalog Vocabulary",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "domain": {
+            "default": "data.cdc.gov",
+            "type": "string",
+            "enum": [
+              "data.cdc.gov",
+              "chronicdata.cdc.gov"
+            ]
+          },
+          "filter": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "tag_limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "tag_offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": [
+              "data.cdc.gov",
+              "chronicdata.cdc.gov"
+            ]
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "datasetCount": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "value",
+                "datasetCount"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "datasetCount": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "value",
+                "datasetCount"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "vocabularySize": {
+            "type": "object",
+            "properties": {
+              "categories": {
+                "type": "number"
+              },
+              "tags": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "categories",
+              "tags"
+            ],
+            "additionalProperties": false
+          },
+          "categoryCount": {
+            "type": "number"
+          },
+          "tagCount": {
+            "type": "number"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "shown": {
+            "type": "number"
+          },
+          "cap": {
+            "type": "number"
+          },
+          "truncationCeiling": {
+            "type": "number"
+          },
+          "nextOffset": {
+            "type": "number"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "rate_limited",
+                      "dataset_not_found",
+                      "access_denied",
+                      "upstream_error",
+                      "invalid_query"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "domain",
+              "categories",
+              "tags",
+              "vocabularySize",
+              "categoryCount",
+              "tagCount"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cdc_query_dataset",
+      "title": "Cdc Query Dataset",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "domain": {
+            "default": "data.cdc.gov",
+            "type": "string",
+            "enum": [
+              "data.cdc.gov",
+              "chronicdata.cdc.gov"
+            ]
+          },
+          "datasetId": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{4}-[a-z0-9]{4}$"
+          },
+          "search": {
+            "type": "string"
+          },
+          "select": {
+            "type": "string"
+          },
+          "where": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "having": {
+            "type": "string"
+          },
+          "order": {
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          }
+        },
+        "required": [
+          "datasetId"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "rowCount": {
+            "type": "number"
+          },
+          "effectiveQuery": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "shown": {
+            "type": "number"
+          },
+          "cap": {
+            "type": "number"
+          },
+          "nextOffset": {
+            "type": "number"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "dataset_not_found",
+                      "no_such_column",
+                      "type_mismatch",
+                      "invalid_query",
+                      "not_queryable",
+                      "access_denied",
+                      "rate_limited",
+                      "upstream_error"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "rows",
+              "rowCount",
+              "effectiveQuery"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cdc_query_wonder",
+      "title": "Cdc Query Wonder",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "database": {
+            "default": "underlying_1999_2020",
+            "type": "string",
+            "enum": [
+              "underlying_1999_2020",
+              "provisional",
+              "underlying_2018_2024",
+              "multiple_1999_2020",
+              "multiple_2018_2024"
+            ]
+          },
+          "group_by": {
+            "default": [
+              "year"
+            ],
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "year",
+                "age_group",
+                "sex",
+                "race",
+                "icd_chapter",
+                "icd_subchapter",
+                "cause_113",
+                "leading_causes",
+                "injury_intent",
+                "hispanic_origin",
+                "month"
+              ]
+            }
+          },
+          "cause_icd10": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": ""
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "999--999",
+                  "999-999"
+                ]
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Z][0-9]{2}(\\.[0-9]+)?(-[A-Z][0-9]{2}(\\.[0-9]+)?)?$"
+              },
+              {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "999--999",
+                        "999-999"
+                      ]
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[A-Z][0-9]{2}(\\.[0-9]+)?(-[A-Z][0-9]{2}(\\.[0-9]+)?)?$"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "mcd_icd10": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": ""
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "999--999",
+                  "999-999"
+                ]
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Z][0-9]{2}(\\.[0-9]+)?(-[A-Z][0-9]{2}(\\.[0-9]+)?)?$"
+              },
+              {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "999--999",
+                        "999-999"
+                      ]
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[A-Z][0-9]{2}(\\.[0-9]+)?(-[A-Z][0-9]{2}(\\.[0-9]+)?)?$"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "sex": {
+            "default": "all",
+            "type": "string",
+            "enum": [
+              "all",
+              "male",
+              "female"
+            ]
+          },
+          "age_groups": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "1",
+                "1-4",
+                "5-14",
+                "15-24",
+                "25-34",
+                "35-44",
+                "45-54",
+                "55-64",
+                "65-74",
+                "75-84",
+                "85+",
+                "NS"
+              ]
+            }
+          },
+          "year_range": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "integer",
+                "minimum": 1999,
+                "maximum": "current UTC year"
+              },
+              "to": {
+                "type": "integer",
+                "minimum": 1999,
+                "maximum": "current UTC year"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "rowCount": {
+            "type": "number"
+          },
+          "database": {
+            "type": "string"
+          },
+          "databaseTitle": {
+            "type": "string"
+          },
+          "caveats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cellNotes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "row": {
+                  "type": "number"
+                },
+                "column": {
+                  "type": "string"
+                },
+                "token": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "row",
+                "column",
+                "token"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suppressedCount": {
+            "type": "number"
+          },
+          "stagedTable": {
+            "type": "string"
+          },
+          "effectiveQuery": {
+            "type": "string"
+          },
+          "totalCount": {
+            "type": "number"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "shown": {
+            "type": "number"
+          },
+          "cap": {
+            "type": "number"
+          },
+          "nextOffset": {
+            "type": "number"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "invalid_query",
+                      "rate_limited",
+                      "upstream_error",
+                      "staging_failed"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "rows",
+              "rowCount",
+              "database",
+              "databaseTitle",
+              "caveats",
+              "cellNotes",
+              "messages",
+              "suppressedCount",
+              "effectiveQuery",
+              "totalCount"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cdc_dataframe_describe",
+      "title": "Describe Staged WONDER Tables",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "table": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "tables": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "rowCount": {
+                  "type": "number"
+                },
+                "expiresAt": {
+                  "type": "string"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "type"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "name",
+                "rowCount",
+                "columns"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "missing_table"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "tables"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "cdc_dataframe_query",
+      "title": "Query Staged WONDER Tables",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "sql": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "default": 100,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "rowCount": {
+            "type": "number"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "shown": {
+            "type": "number"
+          },
+          "cap": {
+            "type": "number"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "examples": [
+                      "missing_table",
+                      "invalid_sql",
+                      "reserved_column_name",
+                      "result_too_large"
+                    ]
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "hint": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "hint"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "not": {
+              "required": [
+                "error"
+              ]
+            },
+            "required": [
+              "columns",
+              "rows",
+              "rowCount"
+            ]
+          },
+          {
+            "required": [
+              "error"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "contracts": [
+    {
+      "tool": "cdc_discover_datasets",
+      "errors": [
+        {
+          "reason": "rate_limited",
+          "code": -32003,
+          "retryable": true
+        },
+        {
+          "reason": "dataset_not_found",
+          "code": -32001
+        },
+        {
+          "reason": "access_denied",
+          "code": -32005
+        },
+        {
+          "reason": "upstream_error",
+          "code": -32000,
+          "retryable": true
+        },
+        {
+          "reason": "page_out_of_range",
+          "code": -32007
+        },
+        {
+          "reason": "invalid_query",
+          "code": -32007
+        }
+      ]
+    },
+    {
+      "tool": "cdc_get_dataset_schema",
+      "errors": [
+        {
+          "reason": "dataset_not_found",
+          "code": -32001
+        },
+        {
+          "reason": "not_queryable",
+          "code": -32007
+        },
+        {
+          "reason": "access_denied",
+          "code": -32005
+        },
+        {
+          "reason": "invalid_query",
+          "code": -32007
+        },
+        {
+          "reason": "rate_limited",
+          "code": -32003,
+          "retryable": true
+        },
+        {
+          "reason": "upstream_error",
+          "code": -32000,
+          "retryable": true
+        }
+      ]
+    },
+    {
+      "tool": "cdc_list_catalog_vocabulary",
+      "errors": [
+        {
+          "reason": "rate_limited",
+          "code": -32003,
+          "retryable": true
+        },
+        {
+          "reason": "dataset_not_found",
+          "code": -32001
+        },
+        {
+          "reason": "access_denied",
+          "code": -32005
+        },
+        {
+          "reason": "upstream_error",
+          "code": -32000,
+          "retryable": true
+        },
+        {
+          "reason": "invalid_query",
+          "code": -32007
+        }
+      ]
+    },
+    {
+      "tool": "cdc_query_dataset",
+      "errors": [
+        {
+          "reason": "dataset_not_found",
+          "code": -32001
+        },
+        {
+          "reason": "no_such_column",
+          "code": -32007
+        },
+        {
+          "reason": "type_mismatch",
+          "code": -32007
+        },
+        {
+          "reason": "invalid_query",
+          "code": -32007
+        },
+        {
+          "reason": "not_queryable",
+          "code": -32007
+        },
+        {
+          "reason": "access_denied",
+          "code": -32005
+        },
+        {
+          "reason": "rate_limited",
+          "code": -32003,
+          "retryable": true
+        },
+        {
+          "reason": "upstream_error",
+          "code": -32000,
+          "retryable": true
+        }
+      ]
+    },
+    {
+      "tool": "cdc_query_wonder",
+      "errors": [
+        {
+          "reason": "invalid_query",
+          "code": -32007
+        },
+        {
+          "reason": "rate_limited",
+          "code": -32003,
+          "retryable": true
+        },
+        {
+          "reason": "upstream_error",
+          "code": -32000,
+          "retryable": true
+        },
+        {
+          "reason": "staging_failed",
+          "code": -32000,
+          "retryable": true
+        }
+      ]
+    },
+    {
+      "tool": "cdc_dataframe_describe",
+      "errors": [
+        {
+          "reason": "missing_table",
+          "code": -32001
+        }
+      ]
+    },
+    {
+      "tool": "cdc_dataframe_query",
+      "errors": [
+        {
+          "reason": "missing_table",
+          "code": -32001
+        },
+        {
+          "reason": "invalid_sql",
+          "code": -32007
+        },
+        {
+          "reason": "reserved_column_name",
+          "code": -32007
+        },
+        {
+          "reason": "result_too_large",
+          "code": -32007
+        }
+      ]
+    }
+  ]
+}

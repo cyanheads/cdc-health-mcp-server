@@ -259,7 +259,6 @@ describe('cdc_get_dataset_schema', () => {
 
   it('rejects invalid dataset ID format', () => {
     expect(() => getDatasetSchema.input.parse({ datasetId: 'invalid' })).toThrow();
-    expect(() => getDatasetSchema.input.parse({ datasetId: 'ABCD-1234' })).toThrow();
     expect(() => getDatasetSchema.input.parse({ datasetId: '' })).toThrow();
   });
 
@@ -537,9 +536,9 @@ describe('cdc_get_dataset_schema', () => {
       expect(cols(full)).toEqual(columns);
     });
 
-    it('states the cap and the opt-in on the description, input, and tool surfaces', () => {
+    it('states the cap on the description field and the opt-in on the input and tool surfaces', () => {
       expect(getDatasetSchema.output.shape.description.description).toBe(
-        'Dataset description when provided, as plain text — markup stripped and entity references decoded. Capped at 4,000 characters by default and ending in "…" when cut, with descriptionTruncated and descriptionLength set; pass full_description: true for the whole text. Column descriptions are never shortened.',
+        'Dataset description when provided, as plain text — markup stripped and entity references decoded. Capped at 4,000 characters by default and ending in "…" when cut, with descriptionTruncated and descriptionLength set.',
       );
       expect(getDatasetSchema.input.shape.full_description.description).toContain('4,000');
       expect(getDatasetSchema.description).toContain('full_description: true');

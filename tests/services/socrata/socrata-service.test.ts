@@ -5,13 +5,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/config/server-config.js', () => ({
-  getServerConfig: () => ({
-    appToken: undefined,
-    baseUrl: 'https://data.cdc.gov',
-    catalogUrl: 'https://api.us.socrata.com/api/catalog/v1',
-  }),
+/** Mutable so a test can stand in a different `CDC_BASE_URL`; `afterEach` restores it. */
+const serverConfig = vi.hoisted(() => ({
+  appToken: undefined,
+  baseUrl: 'https://data.cdc.gov',
+  catalogUrl: 'https://api.us.socrata.com/api/catalog/v1',
 }));
+
+vi.mock('@/config/server-config.js', () => ({ getServerConfig: () => serverConfig }));
 
 import { SocrataService } from '@/services/socrata/socrata-service.js';
 
@@ -81,6 +82,7 @@ describe('SocrataService', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    serverConfig.baseUrl = 'https://data.cdc.gov';
   });
 
   describe('discover', () => {
@@ -312,11 +314,96 @@ describe('SocrataService', () => {
           metadata: { domain: 'data.cdc.gov' },
           permalink: 'https://data.cdc.gov/d/bi63-dtpu',
         },
+        file: {
+          resource: {
+            id: 'g9dy-mhts',
+            name: 'Youth And Tobacco Use Infographic',
+            type: 'file',
+            parent_fxf: [],
+            columns_field_name: [],
+            blob_mime_type: 'application/pdf; charset=binary',
+          },
+          metadata: { domain: 'data.cdc.gov' },
+          permalink: 'https://data.cdc.gov/d/g9dy-mhts',
+        },
       };
       const read = async (...results: unknown[]) => {
         mockFetch({ results, resultSetSize: results.length });
         return (await service.discover({})).datasets;
       };
+
+      it('gives a file entry its download URL and the MIME type the catalog sends', async () => {
+        const [file] = await read(records.file);
+        expect(file).toEqual({
+          id: 'g9dy-mhts',
+          name: 'Youth And Tobacco Use Infographic',
+          assetType: 'file',
+          permalink: 'https://data.cdc.gov/d/g9dy-mhts',
+          downloadUrl: 'https://data.cdc.gov/download/g9dy-mhts',
+          mimeType: 'application/pdf; charset=binary',
+          columnNames: [],
+        });
+      });
+
+      it('builds the download URL on the host searched, while permalink keeps the catalog host', async () => {
+        mockFetch({ results: [records.file], resultSetSize: 1 });
+        const [file] = (await service.discover({ domain: 'chronicdata.cdc.gov' })).datasets;
+        expect(file?.downloadUrl).toBe('https://chronicdata.cdc.gov/download/g9dy-mhts');
+        expect(file?.permalink).toBe('https://data.cdc.gov/d/g9dy-mhts');
+      });
+
+      it.each([
+        ['absent', undefined],
+        ['null', null],
+        ['empty', ''],
+      ])(
+        'keeps the download URL of a file whose MIME type is %s, and omits mimeType',
+        async (_l, mime) => {
+          const [file] = await read({
+            ...records.file,
+            resource: { ...records.file.resource, blob_mime_type: mime },
+          });
+          expect(file?.downloadUrl).toBe('https://data.cdc.gov/download/g9dy-mhts');
+          expect(file).not.toHaveProperty('mimeType');
+        },
+      );
+
+      it.each([
+        ['a number', 42],
+        ['an object', { type: 'application/pdf' }],
+      ])(
+        'answers every entry when blob_mime_type arrives as %s, the file keeping its download URL',
+        async (_l, mime) => {
+          const [file, dataset] = await read(
+            { ...records.file, resource: { ...records.file.resource, blob_mime_type: mime } },
+            { ...records.dataset, resource: { ...records.dataset.resource, blob_mime_type: mime } },
+          );
+          expect(file?.downloadUrl).toBe('https://data.cdc.gov/download/g9dy-mhts');
+          expect(file).not.toHaveProperty('mimeType');
+          expect(dataset?.id).toBe('bi63-dtpu');
+          expect(dataset).not.toHaveProperty('mimeType');
+        },
+      );
+
+      it('gives no other asset type a download URL or a MIME type, even one the catalog sends', async () => {
+        const withMime = <R extends { resource: object }>(record: R) => ({
+          ...record,
+          resource: { ...record.resource, blob_mime_type: 'text/csv' },
+        });
+        const entries = await read(
+          ...[records.href, records.chart, records.story, records.dataset].map(withMime),
+        );
+        expect(entries.map((entry) => entry.assetType)).toEqual([
+          'href',
+          'chart',
+          'story',
+          'dataset',
+        ]);
+        for (const entry of entries) {
+          expect(entry).not.toHaveProperty('downloadUrl');
+          expect(entry).not.toHaveProperty('mimeType');
+        }
+      });
 
       it('reads permalink, accessPoints, and parentIds where the catalog carries them', async () => {
         const [href, chart, story] = await read(records.href, records.chart, records.story);
@@ -632,6 +719,92 @@ describe('SocrataService', () => {
         serve(doc);
         const metadata = await service.getMetadata('2g2d-yfx9');
         expect(metadata).not.toHaveProperty('parentId');
+      });
+    });
+
+    describe('file', () => {
+      /** A live file document, trimmed to the fields the reader looks at. */
+      const FILE_DOCUMENT = {
+        name: 'Pulmonary evaluation of whole-body inhalation exposure',
+        assetType: 'file',
+        viewType: 'blobby',
+        columns: [],
+        blobFilename: 'rd-1083-2024-0.zip',
+        blobFileSize: 306191,
+        blobMimeType: 'application/x-zip-compressed',
+        blobId: '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0',
+      };
+      /** Serve the metadata document; the live count a file cannot answer is refused. */
+      const serve = (document: Record<string, unknown>) =>
+        mockFetchRoutes([
+          { match: '/api/views/', respond: () => jsonResponse(document) },
+          { match: '/resource/', respond: () => jsonResponse({ error: true }, 403) },
+        ]);
+
+      it('names the download URL, file name, and size in bytes of a file asset', async () => {
+        const spy = serve(FILE_DOCUMENT);
+        const metadata = await service.getMetadata('235m-gsry');
+
+        expect(metadata.file).toEqual({
+          downloadUrl: 'https://data.cdc.gov/download/235m-gsry',
+          name: 'rd-1083-2024-0.zip',
+          sizeBytes: 306191,
+        });
+        // Read off the document already fetched: the live count is the only other request.
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+
+      it.each([
+        { domain: 'chronicdata.cdc.gov' as const, host: 'https://chronicdata.cdc.gov' },
+        { domain: undefined, host: 'https://cdc-mirror.example' },
+      ])('builds the download URL on the host the metadata request used ($host)', async (row) => {
+        serverConfig.baseUrl = 'https://cdc-mirror.example';
+        const spy = serve(FILE_DOCUMENT);
+        const metadata = await service.getMetadata('235m-gsry', undefined, row.domain);
+
+        expect(urlMatching(spy, '/api/views/')).toBe(`${row.host}/api/views/235m-gsry.json`);
+        expect(metadata.file?.downloadUrl).toBe(`${row.host}/download/235m-gsry`);
+      });
+
+      it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+        ['no file name', { blobFilename: undefined }, { sizeBytes: 306191 }],
+        ['a null file name and size', { blobFilename: null, blobFileSize: null }, {}],
+        ['an empty file name', { blobFilename: '' }, { sizeBytes: 306191 }],
+        ['a size that is a string', { blobFileSize: '306191' }, { name: 'rd-1083-2024-0.zip' }],
+        ['a negative size', { blobFileSize: -1 }, { name: 'rd-1083-2024-0.zip' }],
+        ['a fractional size', { blobFileSize: 1.5 }, { name: 'rd-1083-2024-0.zip' }],
+      ])(
+        'keeps the URL of a file document with %s, omitting what is unusable',
+        async (_l, patch, kept) => {
+          serve({ ...FILE_DOCUMENT, ...patch });
+          const metadata = await service.getMetadata('235m-gsry');
+          expect(metadata.file).toEqual({
+            downloadUrl: 'https://data.cdc.gov/download/235m-gsry',
+            ...kept,
+          });
+        },
+      );
+
+      it.each([
+        [
+          'a dataset',
+          { ...metadataResponse, assetType: 'dataset', blobFilename: null, blobFileSize: null },
+        ],
+        ['a chart', { name: 'Pfizer Allocations', assetType: 'chart', columns: [], blobId: null }],
+        ['a link', { name: 'trailheads', assetType: 'href', columns: [], blobMimeType: null }],
+        ['a document naming no asset type', { name: 'trailheads', columns: [] }],
+      ])('gives %s no file', async (_label, doc) => {
+        serve(doc);
+        const metadata = await service.getMetadata('ab12-cd34');
+        expect(metadata).not.toHaveProperty('file');
+      });
+
+      it('reads a dataset document whose blob fields hold unexpected types without failing it', async () => {
+        /** The blob fields matter on a file alone; on any other asset they must not fail its schema. */
+        serve({ ...metadataResponse, assetType: 'dataset', blobFilename: 7, blobFileSize: 'n/a' });
+        const metadata = await service.getMetadata('bi63-dtpu');
+        expect(metadata.columns).toHaveLength(2);
+        expect(metadata).not.toHaveProperty('file');
       });
     });
 

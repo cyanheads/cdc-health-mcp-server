@@ -68,7 +68,14 @@ export interface CatalogDataset {
   columnNames?: string[];
   columnTypes?: string[];
   description?: string;
+  /**
+   * On a `file` entry only: `https://{host}/download/{id}` on the host the search addressed,
+   * which redirects to the file. The route answers HTTP 500 for every other asset type.
+   */
+  downloadUrl?: string;
   id: string;
+  /** On a `file` entry only: the catalog's `resource.blob_mime_type`, parameters included. */
+  mimeType?: string;
   name: string;
   pageViews?: number;
   /** The datasets a chart, map, filter, or story is built on, from `resource.parent_fxf`. */
@@ -77,6 +84,19 @@ export interface CatalogDataset {
   permalink?: string;
   tags?: string[];
   updatedAt?: string;
+}
+
+/** Where a `file` asset's content is fetched, read off its metadata document. */
+export interface DatasetFile {
+  /**
+   * `https://{host}/download/{id}` on the host the metadata request addressed. It redirects
+   * to the file through a short-lived storage URL that answers GET only.
+   */
+  downloadUrl: string;
+  /** The document's `blobFilename`. */
+  name?: string;
+  /** The document's `blobFileSize`. */
+  sizeBytes?: number;
 }
 
 /** Column schema from the Metadata API. */
@@ -111,6 +131,8 @@ export interface DatasetMetadata {
   columns: DatasetColumn[];
   /** Plain text: markup stripped and entity references decoded once (`utils/text`). */
   description?: string;
+  /** Present exactly when the document's `assetType` is `file`. */
+  file?: DatasetFile;
   /** `custom_fields["Common Core"]["Geographic Coverage"]`. */
   geographicCoverage?: string;
   /** The document's `license.name`. */

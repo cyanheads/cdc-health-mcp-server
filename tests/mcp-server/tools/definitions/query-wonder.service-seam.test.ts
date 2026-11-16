@@ -179,13 +179,18 @@ describe('cdc_query_wonder over the real service', () => {
       expect(sc.rows).toEqual([]);
       expect(sc.messages).toEqual(messages);
       const text = contentText(result);
-      for (const message of messages) expect(text).toContain(message);
+      expect(text).toContain(
+        ['**CDC messages on this table:**', ...messages.map((m) => `- ${m}`)].join('\n'),
+      );
+      expect(text).not.toContain('rows may have been withheld');
 
       if (noDeaths) {
-        expect(sc.notice).toContain('CDC recorded no deaths for this combination');
-        expect(sc.notice).toContain('deaths summed from rows are complete');
-        expect(sc.notice).not.toMatch(/Widen|partial|not evidence that nothing matched/);
-        expect(text).toContain('CDC recorded no deaths for this combination');
+        // The table is empty, so the one sentence is the whole reading: there is nothing to sum.
+        const NO_DEATHS =
+          'No rows came back because CDC recorded no deaths for this combination: the only rows it reported withholding are strata with zero deaths.';
+        expect(sc.notice).toBe(NO_DEATHS);
+        expect(text.split(NO_DEATHS)).toHaveLength(2);
+        expect(text.split(ZERO_HIDDEN)).toHaveLength(2);
       } else {
         expect(sc.notice).toContain('not evidence that nothing matched');
         expect(sc.notice).toContain('Widen the query');
@@ -425,12 +430,32 @@ describe('cdc_query_wonder over the real service', () => {
         rows: Record<string, unknown>[];
         notice?: string;
         cellNotes: { row: number; column: string; token: string }[];
+        messages: string[];
       };
       const text = contentText(result);
       const body = spy.mock.calls[0]?.[1]?.body;
       const xml = body instanceof URLSearchParams ? (body.get('request_xml') ?? '') : '';
       return { sc, notice: sc.notice ?? '', text, xml };
     }
+
+    it('renders the leading-causes ordering note as a CDC message that withholds nothing', async () => {
+      /**
+       * CDC's one message on a leading_causes table says how the rows are ordered and withholds
+       * none of them, so it sets no notice, and its heading makes no claim about the rows.
+       */
+      const ORDERING =
+        'When you group results by 15 Leading Causes, results are initially ordered by Death counts; also, total rows, zero rows, suppressed rows, and Percent of Total are not available. Click any green up/down arrow to change the order. #Top15#';
+      const { sc, text } = await replay('d158-leading-causes-2023.response.xml', {
+        database: 'underlying_2018_2024',
+        group_by: ['leading_causes'],
+        year_range: { from: 2023, to: 2023 },
+      });
+      expect(sc.rows).toHaveLength(15);
+      expect(sc.messages).toEqual([ORDERING]);
+      expect(sc.notice).toBeUndefined();
+      expect(text).toContain(`**CDC messages on this table:**\n- ${ORDERING}\n\n**Caveats:**`);
+      expect(text).not.toMatch(/rows may have been withheld|CDC withheld whole rows/);
+    });
 
     it('returns ICD chapters with a cause_code that chains into cause_icd10, on both surfaces', async () => {
       const { sc, text, xml } = await replay('d76-icd-chapter-2019.response.xml', {

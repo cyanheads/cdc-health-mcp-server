@@ -28,6 +28,13 @@
           "isRequired": false
         },
         {
+          "name": "CANVAS_PROVIDER_TYPE",
+          "description": "Set to 'duckdb' to stage WONDER tables for SQL and list cdc_dataframe_describe and cdc_dataframe_query. The DuckDB binding ships with the npm package.",
+          "format": "string",
+          "isRequired": false,
+          "default": "none"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -57,6 +64,13 @@
           "description": "Socrata app token for higher rate limits.",
           "format": "string",
           "isRequired": false
+        },
+        {
+          "name": "CANVAS_PROVIDER_TYPE",
+          "description": "Set to 'duckdb' to stage WONDER tables for SQL and list cdc_dataframe_describe and cdc_dataframe_query. The DuckDB binding ships with the npm package.",
+          "format": "string",
+          "isRequired": false,
+          "default": "none"
         },
         {
           "name": "MCP_HTTP_HOST",

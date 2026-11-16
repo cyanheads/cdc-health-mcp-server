@@ -37,17 +37,21 @@ const DEFAULT_TAG_LIMIT = 50;
  */
 const MAX_FILTER_LENGTH = 500;
 
+/**
+ * One schema instance, emitted under both `categories` and `tags`, so every description here is
+ * paid for twice in `tools/list`.
+ */
 const VocabularyTermSchema = z
   .object({
     value: z
       .string()
       .describe(
-        'The value as the catalog spells it — pass it verbatim to cdc_discover_datasets. The catalog matches categories and tags against these values ignoring case, but otherwise exactly.',
+        'The value as the catalog spells it, which cdc_discover_datasets matches ignoring case but otherwise exactly.',
       ),
     datasetCount: z
       .number()
       .describe(
-        'Catalog entries carrying this value. Charts, maps, stories, files, and links are counted alongside datasets, so this is an upper bound on the queryable entries a filter returns.',
+        'Catalog entries carrying this value, charts, maps, stories, files, and links included.',
       ),
   })
   .describe('One vocabulary value with its catalog entry count.');
@@ -55,7 +59,7 @@ const VocabularyTermSchema = z
 export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
   title: 'List CDC Catalog Vocabulary',
   description:
-    "List the controlled vocabularies cdc_discover_datasets' category and tags filters are matched against — every domain category and domain tag the CDC catalog publishes, each with the number of entries carrying it. Call it before filtering a search: a value the catalog does not carry matches nothing and returns an empty page, which is indistinguishable from a real value with no results. All categories come back whole; the tag vocabulary runs to roughly 1,600 values, so tags are ranked by entry count and returned one page at a time via tag_limit and tag_offset. Pass filter to narrow both vocabularies to the values whose words contain its words, or that appear whole inside it; a filter under three letters or digits matches whole words only.",
+    "List the controlled vocabularies cdc_discover_datasets' category and tags filters are matched against — every domain category and domain tag the CDC catalog publishes, each with the number of entries carrying it. Call it before filtering a search: a value the catalog does not carry matches nothing and returns an empty page, which is indistinguishable from a real value with no results. All categories come back whole; the tag vocabulary runs to roughly 1,600 values, so tags are ranked by entry count and returned one page at a time via tag_limit and tag_offset. Pass filter to narrow both vocabularies to the values that have a word containing or starting each of its words, or whose every word contains or starts one of its words; a filter under three letters or digits matches whole words only.",
   annotations: { readOnlyHint: true },
 
   errors: [
@@ -108,7 +112,7 @@ export const listCatalogVocabulary = tool('cdc_list_catalog_vocabulary', {
       .max(MAX_FILTER_LENGTH)
       .optional()
       .describe(
-        `Narrow both vocabularies to the values related to this text (at most ${MAX_FILTER_LENGTH} characters). A value matches when every word of the filter appears inside one of its words ("vaccin" reaches "Vaccinations" and "covid-19 vaccination"), or when the whole value appears in the filter. Matching is not fuzzy — a misspelling returns nothing rather than a guess. A word under three letters or digits matches only an equal word, so a short filter reaches the values carrying it as a whole word ("tb" reaches "tuberculosis (tb)", never "outbreak"); a short filter that reaches none, or one with no letters or digits, is ignored and both vocabularies come back unfiltered.`,
+        `Narrow both vocabularies to the values related to this text (at most ${MAX_FILTER_LENGTH} characters). A value matches when each word of the filter appears inside one of its words or begins with one ("vaccin" reaches "Vaccinations" and "covid-19 vaccination"; "vaccinations" reaches "vaccination", "children" reaches "Child Vaccinations"), or when each of its words contains or starts a word of the filter ("nndss weekly" reaches "nndss" and "week"). A word sitting inside a filter word past its start is no match: "international" does not reach "national", nor "teenage" "age". Matching is not fuzzy — a misspelling returns nothing rather than a guess. A word under three letters or digits matches only an equal word, so a short filter reaches the values carrying it as a whole word ("tb" reaches "tuberculosis (tb)", never "outbreak"); a short filter that reaches none, or one with no letters or digits, is ignored and both vocabularies come back unfiltered.`,
       ),
     tag_limit: z
       .number()
